@@ -1,8 +1,8 @@
 # ADR-0013: Skills + system prompt copied verbatim from Word
 
-**Status:** Accepted (planned for Phase E)
+**Status:** Accepted
 **Date:** 2026-05-17
-**Phase:** A (planning), Phase E (action)
+**Phase:** A (planning), Phase E (action — completed)
 
 ## Context
 

@@ -418,10 +418,12 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     def _chat_worker(self, message: str) -> None:
         from talk2view_writer.extension import get_extension
+        from talk2view_writer.system_prompt import load_system_prompt
 
         try:
             sdk = get_extension(self.ctx).sdk
-            for event in sdk.chat(message):
+            system_prompt = load_system_prompt()
+            for event in sdk.chat(message, system_prompt=system_prompt):
                 self._handle_chat_event(event)
             self._append_history("\n")
         except Exception as exc:

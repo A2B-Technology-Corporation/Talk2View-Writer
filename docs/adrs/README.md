@@ -34,7 +34,7 @@ applied.
 | [0010](0010-partner-key-shared-with-word.md) | Reuse Word partner key until a Writer key is issued    | A | Accepted |
 | [0011](0011-sidebar-context-writer-only.md)  | Sidebar deck scoped to Writer + Writer Global docs    | A | Accepted |
 | [0012](0012-token-storage-deferred.md)       | Token storage deferred to Phase B                     | A | Superseded by 0014 |
-| [0013](0013-skill-and-prompt-copy-from-word.md) | Skills + system prompt copied verbatim from Word    | A | Accepted (planned) |
+| [0013](0013-skill-and-prompt-copy-from-word.md) | Skills + system prompt copied verbatim from Word    | A | Accepted |
 | [0014](0014-file-token-storage.md)           | File-backed token storage in user config directory    | B | Accepted |
 | [0015](0015-programmatic-login-dialog.md)    | Login dialog built programmatically (not `.xdl`)      | B | Accepted |
 | [0016](0016-multiline-edit-history.md)       | Chat history rendered as a multiline `UnoControlEdit` | B | Accepted |
@@ -43,6 +43,7 @@ applied.
 | [0019](0019-tool-registry-aggregation.md)    | Tool registry aggregation via per-module `TOOLS` list | C | Accepted |
 | [0020](0020-tool-context-via-singleton.md)   | Tool bodies fetch UNO context via the extension singleton | C | Accepted |
 | [0021](0021-json-string-tool-returns.md)     | Tools return JSON-encoded strings, not Python dicts   | D | Accepted |
+| [0022](0022-system-prompt-bundled-and-overridable.md) | Bundle SYSTEM_PROMPT.md in the .oxt, pass per-session | E | Accepted |
 
 ## Writing a new ADR
 

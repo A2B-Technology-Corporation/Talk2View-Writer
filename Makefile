@@ -59,6 +59,9 @@ build: lint test-unit
 	@cp extension/description/description_en.txt $(BUILD_DIR)/$(EXT_NAME)/description/
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/pythonpath
 	@cp -r src/talk2view_writer $(BUILD_DIR)/$(EXT_NAME)/pythonpath/
+	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/resources
+	@cp SYSTEM_PROMPT.md $(BUILD_DIR)/$(EXT_NAME)/resources/
+	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@echo "Bundling talk2view SDK and httpx..."
 	@for pkg in talk2view httpx httpcore h11 certifi sniffio idna anyio pydantic pydantic_core typing_extensions annotated_types; do \
 		src=$$(find .venv -path "*/site-packages/$$pkg" -type d -prune | head -1); \
