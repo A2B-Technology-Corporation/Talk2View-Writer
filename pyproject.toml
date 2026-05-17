@@ -6,14 +6,15 @@ authors = [
     { name = "A2B Technology Corporation Pty Ltd", email = "support@talk2view.com" }
 ]
 readme = "README.md"
-license = { text = "Proprietary" }
+license = { text = "MPL-2.0" }
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["libreoffice", "writer", "ai", "copilot", "talk2view"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Plugins",
     "Intended Audience :: End Users/Desktop",
-    "License :: Other/Proprietary License",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

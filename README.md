@@ -80,4 +80,11 @@ Talk2View-Writer/
 
 ## License
 
-Proprietary — A2B Technology Corporation Pty Ltd.
+Mozilla Public License 2.0 — the same license LibreOffice itself
+ships under. Full text in [LICENSE](LICENSE). Copyright A2B Technology
+Corporation Pty Ltd and contributors.
+
+The MPL is a weak / file-scoped copyleft: derivative works of MPL-
+covered files must remain MPL, but the license can be combined freely
+with code under most other licenses (including proprietary) as long as
+modifications to MPL-covered files are made available under MPL.

@@ -81,6 +81,8 @@ build: lint test-unit
 	@cp extension/Sidebar.xcu             $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/META-INF/manifest.xml   $(BUILD_DIR)/$(EXT_NAME)/META-INF/
 	@cp extension/description/description_en.txt $(BUILD_DIR)/$(EXT_NAME)/description/
+	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/registration
+	@cp LICENSE $(BUILD_DIR)/$(EXT_NAME)/registration/LICENSE
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/pythonpath
 	@cp -r src/talk2view_writer $(BUILD_DIR)/$(EXT_NAME)/pythonpath/
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/resources

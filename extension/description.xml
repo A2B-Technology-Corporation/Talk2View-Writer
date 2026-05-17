@@ -14,6 +14,11 @@
     <publisher>
         <name lang="en" xlink:href="https://talk2view.com">A2B Technology Corporation Pty Ltd</name>
     </publisher>
+    <registration>
+        <simple-license accept-by="user">
+            <license-text lang="en" xlink:href="registration/LICENSE"/>
+        </simple-license>
+    </registration>
     <dependencies>
         <l:LibreOffice-minimal-version d:name="LibreOffice 7.0" value="7.0"/>
     </dependencies>
