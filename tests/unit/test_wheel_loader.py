@@ -112,6 +112,62 @@ class TestEnsureVendoredPydanticCore:
         # The detected runtime tag should be in the message.
         assert _wheel_loader.runtime_tag() in msg
 
+    def test_prefer_bundled_evicts_stale_system_typing_extensions(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Cached module from outside pythonpath/ must be evicted.
+
+        This is the regression for the LibreOffice failure where the
+        system typing_extensions (older, no Sentinel) was cached in
+        sys.modules before our extension loaded, so pydantic_core's
+        ``from typing_extensions import Sentinel`` resolved to the
+        wrong copy.
+        """
+        # Pretend pythonpath/ is somewhere unrelated to the cached
+        # module's __file__.
+        monkeypatch.setattr(_wheel_loader, "_PYTHONPATH_ROOT", str(tmp_path))
+
+        import types
+
+        stale = types.ModuleType("typing_extensions")
+        stale.__file__ = "/usr/lib/python3/dist-packages/typing_extensions.py"
+        # Add a child to verify submodules get evicted too.
+        stale_child = types.ModuleType("pydantic.foo")
+        stale_child.__file__ = "/usr/lib/python3/dist-packages/pydantic/foo.py"
+        stale_parent = types.ModuleType("pydantic")
+        stale_parent.__file__ = "/usr/lib/python3/dist-packages/pydantic/__init__.py"
+        monkeypatch.setitem(sys.modules, "typing_extensions", stale)
+        monkeypatch.setitem(sys.modules, "pydantic", stale_parent)
+        monkeypatch.setitem(sys.modules, "pydantic.foo", stale_child)
+
+        _wheel_loader._prefer_bundled_pure_python_deps()
+
+        # All three stale entries must be gone — re-import would then
+        # resolve from sys.path (pythonpath/ now at position 0).
+        assert "typing_extensions" not in sys.modules
+        assert "pydantic" not in sys.modules
+        assert "pydantic.foo" not in sys.modules
+        assert sys.path[0] == str(tmp_path)
+
+    def test_prefer_bundled_does_not_evict_already_bundled_modules(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Idempotent: re-running the loader doesn't disturb working state."""
+        monkeypatch.setattr(_wheel_loader, "_PYTHONPATH_ROOT", str(tmp_path))
+
+        import types
+
+        good = types.ModuleType("typing_extensions")
+        # __file__ already points inside our pythonpath — the loader
+        # should leave it alone.
+        good.__file__ = str(tmp_path / "typing_extensions.py")
+        monkeypatch.setitem(sys.modules, "typing_extensions", good)
+
+        _wheel_loader._prefer_bundled_pure_python_deps()
+
+        # Same module object — not evicted.
+        assert sys.modules.get("typing_extensions") is good
+
     def test_candidate_directory_matches_runtime_tag(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

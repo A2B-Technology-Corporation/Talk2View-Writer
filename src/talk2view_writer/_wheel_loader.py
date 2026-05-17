@@ -32,13 +32,30 @@ import sys
 
 logger = logging.getLogger(__name__)
 
-# Directory holding ``<py-tag>-<plat-tag>/pydantic_core/...`` subdirs.
-# Resolves to the extension's installed location: walking up from
-# ``pythonpath/talk2view_writer/_wheel_loader.py`` two parents reaches
-# ``pythonpath/`` which is where the build step staged the wheels.
-_VENDORED_ROOT = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "_vendored_wheels",
+# Resolve to the extension's ``pythonpath/`` — one parent up from the
+# ``talk2view_writer/`` package directory this file lives in. The
+# build step stages all bundled pure-Python deps (typing_extensions,
+# pydantic, httpx, …) directly under here, and the per-platform
+# wheel directories under ``_vendored_wheels/``.
+_PYTHONPATH_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_VENDORED_ROOT = os.path.join(_PYTHONPATH_ROOT, "_vendored_wheels")
+
+# Packages we bundle that often collide with system-Python copies of
+# the same name. If LibreOffice (or any startup code) already imported
+# an older system version, the cached ``sys.modules`` entry would win
+# over our newer bundled copy. We evict + re-prepend before importing
+# pydantic_core.
+#
+# typing_extensions: pydantic_core 2.46.4 imports ``Sentinel`` which
+# only exists in typing_extensions >= 4.10. Debian ships 4.x in the
+# system Python's dist-packages — older builds lack Sentinel.
+# pydantic: 2.10+ adds the typing_inspection dependency that the
+# system pydantic (if any) typically lacks.
+_BUNDLED_OVERRIDE_PACKAGES: tuple[str, ...] = (
+    "typing_extensions",
+    "typing_inspection",
+    "annotated_types",
+    "pydantic",
 )
 
 
@@ -90,21 +107,86 @@ def _manual_install_hint() -> str:
     )
 
 
+def _prefer_bundled_pure_python_deps() -> None:
+    """Force our pythonpath/ to win over the system Python for known deps.
+
+    LibreOffice's pythonloader appends the extension's ``pythonpath/``
+    to ``sys.path``, so the system's ``dist-packages`` resolves first
+    for any module name they share. Worse, LibreOffice startup may
+    have already imported the system copy into ``sys.modules`` before
+    our extension loads.
+
+    To fix:
+
+      1. Insert ``pythonpath/`` at position 0 of ``sys.path``.
+      2. Evict each entry in :data:`_BUNDLED_OVERRIDE_PACKAGES` from
+         ``sys.modules`` if the cached copy did NOT come from
+         ``pythonpath/`` (so the next import picks up the bundled
+         file).
+
+    The eviction is conservative — we only remove cached modules
+    whose ``__file__`` lives outside our pythonpath. Anything already
+    pointing at the bundled copy is left untouched (idempotent
+    re-invocations don't disturb working state).
+    """
+    if _PYTHONPATH_ROOT not in sys.path:
+        sys.path.insert(0, _PYTHONPATH_ROOT)
+        logger.info("Prepended pythonpath root %s to sys.path", _PYTHONPATH_ROOT)
+    elif sys.path.index(_PYTHONPATH_ROOT) != 0:
+        sys.path.remove(_PYTHONPATH_ROOT)
+        sys.path.insert(0, _PYTHONPATH_ROOT)
+        logger.info("Moved pythonpath root %s to the front of sys.path", _PYTHONPATH_ROOT)
+
+    for name in _BUNDLED_OVERRIDE_PACKAGES:
+        cached = sys.modules.get(name)
+        if cached is None:
+            continue
+        cached_file = getattr(cached, "__file__", None) or ""
+        if cached_file.startswith(_PYTHONPATH_ROOT):
+            continue
+        # Also evict submodules so a stale ``pydantic.foo`` doesn't
+        # outlive its parent.
+        for cached_name in list(sys.modules):
+            if cached_name == name or cached_name.startswith(name + "."):
+                logger.info(
+                    "Evicting cached %s (was loaded from %s)",
+                    cached_name,
+                    getattr(sys.modules[cached_name], "__file__", "<unknown>"),
+                )
+                del sys.modules[cached_name]
+
+
 def ensure_vendored_pydantic_core() -> None:
-    """Make ``pydantic_core`` importable.
+    """Make ``pydantic_core`` importable from the bundled wheel.
 
     Idempotent. Safe to call multiple times.
 
+    Steps:
+
+      1. Repoint ``sys.path`` + evict stale ``sys.modules`` entries
+         so our bundled pure-Python deps (typing_extensions, pydantic
+         proper, …) win over the system Python's copies.
+      2. If pydantic_core is *still* importable after step 1, return
+         (the user / system already has a compatible copy).
+      3. Otherwise prepend the per-platform wheel directory and
+         re-attempt the import.
+
     Raises:
         ImportError: If no bundled wheel matches the runtime tag and
-            ``pydantic_core`` is not already importable. The exception
-            message includes the detected tag and a manual-install
-            command the user can copy-paste.
+            ``pydantic_core`` is not already importable, OR the
+            bundled wheel matched but a transitive import failed (the
+            error wraps the original cause with a copy-paste install
+            command).
     """
+    _prefer_bundled_pure_python_deps()
+
     try:
         import pydantic_core
 
-        logger.debug("pydantic_core already importable; no vendored load needed")
+        logger.debug(
+            "pydantic_core already importable from %s",
+            getattr(pydantic_core, "__file__", "<unknown>"),
+        )
         return
     except ImportError:
         pass
@@ -123,16 +205,23 @@ def ensure_vendored_pydantic_core() -> None:
         sys.path.insert(0, candidate)
         logger.info("Prepended %s to sys.path", candidate)
 
-    # Final verification: re-attempt the import. If it still fails, we
-    # bundled a wheel that doesn't match the ABI of the running Python
-    # (a build-step bug rather than a missing-wheel one).
+    # Final verification: re-attempt the import. If it still fails,
+    # either the wheel ABI is wrong (release-time bug) or a transitive
+    # dep failed to resolve from the bundled pure-Python tree (a
+    # missing dep in PY_RUNTIME_DEPS — the error message will name it).
     try:
-        import pydantic_core  # noqa: F401
+        import pydantic_core
+
+        logger.info("pydantic_core loaded from %s", getattr(pydantic_core, "__file__", candidate))
     except ImportError as exc:
         raise ImportError(
             f"Bundled wheel at {candidate} matched runtime tag '{tag}' "
             f"but pydantic_core import still fails: {exc}.\n"
-            f"This indicates an ABI mismatch in the bundled wheel "
-            f"(likely a release-time error).\n"
+            f"Common causes:\n"
+            f"  - A transitive dep (look at the error text above) is "
+            f"missing from the bundled pythonpath/. Add it to "
+            f"PY_RUNTIME_DEPS in the Makefile and rebuild.\n"
+            f"  - The bundled wheel ABI does not match the running "
+            f"Python (a release-time error).\n"
             f"{_manual_install_hint()}"
         ) from exc
