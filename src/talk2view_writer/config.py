@@ -12,9 +12,9 @@ from __future__ import annotations
 # Backend
 # ---------------------------------------------------------------------------
 
-# Shared with Talk2View-Word (src/taskpane/App.tsx, line 6) until a
-# Writer-specific partner key is provisioned. See ADR-0010.
-PARTNER_KEY: str = "pk_live_45c878caa500cdf6ea1a72f3e9a4ad324df061b7ec2c70d7"
+# Writer-specific partner key (provisioned 2026-05-17). See ADR-0010
+# for the historical Word-key-sharing context.
+PARTNER_KEY: str = "pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7"
 
 # Production Talk2View engine. Override only for staging / local server runs.
 BASE_URL: str = "https://engine.talk2view.com"

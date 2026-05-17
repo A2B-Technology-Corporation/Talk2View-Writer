@@ -1,6 +1,8 @@
 # ADR-0010: Reuse Word partner key until a Writer key is issued
 
-**Status:** Accepted (interim)
+**Status:** Accepted — historical. Writer-specific key
+`pk_live_474f6f8…40bc7` provisioned 2026-05-17 and now active in
+`src/talk2view_writer/config.py::PARTNER_KEY`.
 **Date:** 2026-05-17
 **Phase:** A
 
