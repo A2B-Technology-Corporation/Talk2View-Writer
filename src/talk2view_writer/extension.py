@@ -140,10 +140,12 @@ class Talk2ViewWriterExtension:
         logger.info("logout")
         self.sdk.logout()
 
-    def show_settings_dialog(self) -> None:
-        """Phase F: model picker, partner key override, etc."""
-        logger.info("show_settings_dialog (stub)")
-        raise NotImplementedError("Settings not yet implemented — Phase F")
+    def show_settings_dialog(self, parent_window: XWindow | None = None) -> None:
+        """Open the (read-only) Talk2View settings status panel."""
+        logger.info("show_settings_dialog")
+        from talk2view_writer.ui.settings_dialog import show_settings_dialog
+
+        show_settings_dialog(self.ctx, self.sdk, parent_window=parent_window)
 
     # ------------------------------------------------------------------
     # Panel lifecycle (called by ChatPanelFactory.createUIElement)
