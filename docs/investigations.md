@@ -437,3 +437,128 @@ Edge case but worth a unit test once integration tests exist.
 **Next step:** Phase F: integration test that records 3 atomic edits,
 calls `undo_redo("undo", 3)`, and confirms the document is in its
 original state.
+
+## #19 — `search_document` flags `match_prefix` / `match_suffix` / `ignore_punct` / `ignore_space` have no UNO equivalent
+
+**What:** Word's `search()` accepts four flags that have no direct
+Writer counterparts:
+
+- `matchPrefix` / `matchSuffix` — UNO's `SearchDescriptor` has no
+  prefix/suffix mode. We approximate via regex `\b` anchors when the
+  caller opts in (turning a plain search into a regex search).
+- `ignorePunct` / `ignoreSpace` — accepted but no-op on Writer.
+
+Additionally, `matchWildcards` maps to `SearchRegularExpression`. Word
+"wildcards" are a different (smaller) DSL than regex — most patterns
+overlap, but `<` / `>` for word boundaries and `?` for any-single-char
+differ between the two dialects.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/search.py::search_document`.
+
+**Why it matters:** A skill that constructs Word-wildcard patterns and
+hands them to Writer will see different match counts (or syntax errors
+from regex parser).
+
+**Next step:** Phase F integration tests should run the same query
+against Word + Writer and compare counts; flag any divergence in the
+system prompt's "Writer deltas" section.
+
+## #20 — Writer has no first-class document "section" concept
+
+**What:** Word documents are partitioned into *sections* with their
+own page setup, headers, footers, and column layout. Writer has
+*page styles* (template-like definitions reused across pages) and
+*text sections* (named regions with optional column layout / hide
+behaviour). Neither is a 1:1 substitute.
+
+The closest analogue is: each paragraph carries a `PageDescName`
+property — switching `PageDescName` between paragraphs effectively
+ends one "section" and begins another. We expose `section_index` in
+`set_header_footer`, `insert_page_numbers`, and `set_page_setup` as
+an index into the list of page styles actually used in the document.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/structure.py`
+(`_get_page_style`, `_list_page_styles_in_use`,
+`set_header_footer`, `set_page_setup`).
+
+**Why it matters:** Word skills that say "in section 2, use landscape
+orientation" will work only if the document already has a second page
+style in use. Creating a new section equivalent requires inserting a
+page break with a page-style swap — currently exposed as
+`insert_break(break_type="section")` but with caveats.
+
+**Next step:** System prompt's "Writer deltas" must explain section
+semantics. Phase F integration test: insert section break, verify
+landscape on page 2 only.
+
+## #21 — Different-first / different-odd-even headers not yet wired
+
+**What:** Word's `Section.getHeader(headerType)` accepts `Primary`,
+`FirstPage`, and `EvenPages`. Our Writer port currently only writes
+to the main header (`HeaderText`) of the resolved page style. Writer
+supports the distinction via separate page styles (`First Page`,
+`Left Page`, `Right Page`) and via the `HeaderIsShared` /
+`FirstIsShared` properties on a page style.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/structure.py::set_header_footer`.
+
+**Why it matters:** A skill that says "different first-page header"
+will silently apply to all pages on Writer. Functional but not
+faithful.
+
+**Next step:** Add a `header_type` / `footer_type` arg accepting
+`primary` / `first_page` / `even_pages`. For `first_page` flip
+`FirstIsShared = False` and write to `HeaderTextFirst`. For
+`even_pages` flip `HeaderIsShared = False` and write to
+`HeaderTextLeft`. Tracked for Phase F polish.
+
+## #22 — Page numbers are restarted per page-style, not per Word "section"
+
+**What:** Word lets you restart numbering at any section boundary by
+setting `Section.pageSetup.pageNumberStart`. Writer exposes
+`FirstPageNumber` on the page descriptor (page style), which means
+all pages using that style share the same first-page number.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/structure.py::insert_page_numbers`.
+
+**Why it matters:** A skill that asks "restart numbering at page 5"
+in a document with one page style will affect the first page, not
+page 5. This is bound up with #20 (no Word sections) — restart
+behaviour requires a page-style swap.
+
+**Next step:** Document in the system prompt's "Writer deltas". When
+integration tests land, add a fixture document with two page styles
+and verify per-style numbering works.
+
+## #23 — Annotation reply chains and `Resolved` are LibreOffice ≥ 7.4 only
+
+**What:** Writer's annotation API gained the `ParentName` and
+`Resolved` properties on `com.sun.star.text.TextField.Annotation`
+in LibreOffice 7.4 (2022). Older builds expose the comment surface
+but treat every annotation as a top-level item with no resolved
+state.
+
+Word ships `Comment.resolved` and `Comment.reply()` unconditionally
+since the early-2020 Office version. There's no version negotiation
+across the SDK boundary — both hosts advertise the same tool surface.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/commenting.py`
+(`_annotation_resolved`, `_annotation_parent_name`,
+`_insert_reply`, `manage_comment`).
+
+**Why it matters:** Users on LibreOffice 7.3 or older will get
+"property not supported" errors from `manage_comment` actions
+`resolve` / `unresolve` / `resolve_with_reply`. We surface a clear
+recovery message ("Upgrade to LibreOffice 7.4+") but the skill model
+can't downgrade gracefully without telemetry on the running build.
+
+**Next step:** Expose the LibreOffice version (already available via
+`Bootstrap.GetVersion()`) in the extension's first tool-call payload
+so the system prompt can pick a strategy. Track LibreOffice version
+distribution from real users before deciding whether to gate
+resolve-related tool calls behind a version check.
