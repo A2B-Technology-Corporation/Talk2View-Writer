@@ -109,9 +109,7 @@ class FileTokenStorage:
             logger.exception("Corrupt token file at %s; resetting", self._path)
             parsed = {}
         if not isinstance(parsed, dict):
-            logger.warning(
-                "Token file at %s is not a JSON object; resetting", self._path
-            )
+            logger.warning("Token file at %s is not a JSON object; resetting", self._path)
             parsed = {}
         # Coerce all values to str — SDK contract.
         self._cache = {str(k): str(v) for k, v in parsed.items()}

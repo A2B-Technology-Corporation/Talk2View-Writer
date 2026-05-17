@@ -233,9 +233,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         self._control_container = cc
 
         # Children.
-        self._status_label = self._add_label(
-            cc, "Talk2View — not logged in", name="status_label"
-        )
+        self._status_label = self._add_label(cc, "Talk2View — not logged in", name="status_label")
         self._login_button = self._add_button(
             cc, "Log in...", name="login_button", on_click=self._on_login_clicked
         )
@@ -271,9 +269,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         # by calling UNO methods on the result.
         return self.ctx.ServiceManager.createInstanceWithContext(service_name, self.ctx)
 
-    def _add_label(
-        self, container: XControlContainer, text: str, *, name: str
-    ) -> XControl:
+    def _add_label(self, container: XControlContainer, text: str, *, name: str) -> XControl:
         model = self._create_service("com.sun.star.awt.UnoControlFixedTextModel")
         model.setPropertyValue("Label", text)
         model.setPropertyValue("Name", name)
@@ -346,9 +342,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
         # Composer + Send anchored to the bottom; history fills the rest.
         bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
-        history_h = max(
-            size.Height - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT
-        )
+        history_h = max(size.Height - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
         if self._history_field is not None:
             (self._history_field).setPosSize(  # type: ignore[union-attr]
                 x, y, width, history_h, POSSIZE
@@ -407,9 +401,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
             return
         if self._composer_field is None or self._history_field is None:
             return
-        message = str(
-            self._composer_field.getModel().getPropertyValue("Text") or ""
-        ).strip()
+        message = str(self._composer_field.getModel().getPropertyValue("Text") or "").strip()
         if not message:
             return
 
@@ -419,9 +411,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         self._append_history("Talk2View: ")
         self._set_busy(True)
 
-        thread = threading.Thread(
-            target=self._chat_worker, args=(message,), daemon=True
-        )
+        thread = threading.Thread(target=self._chat_worker, args=(message,), daemon=True)
         thread.start()
 
     # ----- Chat worker (background thread) --------------------------------

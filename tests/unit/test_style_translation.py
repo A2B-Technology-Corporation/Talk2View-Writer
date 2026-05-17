@@ -63,6 +63,4 @@ def test_lossy_roundtrip_documented() -> None:
     assert libreoffice_to_word_style("Quotations") == "Quote"  # not IntenseQuote
 
     assert word_to_libreoffice_style("NoSpacing") == "Default Paragraph Style"
-    assert (
-        libreoffice_to_word_style("Default Paragraph Style") == "Normal"
-    )  # not NoSpacing
+    assert libreoffice_to_word_style("Default Paragraph Style") == "Normal"  # not NoSpacing

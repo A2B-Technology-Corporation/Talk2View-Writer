@@ -74,16 +74,12 @@ def get_writer_document(ctx: XComponentContext) -> XTextDocument:
         WriterDocumentRequiredError: If no document is active or the active
             document is not a Writer text document.
     """
-    desktop = ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.frame.Desktop", ctx
-    )
+    desktop = ctx.ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
     component = desktop.getCurrentComponent()
     if component is None:
         raise WriterDocumentRequiredError("No document is currently open")
     if not hasattr(component, "supportsService") or not component.supportsService(
         "com.sun.star.text.TextDocument"
     ):
-        raise WriterDocumentRequiredError(
-            "The active document is not a Writer text document"
-        )
+        raise WriterDocumentRequiredError("The active document is not a Writer text document")
     return component  # type: ignore[no-any-return]

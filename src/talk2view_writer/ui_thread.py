@@ -159,9 +159,7 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as exc:
-            logger.exception(
-                "UI-thread call to %r raised", getattr(self._fn, "__name__", self._fn)
-            )
+            logger.exception("UI-thread call to %r raised", getattr(self._fn, "__name__", self._fn))
             self._slot.append((False, exc))
         else:
             self._slot.append((True, result))

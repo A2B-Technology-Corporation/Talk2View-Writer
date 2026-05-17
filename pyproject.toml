@@ -50,7 +50,12 @@ build-backend = "hatchling.build"
 packages = ["src/talk2view_writer"]
 
 [tool.ruff]
-line-length = 88
+# Matches the talk2view Python SDK (Talk2View-Platform/packages/sdk-python).
+# Tool code uses long Word-faithful error / recovery strings that read
+# poorly when wrapped under 88. SpeedWriter uses 88, but its problem
+# domain (voice transcription) doesn't have the same string-heavy
+# bodies.
+line-length = 100
 target-version = "py311"
 src = ["src", "tests"]
 

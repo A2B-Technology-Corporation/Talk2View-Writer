@@ -10,9 +10,12 @@ mapping table in the project plan and ``CLAUDE.md`` for the
 TypeScript-to-UNO equivalence. (The Phase A plan's "26 tools" figure
 was a miscount; see ``Phase D Group 1`` commit message for the correction.)
 
-Phase D Group 1 ships the Reading group (``get_document``,
-``get_selection``, ``select_text``) plus the Phase C proof writer
-``insert_content``. Groups 2-6 add the remaining 16.
+Phase D Group 1 shipped the Reading group (``get_document``,
+``get_selection``, ``select_text``). Group 2 ships the Writing group:
+``insert_content`` (now enriched to full Word schema),
+``insert_table``, ``insert_image``, ``undo_redo``, ``delete_content``,
+``edit_table``. Groups 3-6 add the remaining 11 across formatting /
+search / structure / commenting.
 """
 
 from __future__ import annotations

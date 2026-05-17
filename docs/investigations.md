@@ -369,3 +369,71 @@ the agent.
 whether to detect mixed formatting and report `null` for divergent
 properties, like Word does. May require walking each character of
 the paragraph, which is expensive — measure first.
+
+---
+
+## #16 — `edit_table` ignores the `values` array for add_rows / add_columns
+
+**What:** Word's `edit_table` allows populating newly-added rows or
+columns in the same call by passing a `values` 2D array. The UNO
+`XTableRows.insertByIndex(insertPos, count)` and
+`XTableColumns.insertByIndex(insertPos, count)` APIs accept only a
+position + count — there is no built-in "insert and fill" path.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/writing.py::edit_table`
+(`add_rows` / `add_columns` actions).
+
+**Why it matters:** The agent may pass `values` expecting the cells
+to be populated. Today we silently ignore them and the user has to
+follow up with `edit_cell` calls — slower and more error-prone.
+
+**Next step:** After `insertByIndex`, walk the newly-added cells and
+call `setString()` on each one to mirror Word's behaviour. Add a unit
+test that asserts the cells receive the right values. Phase F.
+
+---
+
+## #17 — Image inserts go through a temp file (UNO has no in-memory path)
+
+**What:** Word's `Word.body.insertInlinePictureFromBase64` decodes
+the base64 directly. UNO's
+`com.sun.star.graphic.GraphicProvider.queryGraphic` only loads from
+a URL — there is a `com.sun.star.graphic.MediaProperties` route with
+an `InputStream` property but no clean way to feed bytes from PyUNO
+without writing to disk.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/writing.py::insert_image`.
+
+**Why it matters:** Temp-file roundtrip adds ~ms of latency per
+insert plus a brief on-disk footprint of the raw image. The temp
+file is cleaned up in a `finally` block, but a crash between write
+and `os.remove` leaves the bytes around. Not catastrophic, but worth
+fixing if we can find a clean in-memory path.
+
+**Next step:** Investigate `com.sun.star.io.SequenceInputStream` as
+an `InputStream` parameter to `GraphicProvider.queryGraphic`. If it
+works from PyUNO, switch and delete the temp-file dance.
+
+---
+
+## #18 — `undo_redo` operates on `XUndoManager`, not a Word-equivalent stack
+
+**What:** Word's `(context.document as any).undo(count)` lives on
+the document and is intrinsic to the document's own undo stack.
+LibreOffice exposes `XDocumentUndoManager` via
+`doc.getUndoManager()`, and `undo()` / `redo()` take no arguments —
+each call is exactly one step. Our port loops to honour ``count``.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/writing.py::undo_redo`.
+
+**Why it matters:** If a step is part of a multi-action undo block
+(LibreOffice supports nested `enterUndoContext` / `leaveUndoContext`),
+Word's `undo(N)` might behave differently than our N-step loop.
+Edge case but worth a unit test once integration tests exist.
+
+**Next step:** Phase F: integration test that records 3 atomic edits,
+calls `undo_redo("undo", 3)`, and confirms the document is in its
+original state.

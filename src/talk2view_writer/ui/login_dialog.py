@@ -143,14 +143,10 @@ def show_login_dialog(
     _ = (cancel_model, login_model)  # holding references is not required
 
     # Instantiate the dialog from the model and run it modally.
-    dialog = ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.awt.UnoControlDialog", ctx
-    )
+    dialog = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.UnoControlDialog", ctx)
     dialog.setModel(dialog_model)
 
-    toolkit = ctx.ServiceManager.createInstanceWithContext(
-        "com.sun.star.awt.Toolkit", ctx
-    )
+    toolkit = ctx.ServiceManager.createInstanceWithContext("com.sun.star.awt.Toolkit", ctx)
     if parent_window is not None:
         dialog.createPeer(toolkit, parent_window)
     else:

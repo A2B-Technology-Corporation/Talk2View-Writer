@@ -105,9 +105,7 @@ def get_document(
         entry: dict[str, Any] = {
             "index": start_index + i,
             "text": para.getString(),
-            "style": libreoffice_to_word_style(
-                getattr(para, "ParaStyleName", "") or ""
-            ),
+            "style": libreoffice_to_word_style(getattr(para, "ParaStyleName", "") or ""),
         }
         if include_font_details:
             entry["font"] = _read_font_properties(para)
@@ -340,10 +338,7 @@ def select_text(
         if match_index < 0 or match_index >= total:
             return json.dumps(
                 {
-                    "error": (
-                        f"match_index {match_index} out of range "
-                        f"({total} matches found)."
-                    ),
+                    "error": (f"match_index {match_index} out of range ({total} matches found)."),
                     "recovery": f"Use a value from 0 to {total - 1}.",
                 }
             )

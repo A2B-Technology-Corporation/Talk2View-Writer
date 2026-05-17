@@ -44,9 +44,7 @@ def test_lazy_client_instantiation(mock_talk2view: MagicMock, tmp_path: Path) ->
 
 
 @pytest.mark.unit
-def test_login_calls_sdk_and_sets_user(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_login_calls_sdk_and_sets_user(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
 
@@ -65,9 +63,7 @@ def test_login_calls_sdk_and_sets_user(
 
 
 @pytest.mark.unit
-def test_logout_clears_user_and_notifies(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_logout_clears_user_and_notifies(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
 
@@ -92,9 +88,7 @@ def test_logout_clears_user_and_notifies(
 
 
 @pytest.mark.unit
-def test_chat_requires_authentication(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_chat_requires_authentication(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     from talk2view_writer.sdk_client import SdkClientError, Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
 
@@ -128,9 +122,7 @@ def test_chat_yields_events_from_sdk(mock_talk2view: MagicMock, tmp_path: Path) 
 
 
 @pytest.mark.unit
-def test_cached_user_restored_on_first_access(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_cached_user_restored_on_first_access(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
 
