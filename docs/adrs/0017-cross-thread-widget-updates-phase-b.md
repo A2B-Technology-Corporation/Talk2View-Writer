@@ -1,10 +1,13 @@
 # ADR-0017: Cross-thread widget updates from the chat worker (Phase B only)
 
-**Status:** Accepted (interim, Phase B)
+**Status:** Superseded by [ADR-0018](0018-ui-thread-marshalling-queue.md)
 **Date:** 2026-05-17
 **Phase:** B
 **Supersedes (partially):** ADR-0009 (the "marshal back to UI thread"
 clause is relaxed for Phase B only)
+**Superseded by:** [ADR-0018](0018-ui-thread-marshalling-queue.md) —
+Phase C replaced the direct-write relaxation with a proper
+``UIThreadDispatcher`` using ``com.sun.star.awt.AsyncCallback``.
 
 ## Context
 

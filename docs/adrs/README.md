@@ -38,7 +38,10 @@ applied.
 | [0014](0014-file-token-storage.md)           | File-backed token storage in user config directory    | B | Accepted |
 | [0015](0015-programmatic-login-dialog.md)    | Login dialog built programmatically (not `.xdl`)      | B | Accepted |
 | [0016](0016-multiline-edit-history.md)       | Chat history rendered as a multiline `UnoControlEdit` | B | Accepted |
-| [0017](0017-cross-thread-widget-updates-phase-b.md) | Cross-thread widget updates from the chat worker (Phase B only) | B | Accepted (interim) |
+| [0017](0017-cross-thread-widget-updates-phase-b.md) | Cross-thread widget updates from the chat worker (Phase B only) | B | Superseded by 0018 |
+| [0018](0018-ui-thread-marshalling-queue.md)  | UI-thread marshalling via `AsyncCallback` + `XCallback` | C | Accepted |
+| [0019](0019-tool-registry-aggregation.md)    | Tool registry aggregation via per-module `TOOLS` list | C | Accepted |
+| [0020](0020-tool-context-via-singleton.md)   | Tool bodies fetch UNO context via the extension singleton | C | Accepted |
 
 ## Writing a new ADR
 

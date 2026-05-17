@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.ui.sidebar_panel import Talk2ViewPanel
+    from talk2view_writer.ui_thread import UIThreadDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,29 @@ class Talk2ViewWriterExtension:
         self.ctx = ctx
         self._lock = threading.Lock()
         self._sdk: Optional["Talk2ViewSDKClient"] = None
+        self._ui_thread: Optional["UIThreadDispatcher"] = None
+        self._tools_registered = False
         self._open_panels: List["Talk2ViewPanel"] = []
+
+    # ------------------------------------------------------------------
+    # UI-thread dispatcher (lazy, owned at extension lifetime)
+    # ------------------------------------------------------------------
+
+    @property
+    def ui_thread(self) -> "UIThreadDispatcher":
+        """Lazily-instantiated :class:`UIThreadDispatcher`.
+
+        Used by every tool implementation (via the ``ui_thread_tool``
+        decorator) and by the sidebar panel when streaming chat events
+        from a worker thread.
+        """
+        with self._lock:
+            if self._ui_thread is None:
+                from talk2view_writer.ui_thread import UIThreadDispatcher
+
+                self._ui_thread = UIThreadDispatcher(self.ctx)
+                logger.info("UIThreadDispatcher instantiated")
+            return self._ui_thread
 
     # ------------------------------------------------------------------
     # SDK lifecycle
@@ -45,7 +68,12 @@ class Talk2ViewWriterExtension:
 
     @property
     def sdk(self) -> "Talk2ViewSDKClient":
-        """Lazily-instantiated Talk2View SDK wrapper."""
+        """Lazily-instantiated Talk2View SDK wrapper.
+
+        On first access this also registers every tool from
+        :mod:`talk2view_writer.tools` with the SDK so the agent sees
+        the full tool surface immediately.
+        """
         with self._lock:
             if self._sdk is None:
                 from talk2view_writer.sdk_client import Talk2ViewSDKClient
@@ -53,6 +81,19 @@ class Talk2ViewWriterExtension:
                 self._sdk = Talk2ViewSDKClient()
                 self._sdk.add_auth_listener(self._on_auth_changed)
                 logger.info("SDK client instantiated")
+            # Register tools once per process. Done under the same lock so
+            # concurrent first-accessors don't double-register.
+            if not self._tools_registered:
+                from talk2view_writer.tools import all_tools
+
+                tools = all_tools()
+                self._sdk.register_tools(tools)
+                self._tools_registered = True
+                logger.info(
+                    "Registered %d tool(s) with SDK: %s",
+                    len(tools),
+                    [getattr(t, "__name__", repr(t)) for t in tools],
+                )
             return self._sdk
 
     # ------------------------------------------------------------------
@@ -161,4 +202,25 @@ def get_extension(ctx: "XComponentContext") -> Talk2ViewWriterExtension:
     with _INSTANCE_LOCK:
         if _INSTANCE is None:
             _INSTANCE = Talk2ViewWriterExtension(ctx)
+        return _INSTANCE
+
+
+def get_extension_or_raise() -> Talk2ViewWriterExtension:
+    """Return the singleton if it has been created; otherwise raise.
+
+    Use this from contexts that cannot supply an :class:`XComponentContext`
+    of their own — tool implementations and the UI-thread dispatcher
+    callbacks. By the time a tool fires the singleton must already exist
+    (the sidebar panel that triggered the chat created it), so a missing
+    instance indicates a real bug rather than a recoverable state.
+
+    Raises:
+        RuntimeError: If :func:`get_extension` has not yet been called.
+    """
+    with _INSTANCE_LOCK:
+        if _INSTANCE is None:
+            raise RuntimeError(
+                "Talk2ViewWriterExtension is not initialised — "
+                "get_extension(ctx) must be called first"
+            )
         return _INSTANCE

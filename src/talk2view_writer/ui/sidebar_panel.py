@@ -21,13 +21,11 @@ The panel registers with the extension singleton so it receives
 :meth:`on_auth_changed` callbacks when login/logout state changes.
 
 Threading: the send-button handler spawns a worker thread that
-iterates ``sdk.chat(text)`` and writes streamed deltas directly to
-the history widget's ``Text`` property. This is technically a
-cross-thread UNO call; for plain text-property updates on a passive
-widget it is empirically safe and matches SpeedWriter's polling
-pattern. See ``docs/adrs/0017-cross-thread-widget-updates-phase-b.md``
-for the trade-off and the plan to introduce a proper UI-thread
-marshalling queue when tool execution lands in Phase C.
+iterates ``sdk.chat(text)``. Every UNO call the worker makes —
+widget Text updates, label updates, enabled-state toggles — is
+marshalled through :class:`UIThreadDispatcher` (Phase C). The
+Phase B direct-write relaxation (ADR-0017) is now superseded by
+ADR-0018.
 """
 
 from __future__ import annotations
@@ -460,12 +458,29 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     # ----- Cross-thread widget writers ------------------------------------
     #
-    # These write to widget Text/Label properties from the worker
-    # thread directly. See ADR-0017 for why this is acceptable for
-    # Phase B and the plan to replace with proper UI-thread marshalling
-    # when tool execution starts mutating documents.
+    # All UNO calls these methods make are marshalled to the UI thread
+    # via the extension singleton's UIThreadDispatcher — see ADR-0018.
+    # ``_dispatch_ui`` may be called from any thread; the wrapped
+    # callable runs on the UI thread and the calling thread blocks
+    # until it returns. Methods named ``_*_ui`` are the UI-thread-only
+    # halves.
+
+    def _dispatch_ui(self, fn, *args, **kwargs):
+        """Run ``fn(*args, **kwargs)`` on the UI thread.
+
+        Thin wrapper around :meth:`UIThreadDispatcher.run_sync` that
+        avoids importing the extension at module top-level.
+        """
+        from talk2view_writer.extension import get_extension
+
+        return get_extension(self.ctx).ui_thread.run_sync(fn, *args, **kwargs)
 
     def _append_history(self, text: str) -> None:
+        if self._history_field is None:
+            return
+        self._dispatch_ui(self._append_history_ui, text)
+
+    def _append_history_ui(self, text: str) -> None:
         if self._history_field is None:
             return
         model = self._history_field.getModel()
@@ -475,6 +490,11 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     def _set_status(self, text: str) -> None:
         if self._status_label is None:
             return
+        self._dispatch_ui(self._set_status_ui, text)
+
+    def _set_status_ui(self, text: str) -> None:
+        if self._status_label is None:
+            return
         self._status_label.getModel().setPropertyValue("Label", text)
 
     def _set_busy(self, busy: bool) -> None:
@@ -482,6 +502,9 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
             self._busy.set()
         else:
             self._busy.clear()
+        self._dispatch_ui(self._set_busy_ui, busy)
+
+    def _set_busy_ui(self, busy: bool) -> None:
         if self._composer_field is not None:
             self._composer_field.getModel().setPropertyValue(
                 "Enabled", not busy and self._user is not None
@@ -491,9 +514,10 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
                 "Enabled", not busy and self._user is not None
             )
         if busy:
-            self._set_status("Thinking…")
+            self._status_label.getModel().setPropertyValue("Label", "Thinking…")  # type: ignore[union-attr]
         else:
-            # Restore the per-auth-state status text.
+            # Restore the per-auth-state status text directly here so
+            # we stay on the UI thread without re-dispatching.
             self._apply_auth_state()
 
     # ----- Misc -----------------------------------------------------------
