@@ -36,6 +36,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pyproject.toml declares the talk2view SDK via path source
+      # (../Talk2View-Platform/packages/sdk-python, editable). Restore
+      # the sibling layout in CI via this composite action. Requires
+      # repo secret T2V_PLATFORM_READ_TOKEN.
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
@@ -69,6 +77,10 @@ jobs:
     needs: lint
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -139,6 +151,10 @@ jobs:
             run_live_chat: true
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3

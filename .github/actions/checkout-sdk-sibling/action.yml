@@ -1,0 +1,35 @@
+name: 'Checkout Talk2View-Platform SDK sibling'
+description: >
+  Restore the dev-environment sibling-directory layout that
+  Talk2View-Writer/pyproject.toml's path source assumes. Checks out
+  A2B-Technology-Corporation/Talk2View-Platform via a PAT and
+  symlinks it into the parent of $GITHUB_WORKSPACE so the
+  `../Talk2View-Platform/packages/sdk-python` path resolves.
+  Used by lint, build, integration, and release jobs.
+
+inputs:
+  token:
+    description: 'Fine-grained PAT with Contents:Read on Talk2View-Platform'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout Talk2View-Platform into workspace subdir
+      uses: actions/checkout@v4
+      with:
+        repository: A2B-Technology-Corporation/Talk2View-Platform
+        token: ${{ inputs.token }}
+        path: _talk2view_platform_sibling
+
+    - name: Symlink to ../Talk2View-Platform
+      shell: bash
+      run: |
+        cd ..
+        ln -sfn "${GITHUB_WORKSPACE}/_talk2view_platform_sibling" Talk2View-Platform
+        if [ ! -f Talk2View-Platform/packages/sdk-python/src/talk2view/__init__.py ]; then
+          echo "ERROR: SDK source not found at expected path" >&2
+          ls -la Talk2View-Platform/ Talk2View-Platform/packages/sdk-python/ 2>&1
+          exit 1
+        fi
+        echo "SDK sibling wired at $(readlink -f ../Talk2View-Platform)"

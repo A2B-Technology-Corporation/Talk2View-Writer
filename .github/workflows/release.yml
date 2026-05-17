@@ -38,6 +38,10 @@ jobs:
           # previous tag.
           fetch-depth: 0
 
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
