@@ -1,0 +1,22 @@
+Talk2View for LibreOffice Writer
+
+An AI-powered document assistant integrated into the LibreOffice Writer
+sidebar. Adds a Talk2View chat panel and lets you ask the assistant to read,
+edit, format, restructure, and review your document using natural language.
+
+Key Features:
+- Sidebar chat panel always available alongside the document
+- 26 document tools covering reading, writing, formatting, search,
+  structure, and commenting
+- 13 high-level skills for document creation, restructuring, reviewing,
+  and template filling
+- Powered by the Talk2View cloud engine
+
+Requirements:
+- LibreOffice 7.0 or later
+- Talk2View account (partner key + user login)
+- Internet connection (cloud backend)
+
+For more information, visit https://talk2view.com
+
+Copyright (c) 2026 A2B Technology Corporation Pty Ltd. All rights reserved.

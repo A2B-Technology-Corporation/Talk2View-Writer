@@ -1,0 +1,48 @@
+# Architecture Decision Records
+
+Each ADR captures one decision: the context it was made in, the options
+weighed, the choice taken, and the consequences. Format follows
+[Michael Nygard's lightweight template](https://github.com/joelparkerhenderson/architecture-decision-record/blob/main/locales/en/templates/decision-record-template-by-michael-nygard/index.md).
+
+ADRs are numbered sequentially in the order they were decided, regardless of
+which phase they belong to. The **Phase** field indicates when the decision
+applied.
+
+## Status legend
+
+| Status     | Meaning                                                              |
+|------------|----------------------------------------------------------------------|
+| Accepted   | Active decision driving current code.                                |
+| Proposed   | Drafted but not yet acted on.                                        |
+| Deferred   | Will be revisited in a later phase; documented to avoid losing it.   |
+| Superseded | Replaced by a later ADR — link from the body of the new one.         |
+| Deprecated | Old decision; code being removed but not yet replaced.               |
+
+## Index
+
+| #   | Title                                                  | Phase | Status   |
+|-----|--------------------------------------------------------|-------|----------|
+| [0001](0001-new-sibling-project.md) | New sibling project rather than fork Word or evolve SpeedWriter | A | Accepted |
+| [0002](0002-cloud-sdk-backend.md)   | Cloud `talk2view` SDK rather than local RPyC Core              | A | Accepted |
+| [0003](0003-sidebar-deck-ui.md)     | Sidebar deck as the primary UI surface                          | A | Accepted |
+| [0004](0004-dual-uno-component-entry.md) | Two UNO components in one entry file                        | A | Accepted |
+| [0005](0005-sdk-editable-path-dependency.md) | Consume Python SDK via editable path dependency       | A | Accepted |
+| [0006](0006-bundle-deps-into-pythonpath.md)  | Bundle Python deps into `pythonpath/` inside the `.oxt` | A | Accepted |
+| [0007](0007-manual-widget-positioning.md)    | Manual widget positioning rather than vcl.builder XML | A | Accepted |
+| [0008](0008-tool-registration-via-decorator.md) | Tools registered as `@tool`-decorated Python functions | A | Accepted |
+| [0009](0009-worker-thread-sse-iteration.md)  | Worker thread + UI-thread queue for SDK iteration     | A | Accepted |
+| [0010](0010-partner-key-shared-with-word.md) | Reuse Word partner key until a Writer key is issued    | A | Accepted |
+| [0011](0011-sidebar-context-writer-only.md)  | Sidebar deck scoped to Writer + Writer Global docs    | A | Accepted |
+| [0012](0012-token-storage-deferred.md)       | Token storage deferred to Phase B                     | A | Deferred |
+| [0013](0013-skill-and-prompt-copy-from-word.md) | Skills + system prompt copied verbatim from Word    | A | Accepted (planned) |
+
+## Writing a new ADR
+
+1. Copy [`0000-template.md`](0000-template.md) to the next free number.
+2. Fill in the sections — keep it focused on **one** decision.
+3. Add a row to the index above.
+4. Link the ADR from any code or other ADR that depends on it
+   (e.g. `# See ADR-0007`).
+
+If a later decision overrides this one, change the old ADR's status to
+**Superseded** and link forward to the new ADR; do not edit history.

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/description/2006"
+             xmlns:d="http://openoffice.org/extensions/description/2006"
+             xmlns:xlink="http://www.w3.org/1999/xlink"
+             xmlns:l="http://libreoffice.org/extensions/description/2011">
+    <identifier value="com.talk2view.writer"/>
+    <version value="0.1.0"/>
+    <display-name>
+        <name lang="en">Talk2View for Writer</name>
+    </display-name>
+    <extension-description>
+        <src lang="en" xlink:href="description/description_en.txt"/>
+    </extension-description>
+    <publisher>
+        <name lang="en" xlink:href="https://talk2view.com">A2B Technology Corporation Pty Ltd</name>
+    </publisher>
+    <dependencies>
+        <l:LibreOffice-minimal-version d:name="LibreOffice 7.0" value="7.0"/>
+    </dependencies>
+</description>
