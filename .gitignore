@@ -10,3 +10,6 @@ build/
 dist/
 .venv/
 .env
+# Vendored cross-platform pydantic-core wheels; regenerated via
+# `make vendor-wheels` (see scripts/vendor_wheels.py).
+vendor/

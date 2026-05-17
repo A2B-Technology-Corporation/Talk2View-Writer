@@ -1,12 +1,24 @@
 # Talk2View-Writer Makefile
 # Develop, test, and package the LibreOffice Writer extension.
 
-.PHONY: all install dev lint lint-fix format format-check test test-unit test-integration coverage typecheck security build package install-oxt clean help
+.PHONY: all install dev lint lint-fix format format-check test test-unit test-integration coverage typecheck security vendor-wheels build package install-oxt clean help
 
 BUILD_DIR := build
 DIST_DIR  := dist
 EXT_NAME  := Talk2ViewWriter
 OXT       := $(DIST_DIR)/$(EXT_NAME).oxt
+
+# Pure-Python runtime dependencies bundled as source under
+# pythonpath/. Each entry MUST be installable in the dev venv.
+# pydantic_core is INTENTIONALLY ABSENT — it ships as per-platform
+# wheels under vendor/extracted/ (see ADR-0023).
+PY_RUNTIME_DEPS := talk2view httpx httpcore h11 certifi idna anyio pydantic typing_extensions annotated_types typing_inspection
+
+# Optional pure-Python deps — bundled if present, skipped if not.
+# anyio runs fine without sniffio (it has a `try: import sniffio`
+# fallback path); we still bundle it when available so anyio's
+# async-backend detection works.
+PY_OPTIONAL_DEPS := sniffio
 
 all: lint test-unit
 
@@ -46,9 +58,21 @@ typecheck:
 security:
 	uv run bandit -c pyproject.toml -r src/
 
+# Refresh the cross-platform pydantic_core wheel matrix. Run once per
+# pydantic_core version bump; populates vendor/wheels/ +
+# vendor/extracted/. Gitignored — re-run after `make clean` or on a
+# fresh checkout. See ADR-0023 + scripts/vendor_wheels.py.
+vendor-wheels:
+	@echo "Downloading + extracting pydantic_core wheel matrix..."
+	@uv run python scripts/vendor_wheels.py
+
 # Build the extension into BUILD_DIR/EXT_NAME/
 build: lint test-unit
 	@echo "Building Talk2View-Writer extension..."
+	@if [ ! -d vendor/extracted ]; then \
+		echo "ERROR: vendor/extracted/ missing. Run 'make vendor-wheels' first."; \
+		exit 1; \
+	fi
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/META-INF
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/description
 	@cp extension/description.xml         $(BUILD_DIR)/$(EXT_NAME)/
@@ -62,19 +86,44 @@ build: lint test-unit
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/resources
 	@cp SYSTEM_PROMPT.md $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
-	@echo "Bundling talk2view SDK and httpx..."
-	@for pkg in talk2view httpx httpcore h11 certifi sniffio idna anyio pydantic pydantic_core typing_extensions annotated_types; do \
-		src=$$(find .venv -path "*/site-packages/$$pkg" -type d -prune | head -1); \
-		[ -n "$$src" ] && cp -r "$$src" $(BUILD_DIR)/$(EXT_NAME)/pythonpath/ || echo "  (skipped $$pkg — not found)"; \
+	@echo "Bundling pure-Python runtime dependencies..."
+	@# Resolve each dep via the venv's Python so editable installs
+	@# (.pth indirection — e.g. our local talk2view SDK) and single-
+	@# file modules (typing_extensions.py) both copy correctly.
+	@for pkg in $(PY_RUNTIME_DEPS); do \
+		src=$$(uv run python -c "import importlib.util, sys; s = importlib.util.find_spec('$$pkg'); print(s.submodule_search_locations[0] if (s and s.submodule_search_locations) else (s.origin if s else ''), end='')" 2>/dev/null); \
+		if [ -z "$$src" ]; then \
+			echo "  ERROR: required dep '$$pkg' not installed in venv — run 'make dev'"; \
+			exit 1; \
+		elif [ -d "$$src" ]; then \
+			cp -r "$$src" $(BUILD_DIR)/$(EXT_NAME)/pythonpath/; \
+		else \
+			cp "$$src" $(BUILD_DIR)/$(EXT_NAME)/pythonpath/; \
+		fi; \
 	done
+	@for pkg in $(PY_OPTIONAL_DEPS); do \
+		src=$$(uv run python -c "import importlib.util, sys; s = importlib.util.find_spec('$$pkg'); print(s.submodule_search_locations[0] if (s and s.submodule_search_locations) else (s.origin if s else ''), end='')" 2>/dev/null); \
+		if [ -z "$$src" ]; then \
+			echo "  (optional dep '$$pkg' not in venv — skipped)"; \
+		elif [ -d "$$src" ]; then \
+			cp -r "$$src" $(BUILD_DIR)/$(EXT_NAME)/pythonpath/; \
+		else \
+			cp "$$src" $(BUILD_DIR)/$(EXT_NAME)/pythonpath/; \
+		fi; \
+	done
+	@echo "Bundling pydantic_core wheels for the cross-platform matrix..."
+	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/pythonpath/_vendored_wheels
+	@cp -r vendor/extracted/* $(BUILD_DIR)/$(EXT_NAME)/pythonpath/_vendored_wheels/
 	@find $(BUILD_DIR)/$(EXT_NAME)/pythonpath -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	@echo "Build complete: $(BUILD_DIR)/$(EXT_NAME)/"
+	@du -sh $(BUILD_DIR)/$(EXT_NAME)/pythonpath/_vendored_wheels
 
 package: build
 	@echo "Packaging $(OXT)..."
 	@mkdir -p $(DIST_DIR)
-	@cd $(BUILD_DIR)/$(EXT_NAME) && zip -r ../../$(OXT) . -x "*.pyc" -x "__pycache__/*"
-	@echo "Package complete: $(OXT)"
+	@rm -f $(OXT)
+	@cd $(BUILD_DIR)/$(EXT_NAME) && zip -qr ../../$(OXT) . -x "*.pyc" -x "__pycache__/*"
+	@echo "Package complete: $(OXT) ($$(du -h $(OXT) | cut -f1))"
 
 install-oxt: package
 	@echo "Installing extension into user's LibreOffice profile..."
@@ -91,7 +140,8 @@ help:
 	@echo "  dev            Install dev deps"
 	@echo "  lint / format  Ruff checks"
 	@echo "  test           Run pytest"
+	@echo "  vendor-wheels  Refresh cross-platform pydantic_core matrix"
 	@echo "  build          Stage extension into $(BUILD_DIR)/"
 	@echo "  package        Create $(OXT)"
 	@echo "  install-oxt    Install .oxt into LibreOffice user profile"
-	@echo "  clean          Remove build artifacts"
+	@echo "  clean          Remove build artifacts (vendor/ persists)"

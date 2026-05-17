@@ -562,3 +562,40 @@ can't downgrade gracefully without telemetry on the running build.
 so the system prompt can pick a strategy. Track LibreOffice version
 distribution from real users before deciding whether to gate
 resolve-related tool calls behind a version check.
+
+## #24 — `pydantic_core` wheel matrix needs maintenance per LibreOffice / pydantic-core release
+
+**What:** ADR-0023 bundles 20 pre-built `pydantic_core` wheels
+(4 Python minor versions × 5 OS/arch combos) inside the `.oxt`. The
+matrix is hard-coded in `scripts/vendor_wheels.py::MATRIX`. Every time:
+
+  * A new LibreOffice release ships with a newer bundled Python
+    (current jump: 3.13 → 3.14 ?), add a new `cpXY` row.
+  * A new LibreOffice release drops support for an older Python,
+    we can remove that row to shrink the `.oxt`.
+  * `uv lock --upgrade` selects a newer `pydantic-core` version,
+    bump `PYDANTIC_CORE_VERSION` in `scripts/vendor_wheels.py`
+    AND the install-hint string in
+    `_wheel_loader._manual_install_hint()`.
+
+**Where:**
+- `Talk2View-Writer/scripts/vendor_wheels.py::MATRIX`
+- `Talk2View-Writer/scripts/vendor_wheels.py::PYDANTIC_CORE_VERSION`
+- `Talk2View-Writer/src/talk2view_writer/_wheel_loader.py::_manual_install_hint`
+
+**Why it matters:** A skipped maintenance cycle means users on the
+newest LibreOffice get an `ImportError` instead of a working
+extension. The error message is clear, but the support burden is
+real — every drift is a paper-cut.
+
+**Next step:**
+1. Add a CI job that runs `make vendor-wheels && make package` on a
+   schedule (weekly?) and opens a PR if `uv.lock` resolved a newer
+   `pydantic-core`. This keeps the bundled version in lockstep
+   without a human watching releases.
+2. Telemetry on the `_wheel_loader` failure path so we can catch
+   wild-platform misses (e.g. RISC-V, Windows-on-ARM) before users
+   start filing issues.
+3. Consider an opt-in "fetch missing wheel from PyPI on first launch"
+   path as a fallback. Would need network access at first chat —
+   acceptable as a fallback when the bundled matrix doesn't match.

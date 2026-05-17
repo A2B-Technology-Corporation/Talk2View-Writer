@@ -44,6 +44,7 @@ applied.
 | [0020](0020-tool-context-via-singleton.md)   | Tool bodies fetch UNO context via the extension singleton | C | Accepted |
 | [0021](0021-json-string-tool-returns.md)     | Tools return JSON-encoded strings, not Python dicts   | D | Accepted |
 | [0022](0022-system-prompt-bundled-and-overridable.md) | Bundle SYSTEM_PROMPT.md in the .oxt, pass per-session | E | Accepted |
+| [0023](0023-vendor-pydantic-core-wheels.md) | Bundle pre-built pydantic_core wheels for the cross-platform matrix | F | Accepted |
 
 ## Writing a new ADR
 

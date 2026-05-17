@@ -75,6 +75,14 @@ class Talk2ViewWriterExtension:
         """
         with self._lock:
             if self._sdk is None:
+                # Pre-flight: make the bundled pydantic_core wheel matching
+                # the runtime Python + platform importable. See ADR-0023.
+                from talk2view_writer._wheel_loader import (
+                    ensure_vendored_pydantic_core,
+                )
+
+                ensure_vendored_pydantic_core()
+
                 from talk2view_writer.sdk_client import Talk2ViewSDKClient
 
                 self._sdk = Talk2ViewSDKClient()
