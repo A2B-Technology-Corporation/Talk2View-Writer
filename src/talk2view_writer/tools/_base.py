@@ -7,7 +7,7 @@
 - ``get_writer_document``: fetch the currently-active Writer document.
   Call from UI-thread context only — use ``ui_thread_tool`` to
   guarantee that.
-- ``WriterDocumentRequired``: raised when no Writer document is active
+- ``WriterDocumentRequiredError``: raised when no Writer document is active
   (e.g. user has only a Calc spreadsheet open). Tool wrappers catch
   this and return a structured error message the agent can interpret.
 """
@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import functools
 import logging
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from com.sun.star.text import XTextDocument
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
-class WriterDocumentRequired(RuntimeError):
+class WriterDocumentRequiredError(RuntimeError):
     """Raised when a tool needs an active Writer document but none is open."""
 
 
@@ -64,13 +65,13 @@ def ui_thread_tool(fn: _F) -> _F:
     return wrapper  # type: ignore[return-value]
 
 
-def get_writer_document(ctx: "XComponentContext") -> "XTextDocument":
+def get_writer_document(ctx: XComponentContext) -> XTextDocument:
     """Return the currently-active Writer document.
 
     Call from the UI thread only.
 
     Raises:
-        WriterDocumentRequired: If no document is active or the active
+        WriterDocumentRequiredError: If no document is active or the active
             document is not a Writer text document.
     """
     desktop = ctx.ServiceManager.createInstanceWithContext(
@@ -78,11 +79,11 @@ def get_writer_document(ctx: "XComponentContext") -> "XTextDocument":
     )
     component = desktop.getCurrentComponent()
     if component is None:
-        raise WriterDocumentRequired("No document is currently open")
+        raise WriterDocumentRequiredError("No document is currently open")
     if not hasattr(component, "supportsService") or not component.supportsService(
         "com.sun.star.text.TextDocument"
     ):
-        raise WriterDocumentRequired(
+        raise WriterDocumentRequiredError(
             "The active document is not a Writer text document"
         )
     return component  # type: ignore[no-any-return]

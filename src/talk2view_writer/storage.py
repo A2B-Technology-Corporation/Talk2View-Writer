@@ -14,7 +14,6 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +61,10 @@ class FileTokenStorage:
             should know about.
     """
 
-    def __init__(self, path: Optional[Path] = None) -> None:
+    def __init__(self, path: Path | None = None) -> None:
         self._path: Path = path or default_storage_path()
         self._lock = threading.Lock()
-        self._cache: Optional[Dict[str, str]] = None  # lazy-loaded
+        self._cache: dict[str, str] | None = None  # lazy-loaded
         logger.info("FileTokenStorage at %s", self._path)
 
     @property
@@ -75,17 +74,20 @@ class FileTokenStorage:
 
     # ----- TokenStorage protocol -----
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str) -> str | None:
+        """TokenStorage: return the stored value for ``key`` or ``None``."""
         with self._lock:
             return self._load_locked().get(key)
 
     def set(self, key: str, value: str) -> None:
+        """TokenStorage: persist ``value`` under ``key``."""
         with self._lock:
             data = self._load_locked()
             data[key] = value
             self._save_locked(data)
 
     def delete(self, key: str) -> None:
+        """TokenStorage: remove ``key`` from storage if present."""
         with self._lock:
             data = self._load_locked()
             if key in data:
@@ -94,7 +96,7 @@ class FileTokenStorage:
 
     # ----- internals -----
 
-    def _load_locked(self) -> Dict[str, str]:
+    def _load_locked(self) -> dict[str, str]:
         if self._cache is not None:
             return self._cache
         if not self._path.exists():
@@ -115,7 +117,7 @@ class FileTokenStorage:
         self._cache = {str(k): str(v) for k, v in parsed.items()}
         return self._cache
 
-    def _save_locked(self, data: Dict[str, str]) -> None:
+    def _save_locked(self, data: dict[str, str]) -> None:
         self._cache = dict(data)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")

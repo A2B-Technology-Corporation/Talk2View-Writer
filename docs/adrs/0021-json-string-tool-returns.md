@@ -35,7 +35,7 @@ nesting, hint/error/recovery fields) mirrors the corresponding
 Errors that the agent should reason about (rather than crash on) are
 returned as `{"error": "…", "recovery": "…"}` JSON, not raised as
 Python exceptions. Exceptions are reserved for **bugs and
-environmental problems** — `WriterDocumentRequired`, `ValueError` for
+environmental problems** — `WriterDocumentRequiredError`, `ValueError` for
 schema violations, etc. — which the SDK turns into agent-visible
 error messages.
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from talk2view import tool  # type: ignore[import-not-found]
 
@@ -70,14 +70,12 @@ def get_document(
         the document is empty.
 
     Raises:
-        WriterDocumentRequired: If no Writer document is active.
+        WriterDocumentRequiredError: If no Writer document is active.
         ValueError: If ``start_index`` < 0 or ``count`` is outside
             ``[1, 100]``.
     """
     if start_index < 0:
-        raise ValueError(
-            "start_index must be >= 0. Use 0 to start from the beginning."
-        )
+        raise ValueError("start_index must be >= 0. Use 0 to start from the beginning.")
     if count < 1:
         raise ValueError("count must be >= 1. Use a value from 1 to 100.")
     if count > _MAX_COUNT:
@@ -92,7 +90,7 @@ def get_document(
 
     # ---- Enumerate paragraphs (top-level only; tables are returned
     # separately, like the Word tool does).
-    paragraphs: List[Any] = []
+    paragraphs: list[Any] = []
     enum = text.createEnumeration()
     while enum.hasMoreElements():
         element = enum.nextElement()
@@ -102,9 +100,9 @@ def get_document(
     total = len(paragraphs)
     slice_ = paragraphs[start_index : start_index + count]
 
-    para_data: List[Dict[str, Any]] = []
+    para_data: list[dict[str, Any]] = []
     for i, para in enumerate(slice_):
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "index": start_index + i,
             "text": para.getString(),
             "style": libreoffice_to_word_style(
@@ -117,16 +115,18 @@ def get_document(
 
     # ---- Tables
     tables = doc.getTextTables()
-    table_data: List[Dict[str, Any]] = []
+    table_data: list[dict[str, Any]] = []
     for ti in range(tables.getCount()):
         t = tables.getByIndex(ti)
         first_row = _read_first_table_row(t)
-        table_data.append({
-            "index": ti,
-            "rows": t.getRows().getCount(),
-            "columns": t.getColumns().getCount(),
-            "first_row": first_row,
-        })
+        table_data.append(
+            {
+                "index": ti,
+                "rows": t.getRows().getCount(),
+                "columns": t.getColumns().getCount(),
+                "first_row": first_row,
+            }
+        )
 
     # ---- Properties
     props = _read_document_properties(doc)
@@ -137,7 +137,7 @@ def get_document(
     text_sections = doc.getTextSections()
     section_count = text_sections.getCount() if text_sections is not None else 0
 
-    response: Dict[str, Any] = {
+    response: dict[str, Any] = {
         "text": text.getString(),
         "paragraphs": para_data,
         "total_paragraphs": total,
@@ -147,14 +147,12 @@ def get_document(
     }
 
     if total == 0 or (total == 1 and not paragraphs[0].getString().strip()):
-        response["hint"] = (
-            "Document is empty. Use insert_content to add content."
-        )
+        response["hint"] = "Document is empty. Use insert_content to add content."
 
     return json.dumps(response)
 
 
-def _read_font_properties(para: Any) -> Dict[str, Any]:
+def _read_font_properties(para: Any) -> dict[str, Any]:
     """Read font properties from a paragraph via its text cursor.
 
     Returns Word-shaped keys (name, size, color, bold, italic,
@@ -181,7 +179,7 @@ def _read_font_properties(para: Any) -> Dict[str, Any]:
     }
 
 
-def _read_first_table_row(table: Any) -> List[str]:
+def _read_first_table_row(table: Any) -> list[str]:
     """Return the first row's cell texts (Word-style preview).
 
     UNO cell names are like ``A1``, ``B1``, ``A10`` — leading letters
@@ -192,7 +190,7 @@ def _read_first_table_row(table: Any) -> List[str]:
     cells = table.getCellNames()
     if not cells:
         return []
-    first_row_cells: List[str] = []
+    first_row_cells: list[str] = []
     for c in cells:
         digits = ""
         for ch in reversed(c):
@@ -205,7 +203,7 @@ def _read_first_table_row(table: Any) -> List[str]:
     return [table.getCellByName(c).getString() for c in first_row_cells]
 
 
-def _read_document_properties(doc: Any) -> Dict[str, Any]:
+def _read_document_properties(doc: Any) -> dict[str, Any]:
     """Map LibreOffice ``XDocumentProperties`` to Word-shaped keys."""
     props = doc.getDocumentProperties()
     return {
@@ -242,7 +240,7 @@ def get_selection() -> str:
         selected.
 
     Raises:
-        WriterDocumentRequired: If no Writer document is active.
+        WriterDocumentRequiredError: If no Writer document is active.
     """
     ext = get_extension_or_raise()
     doc = get_writer_document(ext.ctx)
@@ -252,14 +250,14 @@ def get_selection() -> str:
     text = ""
     # Writer's selection is an XIndexAccess of XTextRange.
     if selection is not None and hasattr(selection, "getCount"):
-        parts: List[str] = []
+        parts: list[str] = []
         for i in range(selection.getCount()):
             r = selection.getByIndex(i)
             if hasattr(r, "getString"):
                 parts.append(r.getString())
         text = "".join(parts)
 
-    response: Dict[str, Any] = {"text": text}
+    response: dict[str, Any] = {"text": text}
     if not text:
         response["hint"] = (
             "No text is selected. Use select_text to select text "
@@ -276,9 +274,9 @@ def get_selection() -> str:
 @tool
 @ui_thread_tool
 def select_text(
-    query: Optional[str] = None,
+    query: str | None = None,
     match_index: int = 0,
-    paragraph_index: Optional[int] = None,
+    paragraph_index: int | None = None,
 ) -> str:
     """Select text in the document (visible highlight).
 
@@ -303,7 +301,7 @@ def select_text(
         total_matches, hint?}``. On error: ``{error, recovery}``.
 
     Raises:
-        WriterDocumentRequired: If no Writer document is active.
+        WriterDocumentRequiredError: If no Writer document is active.
         ValueError: If neither ``query`` nor ``paragraph_index`` is
             provided, or both are provided.
     """
@@ -330,23 +328,27 @@ def select_text(
         results = doc.findAll(searcher)
         total = results.getCount() if results is not None else 0
         if total == 0:
-            return json.dumps({
-                "error": f'Text "{query}" not found in the document.',
-                "recovery": (
-                    "Use get_document to check the exact text. Even small "
-                    "differences in spacing or punctuation cause mismatches."
-                ),
-            })
+            return json.dumps(
+                {
+                    "error": f'Text "{query}" not found in the document.',
+                    "recovery": (
+                        "Use get_document to check the exact text. Even small "
+                        "differences in spacing or punctuation cause mismatches."
+                    ),
+                }
+            )
         if match_index < 0 or match_index >= total:
-            return json.dumps({
-                "error": (
-                    f"match_index {match_index} out of range "
-                    f"({total} matches found)."
-                ),
-                "recovery": f"Use a value from 0 to {total - 1}.",
-            })
+            return json.dumps(
+                {
+                    "error": (
+                        f"match_index {match_index} out of range "
+                        f"({total} matches found)."
+                    ),
+                    "recovery": f"Use a value from 0 to {total - 1}.",
+                }
+            )
         controller.select(results.getByIndex(match_index))
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "success": True,
             "selected": query,
             "match_index": match_index,
@@ -360,31 +362,35 @@ def select_text(
         return json.dumps(response)
 
     # paragraph_index path
-    assert paragraph_index is not None  # noqa: S101 — type narrowing
-    paragraphs: List[Any] = []
+    assert paragraph_index is not None
+    paragraphs: list[Any] = []
     enum = doc.getText().createEnumeration()
     while enum.hasMoreElements():
         el = enum.nextElement()
         if el.supportsService("com.sun.star.text.Paragraph"):
             paragraphs.append(el)
     if paragraph_index < 0 or paragraph_index >= len(paragraphs):
-        return json.dumps({
-            "error": (
-                f"Paragraph index {paragraph_index} out of range "
-                f"(document has {len(paragraphs)} paragraphs)."
-            ),
-            "recovery": (
-                f"Use an index from 0 to {len(paragraphs) - 1}. "
-                f"Call get_document to see valid indices."
-            ),
-        })
+        return json.dumps(
+            {
+                "error": (
+                    f"Paragraph index {paragraph_index} out of range "
+                    f"(document has {len(paragraphs)} paragraphs)."
+                ),
+                "recovery": (
+                    f"Use an index from 0 to {len(paragraphs) - 1}. "
+                    f"Call get_document to see valid indices."
+                ),
+            }
+        )
     para = paragraphs[paragraph_index]
     controller.select(para)
-    return json.dumps({
-        "success": True,
-        "selected_paragraph": paragraph_index,
-        "text": para.getString(),
-    })
+    return json.dumps(
+        {
+            "success": True,
+            "selected_paragraph": paragraph_index,
+            "text": para.getString(),
+        }
+    )
 
 
 TOOLS = [get_document, get_selection, select_text]

@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple, TypeVar
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import unohelper  # type: ignore[import-not-found]
 from com.sun.star.awt import XCallback  # type: ignore[import-not-found]
@@ -37,7 +38,7 @@ _T = TypeVar("_T")
 DEFAULT_TIMEOUT_S = 30.0
 
 
-class UIThreadCallTimeout(TimeoutError):
+class UIThreadTimeoutError(TimeoutError):
     """Raised when a UI-thread call does not complete within the timeout."""
 
 
@@ -59,20 +60,18 @@ class UIThreadDispatcher:
     hop — PyUNO does not retain them otherwise.
     """
 
-    def __init__(self, ctx: "XComponentContext") -> None:
+    def __init__(self, ctx: XComponentContext) -> None:
         self.ctx = ctx
-        self._async_service: Optional[object] = None
+        self._async_service: object | None = None
         self._lock = threading.Lock()
         # Strong refs to in-flight callbacks — see "Resource lifetime" above.
-        self._callbacks: List["_RunOnUIThreadCallback"] = []
+        self._callbacks: list[_RunOnUIThreadCallback] = []
 
     def _ensure_service(self) -> object:
         with self._lock:
             if self._async_service is None:
-                self._async_service = (
-                    self.ctx.ServiceManager.createInstanceWithContext(
-                        "com.sun.star.awt.AsyncCallback", self.ctx
-                    )
+                self._async_service = self.ctx.ServiceManager.createInstanceWithContext(
+                    "com.sun.star.awt.AsyncCallback", self.ctx
                 )
                 if self._async_service is None:
                     raise RuntimeError(
@@ -96,22 +95,23 @@ class UIThreadDispatcher:
 
         Args:
             fn: The callable to invoke on the UI thread.
-            *args, **kwargs: Forwarded to ``fn``.
-            timeout: Seconds to wait. Raises :class:`UIThreadCallTimeout`
+            *args: Positional arguments forwarded to ``fn``.
+            timeout: Seconds to wait. Raises :class:`UIThreadTimeoutError`
                 if exceeded. Default 30 seconds — long enough for any
                 reasonable UNO call, short enough that a deadlock surfaces.
+            **kwargs: Keyword arguments forwarded to ``fn``.
 
         Returns:
             Whatever ``fn`` returns.
 
         Raises:
-            UIThreadCallTimeout: ``timeout`` exceeded.
+            UIThreadTimeoutError: ``timeout`` exceeded.
             Exception: Re-raises any exception ``fn`` raised, with the
                 original traceback preserved via ``raise ... from``.
         """
         service = self._ensure_service()
         done = threading.Event()
-        slot: List[Tuple[bool, Any]] = []  # [(success, value_or_exc)]
+        slot: list[tuple[bool, Any]] = []  # [(success, value_or_exc)]
 
         callback = _RunOnUIThreadCallback(fn, args, kwargs, slot, done)
         with self._lock:
@@ -119,7 +119,7 @@ class UIThreadDispatcher:
         try:
             service.addCallback(callback, None)  # type: ignore[attr-defined]
             if not done.wait(timeout):
-                raise UIThreadCallTimeout(
+                raise UIThreadTimeoutError(
                     f"UI-thread call to {getattr(fn, '__name__', fn)!r} "
                     f"did not complete within {timeout}s"
                 )
@@ -144,9 +144,9 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
     def __init__(
         self,
         fn: Callable[..., Any],
-        args: Tuple[Any, ...],
+        args: tuple[Any, ...],
         kwargs: dict,
-        slot: List[Tuple[bool, Any]],
+        slot: list[tuple[bool, Any]],
         done: threading.Event,
     ) -> None:
         self._fn = fn
@@ -155,7 +155,7 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         self._slot = slot
         self._done = done
 
-    def notify(self, data: Any) -> None:  # noqa: ARG002
+    def notify(self, data: Any) -> None:
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as exc:

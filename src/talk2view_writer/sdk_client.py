@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Callable, Iterator, List, Optional
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any, Optional
 
 from talk2view_writer import config
 from talk2view_writer.storage import FileTokenStorage
@@ -50,19 +51,19 @@ class Talk2ViewSDKClient:
         *,
         partner_key: str = config.PARTNER_KEY,
         base_url: str = config.BASE_URL,
-        storage: Optional[FileTokenStorage] = None,
+        storage: FileTokenStorage | None = None,
     ) -> None:
         self._partner_key = partner_key
         self._base_url = base_url
         self._storage = storage or FileTokenStorage()
-        self._client: Optional["Talk2View"] = None
-        self._user: Optional["User"] = None
-        self._listeners: List[AuthListener] = []
+        self._client: Talk2View | None = None
+        self._user: User | None = None
+        self._listeners: list[AuthListener] = []
         self._lock = threading.Lock()
 
     # ----- lifecycle ---------------------------------------------------
 
-    def _ensure_client(self) -> "Talk2View":
+    def _ensure_client(self) -> Talk2View:
         with self._lock:
             if self._client is None:
                 from talk2view import Talk2View
@@ -72,9 +73,7 @@ class Talk2ViewSDKClient:
                     base_url=self._base_url,
                     storage=self._storage,
                 )
-                logger.info(
-                    "Talk2View SDK instantiated (base_url=%s)", self._base_url
-                )
+                logger.info("Talk2View SDK instantiated (base_url=%s)", self._base_url)
                 # Restore cached user (no network call) if we have one.
                 cached_user = self._client.auth.get_user()
                 if cached_user is not None:
@@ -84,7 +83,7 @@ class Talk2ViewSDKClient:
 
     # ----- auth --------------------------------------------------------
 
-    def login(self, email: str, password: str) -> "User":
+    def login(self, email: str, password: str) -> User:
         """Authenticate and persist tokens.
 
         Raises:
@@ -127,7 +126,7 @@ class Talk2ViewSDKClient:
         return False
 
     @property
-    def current_user(self) -> Optional["User"]:
+    def current_user(self) -> User | None:
         """The currently logged-in user, or ``None``."""
         return self._user
 
@@ -137,11 +136,12 @@ class Talk2ViewSDKClient:
             self._listeners.append(listener)
 
     def remove_auth_listener(self, listener: AuthListener) -> None:
+        """Unsubscribe a previously-added auth-state listener."""
         with self._lock:
             if listener in self._listeners:
                 self._listeners.remove(listener)
 
-    def _notify_listeners(self, user: Optional["User"]) -> None:
+    def _notify_listeners(self, user: User | None) -> None:
         with self._lock:
             listeners = list(self._listeners)
         for listener in listeners:
@@ -156,8 +156,8 @@ class Talk2ViewSDKClient:
         self,
         message: str,
         *,
-        system_prompt: Optional[str] = None,
-    ) -> Iterator["ChatEvent"]:
+        system_prompt: str | None = None,
+    ) -> Iterator[ChatEvent]:
         """Send a chat message and yield streamed :class:`ChatEvent` items.
 
         Blocking iterator — call from a worker thread.
@@ -179,7 +179,7 @@ class Talk2ViewSDKClient:
 
     # ----- tools (Phase C entry point) ---------------------------------
 
-    def register_tools(self, tool_functions: List[Any]) -> None:
+    def register_tools(self, tool_functions: list[Any]) -> None:
         """Register ``@tool``-decorated functions with the SDK.
 
         Empty in Phase B; Phase C will start populating ``tool_functions``.

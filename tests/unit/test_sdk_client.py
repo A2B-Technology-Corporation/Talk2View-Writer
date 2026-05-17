@@ -10,7 +10,6 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -33,9 +32,7 @@ def mock_talk2view(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 @pytest.mark.unit
-def test_lazy_client_instantiation(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_lazy_client_instantiation(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     """The SDK is not created until first use."""
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
@@ -81,7 +78,7 @@ def test_logout_clears_user_and_notifies(
 
     client = Talk2ViewSDKClient(storage=FileTokenStorage(tmp_path / "t.json"))
 
-    seen: list[Optional[object]] = []
+    seen: list[object | None] = []
     client.add_auth_listener(lambda user: seen.append(user))
 
     client.login("x@y.z", "pw")
@@ -113,9 +110,7 @@ def test_chat_requires_authentication(
 
 
 @pytest.mark.unit
-def test_chat_yields_events_from_sdk(
-    mock_talk2view: MagicMock, tmp_path: Path
-) -> None:
+def test_chat_yields_events_from_sdk(mock_talk2view: MagicMock, tmp_path: Path) -> None:
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
     from talk2view_writer.storage import FileTokenStorage
 

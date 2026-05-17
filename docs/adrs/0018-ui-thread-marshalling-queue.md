@@ -45,7 +45,7 @@ Semantics:
 - Returns the callable's return value.
 - Re-raises any exception raised by the callable, preserving the
   traceback.
-- Raises :class:`UIThreadCallTimeout` if the callback hasn't fired
+- Raises :class:`UIThreadTimeoutError` if the callback hasn't fired
   in ``timeout`` seconds (default 30) — long enough for normal UNO
   calls, short enough that a deadlock surfaces instead of hanging
   LibreOffice forever.
@@ -115,7 +115,7 @@ outer method dispatching via the queue.
   #12 covers the verification spike.
 - **30-second default timeout.** If a UNO call legitimately takes
   longer (massive document load, slow file system), we raise
-  :class:`UIThreadCallTimeout` and the agent sees an error.
+  :class:`UIThreadTimeoutError` and the agent sees an error.
   Override via ``run_sync(..., timeout=120)`` for known-slow ops.
 - **Strong-ref management** of in-flight callbacks. PyUNO does not
   retain XCallback instances across the async boundary, so the

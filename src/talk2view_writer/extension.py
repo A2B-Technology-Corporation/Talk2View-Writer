@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from com.sun.star.awt import XWindow
     from com.sun.star.uno import XComponentContext
-
     from talk2view.types import User
 
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
@@ -34,20 +33,20 @@ class Talk2ViewWriterExtension:
     - the auth-state listener that broadcasts login/logout to panels.
     """
 
-    def __init__(self, ctx: "XComponentContext") -> None:
+    def __init__(self, ctx: XComponentContext) -> None:
         self.ctx = ctx
         self._lock = threading.Lock()
-        self._sdk: Optional["Talk2ViewSDKClient"] = None
-        self._ui_thread: Optional["UIThreadDispatcher"] = None
+        self._sdk: Talk2ViewSDKClient | None = None
+        self._ui_thread: UIThreadDispatcher | None = None
         self._tools_registered = False
-        self._open_panels: List["Talk2ViewPanel"] = []
+        self._open_panels: list[Talk2ViewPanel] = []
 
     # ------------------------------------------------------------------
     # UI-thread dispatcher (lazy, owned at extension lifetime)
     # ------------------------------------------------------------------
 
     @property
-    def ui_thread(self) -> "UIThreadDispatcher":
+    def ui_thread(self) -> UIThreadDispatcher:
         """Lazily-instantiated :class:`UIThreadDispatcher`.
 
         Used by every tool implementation (via the ``ui_thread_tool``
@@ -67,7 +66,7 @@ class Talk2ViewWriterExtension:
     # ------------------------------------------------------------------
 
     @property
-    def sdk(self) -> "Talk2ViewSDKClient":
+    def sdk(self) -> Talk2ViewSDKClient:
         """Lazily-instantiated Talk2View SDK wrapper.
 
         On first access this also registers every tool from
@@ -118,13 +117,9 @@ class Talk2ViewWriterExtension:
         prop = PropertyValue()
         prop.Name = "Sidebar"
         prop.Value = "com.talk2view.writer.Deck"
-        dispatcher.executeDispatch(
-            frame, ".uno:SidebarDeck", "_self", 0, (prop,)
-        )
+        dispatcher.executeDispatch(frame, ".uno:SidebarDeck", "_self", 0, (prop,))
 
-    def show_login_dialog(
-        self, parent_window: "Optional[XWindow]" = None
-    ) -> None:
+    def show_login_dialog(self, parent_window: XWindow | None = None) -> None:
         """Prompt for credentials and call ``sdk.login``."""
         logger.info("show_login_dialog")
         from talk2view_writer.ui.login_dialog import show_login_dialog
@@ -154,7 +149,8 @@ class Talk2ViewWriterExtension:
     # Panel lifecycle (called by ChatPanelFactory.createUIElement)
     # ------------------------------------------------------------------
 
-    def register_panel(self, panel: "Talk2ViewPanel") -> None:
+    def register_panel(self, panel: Talk2ViewPanel) -> None:
+        """Track an open sidebar panel and push the current auth state to it."""
         with self._lock:
             self._open_panels.append(panel)
         # Push the current auth state to the new panel so its initial
@@ -166,7 +162,8 @@ class Talk2ViewWriterExtension:
             logger.exception("Initial on_auth_changed failed for new panel")
         logger.info("Panel registered (total open: %d)", len(self._open_panels))
 
-    def unregister_panel(self, panel: "Talk2ViewPanel") -> None:
+    def unregister_panel(self, panel: Talk2ViewPanel) -> None:
+        """Remove a closed sidebar panel from the tracking list."""
         with self._lock:
             if panel in self._open_panels:
                 self._open_panels.remove(panel)
@@ -176,7 +173,7 @@ class Talk2ViewWriterExtension:
     # Internal: auth state fan-out
     # ------------------------------------------------------------------
 
-    def _on_auth_changed(self, user: "Optional[User]") -> None:
+    def _on_auth_changed(self, user: User | None) -> None:
         """SDK auth-state callback — broadcast to all open panels."""
         with self._lock:
             panels = list(self._open_panels)
@@ -192,11 +189,11 @@ class Talk2ViewWriterExtension:
                 logger.exception("Panel on_auth_changed raised")
 
 
-_INSTANCE: Optional[Talk2ViewWriterExtension] = None
+_INSTANCE: Talk2ViewWriterExtension | None = None
 _INSTANCE_LOCK = threading.Lock()
 
 
-def get_extension(ctx: "XComponentContext") -> Talk2ViewWriterExtension:
+def get_extension(ctx: XComponentContext) -> Talk2ViewWriterExtension:
     """Return the process-wide :class:`Talk2ViewWriterExtension` singleton."""
     global _INSTANCE
     with _INSTANCE_LOCK:

@@ -8,7 +8,8 @@ Dialog Editor file if we add password recovery / signup flows.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
@@ -30,11 +31,11 @@ _MARGIN = 8
 
 
 def show_login_dialog(
-    ctx: "XComponentContext",
-    parent_window: "Optional[XWindow]" = None,
+    ctx: XComponentContext,
+    parent_window: XWindow | None = None,
     *,
     initial_email: str = "",
-) -> Optional[Tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Show the login dialog and return ``(email, password)`` or ``None``.
 
     Returns ``None`` if the user cancels. The caller is responsible for
@@ -59,41 +60,59 @@ def show_login_dialog(
         h: int,
         properties: dict,
     ) -> object:
-        model = dialog_model.createInstance(
-            f"com.sun.star.awt.UnoControl{kind}Model"
-        )
+        model = dialog_model.createInstance(f"com.sun.star.awt.UnoControl{kind}Model")
         model.setPropertyValues(
-            tuple(["Name", "PositionX", "PositionY", "Width", "Height"]
-                  + list(properties.keys())),
-            tuple([name, x, y, w, h] + list(properties.values())),
+            (
+                "Name",
+                "PositionX",
+                "PositionY",
+                "Width",
+                "Height",
+                *properties.keys(),
+            ),
+            (name, x, y, w, h, *properties.values()),
         )
         dialog_model.insertByName(name, model)
         return model
 
     # Email label + field.
     add_control(
-        "FixedText", "lbl_email", _MARGIN, _MARGIN,
-        _DIALOG_WIDTH - 2 * _MARGIN, _LABEL_HEIGHT,
+        "FixedText",
+        "lbl_email",
+        _MARGIN,
+        _MARGIN,
+        _DIALOG_WIDTH - 2 * _MARGIN,
+        _LABEL_HEIGHT,
         {"Label": "Email"},
     )
     add_control(
-        "Edit", "txt_email",
-        _MARGIN, _MARGIN + _LABEL_HEIGHT,
-        _DIALOG_WIDTH - 2 * _MARGIN, _FIELD_HEIGHT,
+        "Edit",
+        "txt_email",
+        _MARGIN,
+        _MARGIN + _LABEL_HEIGHT,
+        _DIALOG_WIDTH - 2 * _MARGIN,
+        _FIELD_HEIGHT,
         {"Text": initial_email},
     )
 
     # Password label + field.
     y_pass = _MARGIN + _LABEL_HEIGHT + _FIELD_HEIGHT + _MARGIN // 2
     add_control(
-        "FixedText", "lbl_password", _MARGIN, y_pass,
-        _DIALOG_WIDTH - 2 * _MARGIN, _LABEL_HEIGHT,
+        "FixedText",
+        "lbl_password",
+        _MARGIN,
+        y_pass,
+        _DIALOG_WIDTH - 2 * _MARGIN,
+        _LABEL_HEIGHT,
         {"Label": "Password"},
     )
     add_control(
-        "Edit", "txt_password",
-        _MARGIN, y_pass + _LABEL_HEIGHT,
-        _DIALOG_WIDTH - 2 * _MARGIN, _FIELD_HEIGHT,
+        "Edit",
+        "txt_password",
+        _MARGIN,
+        y_pass + _LABEL_HEIGHT,
+        _DIALOG_WIDTH - 2 * _MARGIN,
+        _FIELD_HEIGHT,
         # EchoChar 42 = "*" — UNO uses a 16-bit code-point integer here.
         {"EchoChar": 42, "Text": ""},
     )
@@ -102,14 +121,22 @@ def show_login_dialog(
     y_btn = _DIALOG_HEIGHT - _BUTTON_HEIGHT - _MARGIN
     btn_w = (_DIALOG_WIDTH - 3 * _MARGIN) // 2
     cancel_model = add_control(
-        "Button", "btn_cancel",
-        _MARGIN, y_btn, btn_w, _BUTTON_HEIGHT,
+        "Button",
+        "btn_cancel",
+        _MARGIN,
+        y_btn,
+        btn_w,
+        _BUTTON_HEIGHT,
         # PushButtonType.CANCEL = 2 — UNO returns 0 from execute() for cancel.
         {"Label": "Cancel", "PushButtonType": 2},
     )
     login_model = add_control(
-        "Button", "btn_login",
-        _MARGIN + btn_w + _MARGIN, y_btn, btn_w, _BUTTON_HEIGHT,
+        "Button",
+        "btn_login",
+        _MARGIN + btn_w + _MARGIN,
+        y_btn,
+        btn_w,
+        _BUTTON_HEIGHT,
         # PushButtonType.OK = 1 — execute() returns 1 for OK.
         {"Label": "Log in", "PushButtonType": 1, "DefaultButton": True},
     )
@@ -136,9 +163,7 @@ def show_login_dialog(
         if result != 1:  # 1 = OK, 0 = cancelled
             return None
         email = dialog.getControl("txt_email").getModel().getPropertyValue("Text")
-        password = dialog.getControl("txt_password").getModel().getPropertyValue(
-            "Text"
-        )
+        password = dialog.getControl("txt_password").getModel().getPropertyValue("Text")
         if not email or not password:
             logger.info("Login dialog OK pressed with empty fields")
             return None
@@ -157,13 +182,13 @@ def show_login_dialog(
 class _ActionForwarder(unohelper.Base, XActionListener):
     """Forward UNO action events to a Python callable."""
 
-    def __init__(self, callback) -> None:
+    def __init__(self, callback: Callable[[], None]) -> None:
         self._callback = callback
 
-    def actionPerformed(self, event: "ActionEvent") -> None:  # noqa: N802, ARG002
+    def actionPerformed(self, event: ActionEvent) -> None:  # noqa: N802
         self._callback()
 
-    def disposing(self, event: "EventObject") -> None:  # noqa: ARG002
+    def disposing(self, event: EventObject) -> None:
         pass
 
 

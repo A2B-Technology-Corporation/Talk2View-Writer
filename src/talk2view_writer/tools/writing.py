@@ -37,7 +37,7 @@ def insert_content(content: str) -> str:
         Confirmation message naming the number of characters inserted.
 
     Raises:
-        WriterDocumentRequired: If no Writer document is active.
+        WriterDocumentRequiredError: If no Writer document is active.
         ValueError: If ``content`` is empty.
     """
     if not content:

@@ -74,7 +74,7 @@ def test_tool_modules_export_TOOLS_list(fake_talk2view: None) -> None:  # noqa: 
 
 @pytest.mark.unit
 def test_tool_functions_have_docstrings(fake_talk2view: None) -> None:
-    """Every tool must have a docstring — the SDK derives the schema description from it."""
+    """Every tool needs a docstring — the SDK derives its schema from one."""
     from talk2view_writer.tools import all_tools
 
     for fn in all_tools():

@@ -17,7 +17,7 @@ import pytest
 
 
 def _make_ctx(addCallback_impl) -> MagicMock:  # noqa: N803 — UNO interface naming
-    """Build a fake XComponentContext whose AsyncCallback service uses ``addCallback_impl``."""
+    """Build a fake XComponentContext whose AsyncCallback uses ``addCallback_impl``."""
     fake_async = MagicMock()
     fake_async.addCallback.side_effect = addCallback_impl
 
@@ -30,10 +30,10 @@ def _make_ctx(addCallback_impl) -> MagicMock:  # noqa: N803 — UNO interface na
 def test_run_sync_returns_callable_result() -> None:
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
-    def synchronous_addCallback(callback: Any, data: Any) -> None:  # noqa: N803, ARG001
+    def synchronous_add_callback(callback: Any, data: Any) -> None:
         callback.notify(data)
 
-    ctx = _make_ctx(synchronous_addCallback)
+    ctx = _make_ctx(synchronous_add_callback)
     dispatcher = UIThreadDispatcher(ctx)
     result = dispatcher.run_sync(lambda x, y: x + y, 3, 4)
     assert result == 7
@@ -43,10 +43,10 @@ def test_run_sync_returns_callable_result() -> None:
 def test_run_sync_propagates_exception() -> None:
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
-    def synchronous_addCallback(callback: Any, data: Any) -> None:  # noqa: N803, ARG001
+    def synchronous_add_callback(callback: Any, data: Any) -> None:
         callback.notify(data)
 
-    ctx = _make_ctx(synchronous_addCallback)
+    ctx = _make_ctx(synchronous_add_callback)
     dispatcher = UIThreadDispatcher(ctx)
 
     def boom() -> None:
@@ -58,24 +58,24 @@ def test_run_sync_propagates_exception() -> None:
 
 @pytest.mark.unit
 def test_run_sync_times_out_when_callback_never_fires() -> None:
-    from talk2view_writer.ui_thread import UIThreadCallTimeout, UIThreadDispatcher
+    from talk2view_writer.ui_thread import UIThreadDispatcher, UIThreadTimeoutError
 
     # AsyncCallback service that does nothing — simulates a stuck UI thread.
     ctx = _make_ctx(lambda callback, data: None)
     dispatcher = UIThreadDispatcher(ctx)
 
-    with pytest.raises(UIThreadCallTimeout):
+    with pytest.raises(UIThreadTimeoutError):
         dispatcher.run_sync(lambda: 42, timeout=0.05)
 
 
 @pytest.mark.unit
 def test_run_sync_works_when_callback_fires_on_other_thread() -> None:
-    """Simulate AsyncCallback's real behaviour: invoke callback on a different thread."""
+    """AsyncCallback fires on its own thread — confirm we still get the result."""
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
     threads_used: list = []
 
-    def deferred_addCallback(callback: Any, data: Any) -> None:  # noqa: N803
+    def deferred_add_callback(callback: Any, data: Any) -> None:
         # Fire the callback from a background thread, like the real
         # AsyncCallback service would do from the UI event loop.
         def run() -> None:
@@ -85,7 +85,7 @@ def test_run_sync_works_when_callback_fires_on_other_thread() -> None:
 
         threading.Thread(target=run, daemon=True).start()
 
-    ctx = _make_ctx(deferred_addCallback)
+    ctx = _make_ctx(deferred_add_callback)
     dispatcher = UIThreadDispatcher(ctx)
     assert dispatcher.run_sync(lambda: "result") == "result"
     # The notify must have run on a different thread than the caller.
@@ -99,11 +99,11 @@ def test_dispatcher_keeps_callback_alive_until_completion() -> None:
 
     captured = []
 
-    def synchronous_addCallback(callback: Any, data: Any) -> None:  # noqa: N803, ARG001
+    def synchronous_add_callback(callback: Any, data: Any) -> None:
         captured.append(callback)
         callback.notify(data)
 
-    ctx = _make_ctx(synchronous_addCallback)
+    ctx = _make_ctx(synchronous_add_callback)
     dispatcher = UIThreadDispatcher(ctx)
     dispatcher.run_sync(lambda: "ok")
 
@@ -118,14 +118,14 @@ def test_concurrent_run_sync_calls_isolated() -> None:
     """Concurrent callers must not interfere with each other's results."""
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
-    def synchronous_addCallback(callback: Any, data: Any) -> None:  # noqa: N803, ARG001
+    def synchronous_add_callback(callback: Any, data: Any) -> None:
         # Simulate per-call latency on a background thread so calls interleave.
         def run() -> None:
             callback.notify(data)
 
         threading.Thread(target=run, daemon=True).start()
 
-    ctx = _make_ctx(synchronous_addCallback)
+    ctx = _make_ctx(synchronous_add_callback)
     dispatcher = UIThreadDispatcher(ctx)
 
     results: dict = {}

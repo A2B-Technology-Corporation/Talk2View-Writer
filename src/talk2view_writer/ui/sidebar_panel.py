@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, List, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
@@ -52,12 +53,10 @@ if TYPE_CHECKING:
         XControl,
         XControlContainer,
         XWindow,
-        XWindowPeer,
     )
     from com.sun.star.frame import XFrame
     from com.sun.star.lang import EventObject
     from com.sun.star.uno import XComponentContext
-
     from talk2view.types import User
 
 logger = logging.getLogger(__name__)
@@ -76,9 +75,9 @@ _HISTORY_MIN_HEIGHT = 80
 
 
 def build_chat_panel(
-    ctx: "XComponentContext",
-    parent_window: "XWindow",
-    frame: "Optional[XFrame]",
+    ctx: XComponentContext,
+    parent_window: XWindow,
+    frame: XFrame | None,
     resource_url: str,
 ) -> XUIElement:
     """Build the Talk2View sidebar panel and return it as an XUIElement.
@@ -108,29 +107,29 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     def __init__(
         self,
-        ctx: "XComponentContext",
-        parent_window: "XWindow",
-        frame: "Optional[XFrame]",
+        ctx: XComponentContext,
+        parent_window: XWindow,
+        frame: XFrame | None,
         resource_url: str,
     ) -> None:
         self.ctx = ctx
         self._parent_window = parent_window
         self._frame = frame
         self._resource_url = resource_url
-        self._listeners: List[object] = []
+        self._listeners: list[object] = []
 
         # Widgets
-        self._container_window: "Optional[XWindow]" = None
-        self._control_container: "Optional[XControlContainer]" = None
-        self._status_label: "Optional[XControl]" = None
-        self._login_button: "Optional[XControl]" = None
-        self._history_field: "Optional[XControl]" = None
-        self._composer_field: "Optional[XControl]" = None
-        self._send_button: "Optional[XControl]" = None
-        self._window_listener: "Optional[_PanelResizeListener]" = None
+        self._container_window: XWindow | None = None
+        self._control_container: XControlContainer | None = None
+        self._status_label: XControl | None = None
+        self._login_button: XControl | None = None
+        self._history_field: XControl | None = None
+        self._composer_field: XControl | None = None
+        self._send_button: XControl | None = None
+        self._window_listener: _PanelResizeListener | None = None
 
         # Auth + chat state
-        self._user: Optional["User"] = None
+        self._user: User | None = None
         self._busy = threading.Event()  # set while a worker thread is running
 
         self._build_window()
@@ -138,27 +137,34 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     # ----- XUIElement -----------------------------------------------------
 
     def getResourceURL(self) -> str:  # noqa: N802
+        """XUIElement: the panel's ``private:resource/toolpanel/...`` URL."""
         return self._resource_url
 
     def getType(self) -> int:  # noqa: N802
-        return UIElementType.TOOLPANEL
+        """XUIElement: ``UIElementType.TOOLPANEL`` for sidebar panels."""
+        # UIElementType.TOOLPANEL is a UNO constant — annotate the cast.
+        return int(UIElementType.TOOLPANEL)
 
-    def getFrame(self) -> "Optional[XFrame]":  # noqa: N802
+    def getFrame(self) -> XFrame | None:  # noqa: N802
+        """XUIElement: the frame this panel is docked into."""
         return self._frame
 
-    def getRealInterface(self) -> "XWindow":  # noqa: N802
-        assert self._container_window is not None  # noqa: S101
+    def getRealInterface(self) -> XWindow:  # noqa: N802
+        """XUIElement: the container window LibreOffice docks in the deck."""
+        assert self._container_window is not None
         return self._container_window
 
-    def setSettings(self, settings: object) -> None:  # noqa: N802, ARG002
-        pass
+    def setSettings(self, settings: object) -> None:  # noqa: N802
+        """XUIElement: no-op — tool panels do not carry settings."""
 
-    def getSettings(self, write: bool) -> None:  # noqa: N802, ARG002
+    def getSettings(self, write: bool) -> None:  # noqa: N802
+        """XUIElement: no-op — tool panels do not carry settings."""
         return None
 
     # ----- XComponent -----------------------------------------------------
 
     def dispose(self) -> None:
+        """XComponent: tear down listeners and the container window."""
         logger.info("Talk2ViewPanel.dispose")
         from talk2view_writer.extension import get_extension
 
@@ -171,30 +177,31 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         event.Source = self
         for listener in list(self._listeners):
             try:
-                listener.disposing(event)
+                # Listeners are duck-typed XEventListener instances.
+                listener.disposing(event)  # type: ignore[attr-defined]
             except Exception:
                 logger.exception("Listener.disposing raised")
 
         if self._container_window is not None:
             try:
                 if self._window_listener is not None:
-                    self._container_window.removeWindowListener(
-                        self._window_listener
-                    )
+                    self._container_window.removeWindowListener(self._window_listener)
                 self._container_window.dispose()
             except Exception:
                 logger.exception("Container window dispose failed")
 
     def addEventListener(self, listener: object) -> None:  # noqa: N802
+        """XComponent: subscribe to ``disposing`` notifications."""
         self._listeners.append(listener)
 
     def removeEventListener(self, listener: object) -> None:  # noqa: N802
+        """XComponent: unsubscribe a previously-added listener."""
         if listener in self._listeners:
             self._listeners.remove(listener)
 
     # ----- Public: auth state callback ------------------------------------
 
-    def on_auth_changed(self, user: "Optional[User]") -> None:
+    def on_auth_changed(self, user: User | None) -> None:
         """Called by the extension singleton on every login/logout."""
         self._user = user
         self._apply_auth_state()
@@ -221,7 +228,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         cc.setModel(cc_model)
         cc.createPeer(toolkit, container_peer)
         parent_size = self._parent_window.getPosSize()
-        cc_window: "XWindow" = cc  # type: ignore[assignment]
+        cc_window: XWindow = cc  # type: ignore[assignment]
         cc_window.setPosSize(0, 0, parent_size.Width, parent_size.Height, POSSIZE)
         self._control_container = cc
 
@@ -259,14 +266,14 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     # ----- Widget factories -----------------------------------------------
 
-    def _create_service(self, service_name: str) -> object:
-        return self.ctx.ServiceManager.createInstanceWithContext(
-            service_name, self.ctx
-        )
+    def _create_service(self, service_name: str) -> Any:
+        # Returns whatever UNO service is named; callers cast implicitly
+        # by calling UNO methods on the result.
+        return self.ctx.ServiceManager.createInstanceWithContext(service_name, self.ctx)
 
     def _add_label(
-        self, container: "XControlContainer", text: str, *, name: str
-    ) -> "XControl":
+        self, container: XControlContainer, text: str, *, name: str
+    ) -> XControl:
         model = self._create_service("com.sun.star.awt.UnoControlFixedTextModel")
         model.setPropertyValue("Label", text)
         model.setPropertyValue("Name", name)
@@ -277,12 +284,12 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     def _add_button(
         self,
-        container: "XControlContainer",
+        container: XControlContainer,
         text: str,
         *,
         name: str,
-        on_click,
-    ) -> "XControl":
+        on_click: Callable[[], None],
+    ) -> XControl:
         model = self._create_service("com.sun.star.awt.UnoControlButtonModel")
         model.setPropertyValue("Label", text)
         model.setPropertyValue("Name", name)
@@ -294,13 +301,13 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     def _add_edit(
         self,
-        container: "XControlContainer",
+        container: XControlContainer,
         *,
         name: str,
         multiline: bool,
         read_only: bool,
         v_scroll: bool,
-    ) -> "XControl":
+    ) -> XControl:
         model = self._create_service("com.sun.star.awt.UnoControlEditModel")
         model.setPropertyValue("Name", name)
         model.setPropertyValue("MultiLine", multiline)
@@ -387,9 +394,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     def _on_login_clicked(self) -> None:
         from talk2view_writer.extension import get_extension
 
-        parent = (
-            self._frame.getContainerWindow() if self._frame is not None else None
-        )
+        parent = self._frame.getContainerWindow() if self._frame is not None else None
         try:
             get_extension(self.ctx).show_login_dialog(parent_window=parent)
         except Exception as exc:
@@ -435,11 +440,15 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         finally:
             self._set_busy(False)
 
-    def _handle_chat_event(self, event) -> None:
+    def _handle_chat_event(self, event: Any) -> None:
         """Map a ``ChatEvent`` to UI updates.
 
         Phase B handles the text-only event stream. Phase C/D add
         ``tool_call`` event handling once tools land.
+
+        ``event`` is annotated as ``Any`` because :class:`ChatEvent`
+        lives in the ``talk2view`` SDK, which we don't import at
+        module top-level (the SDK is bundled only at runtime).
         """
         etype = getattr(event, "type", None)
         if etype == "text" and event.content:
@@ -465,7 +474,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     # until it returns. Methods named ``_*_ui`` are the UI-thread-only
     # halves.
 
-    def _dispatch_ui(self, fn, *args, **kwargs):
+    def _dispatch_ui(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """Run ``fn(*args, **kwargs)`` on the UI thread.
 
         Thin wrapper around :meth:`UIThreadDispatcher.run_sync` that
@@ -546,13 +555,13 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 class _ActionForwarder(unohelper.Base, XActionListener):
     """Forward UNO action events to a Python callable."""
 
-    def __init__(self, callback) -> None:
+    def __init__(self, callback: Callable[[], None]) -> None:
         self._callback = callback
 
-    def actionPerformed(self, event: "ActionEvent") -> None:  # noqa: N802, ARG002
+    def actionPerformed(self, event: ActionEvent) -> None:  # noqa: N802
         self._callback()
 
-    def disposing(self, event: "EventObject") -> None:  # noqa: ARG002
+    def disposing(self, event: EventObject) -> None:
         pass
 
 
@@ -562,17 +571,17 @@ class _PanelResizeListener(unohelper.Base, XWindowListener):
     def __init__(self, panel: Talk2ViewPanel) -> None:
         self._panel = panel
 
-    def windowResized(self, event: "WindowEvent") -> None:  # noqa: N802, ARG002
+    def windowResized(self, event: WindowEvent) -> None:  # noqa: N802
         self._panel._layout_children()
 
-    def windowMoved(self, event: "WindowEvent") -> None:  # noqa: N802, ARG002
+    def windowMoved(self, event: WindowEvent) -> None:  # noqa: N802
         pass
 
-    def windowShown(self, event: "EventObject") -> None:  # noqa: N802, ARG002
+    def windowShown(self, event: EventObject) -> None:  # noqa: N802
         self._panel._layout_children()
 
-    def windowHidden(self, event: "EventObject") -> None:  # noqa: N802, ARG002
+    def windowHidden(self, event: EventObject) -> None:  # noqa: N802
         pass
 
-    def disposing(self, event: "EventObject") -> None:  # noqa: ARG002
+    def disposing(self, event: EventObject) -> None:
         pass
