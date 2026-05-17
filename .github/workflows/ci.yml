@@ -1,0 +1,254 @@
+name: CI
+
+# Triggers:
+#   - Every push to any branch (so external contributors get CI on
+#     their feature branches without needing to open a PR first).
+#   - Every PR targeting main (covers the merge-base diff).
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['v*.*.*']  # release.yml handles tag pushes
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    # Manual run from the Actions UI — useful for re-running against
+    # a flaky integration matrix entry.
+
+# Cancel in-progress runs on the same branch when a newer commit
+# lands. Saves macOS arm64 minutes (the most expensive matrix entry).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Minimal permissions per GitHub security guidance. Release workflow
+# requests contents:write separately.
+permissions:
+  contents: read
+
+jobs:
+
+  # -----------------------------------------------------------------
+  # 1. Lint + type-check + unit tests
+  # -----------------------------------------------------------------
+  lint:
+    name: Lint, type-check, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Set up Python 3.13
+        # Matches LibreOffice 26.x's bundled Python on Debian/Ubuntu
+        # so unit-test results most closely mirror what end users see.
+        run: uv python install 3.13
+
+      - name: Install dev dependencies
+        run: make dev
+
+      - name: Ruff
+        run: make lint
+
+      - name: Mypy
+        run: make typecheck
+
+      - name: Unit tests
+        run: make test-unit
+
+  # -----------------------------------------------------------------
+  # 2. Build the universal .oxt (one Linux job — wheels for all OSes
+  #    already bundled by the matrix, so a single build is portable).
+  # -----------------------------------------------------------------
+  build:
+    name: Build .oxt
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install 3.13
+
+      - name: Cache vendored pydantic_core wheels
+        # Re-downloading the 20-tag matrix on every commit wastes ~40 MB
+        # bandwidth + ~30s. Invalidates when the matrix definition
+        # changes (typically on a pydantic-core version bump).
+        uses: actions/cache@v4
+        with:
+          path: vendor/
+          key: vendor-${{ hashFiles('scripts/vendor_wheels.py') }}
+
+      - name: Install dev dependencies
+        run: make dev
+
+      - name: Vendor wheels (if not cached)
+        run: |
+          if [ ! -d vendor/extracted ]; then
+            make vendor-wheels
+          else
+            echo "Using cached vendor/ tree"
+          fi
+
+      - name: Build .oxt
+        run: make package
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxt-${{ github.sha }}
+          path: dist/Talk2ViewWriter.oxt
+          retention-days: 30
+          if-no-files-found: error
+
+  # -----------------------------------------------------------------
+  # 3. Integration matrix — install the built .oxt into each runner's
+  #    LibreOffice and run the full integration suite.
+  # -----------------------------------------------------------------
+  integration:
+    name: Integration (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false  # one OS failing shouldn't cancel the others
+      matrix:
+        os:
+          - ubuntu-latest    # Linux x86_64
+          - macos-13         # macOS Intel (free tier)
+          - macos-14         # macOS Apple Silicon (PAID; ~$0.12/min)
+          - windows-latest   # Windows x86_64
+        include:
+          # Which OSes also run dogtail GUI smoke?
+          - os: ubuntu-latest
+            run_gui_smoke: true
+          # Which OSes run the live chat E2E? Skip macos-13 to save
+          # Intel minutes (arm64 macOS exercises the same code path).
+          - os: ubuntu-latest
+            run_live_chat: true
+          - os: macos-14
+            run_live_chat: true
+          - os: windows-latest
+            run_live_chat: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install 3.13
+
+      - name: Download .oxt artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: oxt-${{ github.sha }}
+          path: dist/
+
+      # ---- OS-specific LibreOffice install ----
+
+      - name: Install LibreOffice (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice libreoffice-script-provider-python \
+            python3-uno xvfb at-spi2-core x11-utils
+          # Start a system AT-SPI bus for dogtail (Linux only).
+          sudo systemctl --version >/dev/null 2>&1 || true
+
+      - name: Install LibreOffice (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # `--cask` ships the .app bundle; `--no-quarantine` skips
+          # Gatekeeper's first-run prompt so we can headless-launch.
+          brew install --cask --no-quarantine libreoffice
+
+      - name: Install LibreOffice (Windows)
+        if: runner.os == 'Windows'
+        run: choco install libreoffice-fresh -y --no-progress
+
+      # ---- Install dev deps (for pytest itself) ----
+
+      - name: Install dev dependencies
+        run: make dev
+
+      - name: Install gui-smoke deps (Linux only)
+        if: matrix.run_gui_smoke == true
+        run: uv sync --group gui-smoke
+
+      # ---- Install the .oxt into each runner's LibreOffice ----
+
+      - name: Install Talk2View-Writer .oxt
+        shell: bash
+        run: bash scripts/install_oxt.sh dist/Talk2ViewWriter.oxt
+
+      # ---- Start headless soffice with a UNO socket ----
+
+      - name: Start headless soffice (Linux, under xvfb)
+        if: runner.os == 'Linux'
+        run: |
+          # `xvfb-run --auto-servernum` allocates a free display +
+          # tears it down after the wrapped command exits. We use it
+          # via `&` so soffice keeps running for the test step.
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 &
+          sleep 1
+          /usr/bin/soffice \
+            --headless --norestore --nologo --nodefault \
+            --accept="socket,host=127.0.0.1,port=2002;urp;" &
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      - name: Start headless soffice (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          /Applications/LibreOffice.app/Contents/MacOS/soffice \
+            --headless --norestore --nologo --nodefault \
+            --accept="socket,host=127.0.0.1,port=2002;urp;" &
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      - name: Start headless soffice (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $soffice = 'C:\Program Files\LibreOffice\program\soffice.exe'
+          Start-Process -FilePath $soffice -ArgumentList @(
+            '--headless', '--norestore', '--nologo', '--nodefault',
+            '--accept="socket,host=127.0.0.1,port=2002;urp;"'
+          )
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      # ---- Run the test suites ----
+
+      - name: Integration tests (UNO socket, all platforms)
+        run: uv run pytest -m integration --tb=short
+
+      - name: GUI smoke test (Linux only)
+        if: matrix.run_gui_smoke == true
+        env:
+          DISPLAY: ':99'
+        run: uv run pytest -m gui_smoke --tb=short
+
+      - name: Live chat E2E
+        if: matrix.run_live_chat == true
+        env:
+          T2V_TEST_USER_EMAIL: ${{ secrets.T2V_TEST_USER_EMAIL }}
+          T2V_TEST_USER_PASSWORD: ${{ secrets.T2V_TEST_USER_PASSWORD }}
+        run: uv run pytest -m live --tb=short
+
+      # ---- Diagnostics on failure ----
+
+      - name: Dump LibreOffice log on failure (Linux)
+        if: failure() && runner.os == 'Linux'
+        run: |
+          journalctl --user -u libreoffice 2>/dev/null || true
+          cat ~/.config/libreoffice/4/user/registrymodifications.xcu 2>/dev/null | head -50 || true

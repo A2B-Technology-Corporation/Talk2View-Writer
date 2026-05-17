@@ -1,7 +1,7 @@
 # Talk2View-Writer Makefile
 # Develop, test, and package the LibreOffice Writer extension.
 
-.PHONY: all install dev lint lint-fix format format-check test test-unit test-integration coverage typecheck security vendor-wheels build package install-oxt clean help
+.PHONY: all install dev lint lint-fix format format-check test test-unit test-integration test-gui-smoke test-live coverage typecheck security vendor-wheels build package install-oxt clean help
 
 BUILD_DIR := build
 DIST_DIR  := dist
@@ -48,6 +48,18 @@ test-unit:
 
 test-integration:
 	uv run pytest -m integration
+
+# Linux-only GUI smoke test via dogtail/AT-SPI. Requires
+# `uv sync --group gui-smoke` first + an X display (xvfb-run or a
+# real session).
+test-gui-smoke:
+	xvfb-run -a uv run pytest -m gui_smoke
+
+# Live chat E2E against engine.talk2view.com. Requires
+# T2V_TEST_USER_EMAIL + T2V_TEST_USER_PASSWORD env vars (or it
+# skips with a clear message).
+test-live:
+	uv run pytest -m live
 
 coverage:
 	uv run pytest --cov=src/talk2view_writer --cov-report=html --cov-report=term
@@ -141,7 +153,11 @@ help:
 	@echo "  install        Install runtime deps via uv"
 	@echo "  dev            Install dev deps"
 	@echo "  lint / format  Ruff checks"
-	@echo "  test           Run pytest"
+	@echo "  test           Run pytest (all markers)"
+	@echo "  test-unit      Fast tests, no LibreOffice needed"
+	@echo "  test-integration  UNO-socket tests (needs running soffice on :2002)"
+	@echo "  test-gui-smoke    Linux-only AT-SPI/dogtail tests"
+	@echo "  test-live      Live chat against engine.talk2view.com (needs T2V_TEST_USER_* env)"
 	@echo "  vendor-wheels  Refresh cross-platform pydantic_core matrix"
 	@echo "  build          Stage extension into $(BUILD_DIR)/"
 	@echo "  package        Create $(OXT)"

@@ -5,6 +5,11 @@ sockets. They are **skipped by default** under `make test-unit`; run
 them explicitly with `make test-integration` once LibreOffice is
 configured.
 
+**CI runs these automatically** on every push across Linux, macOS
+Intel, macOS Apple Silicon, and Windows — see
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml). The
+section below is for running them locally during development.
+
 ## Setup
 
 1. Start LibreOffice in headless mode with a UNO socket:

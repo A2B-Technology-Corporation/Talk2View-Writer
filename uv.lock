@@ -204,6 +204,15 @@ toml = [
 ]
 
 [[package]]
+name = "dogtail"
+version = "2.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/7c/a2931c6c46a5853c7b41827c5854cd68d2a8a4ebe07badfd1dcc19337399/dogtail-2.0.3.tar.gz", hash = "sha256:ce3f31e59765d407807a54f5deb39d8d767ef8cc04ad977836555e7d857bed4e", size = 180747, upload-time = "2026-05-15T15:32:16.308Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/a4/332a682a805dd575a105ed22412d537b32f94a1f05676c38e351d9d1eae2/dogtail-2.0.3-py3-none-any.whl", hash = "sha256:1864c3de64cbeed4261ef8a684ea9428b604a9f035e71402bfe0e3a382904918", size = 126867, upload-time = "2026-05-15T15:32:14.656Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -735,6 +744,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+gui-smoke = [
+    { name = "dogtail", marker = "sys_platform == 'linux'" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -751,6 +763,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=4.0.0" },
     { name = "ruff", specifier = ">=0.4.0" },
 ]
+gui-smoke = [{ name = "dogtail", marker = "sys_platform == 'linux'" }]
 
 [[package]]
 name = "tomli"

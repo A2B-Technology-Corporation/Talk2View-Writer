@@ -1,0 +1,154 @@
+name: Release
+
+# Triggered by pushing a semantic-version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Pre-releases supported via tag suffix: v0.1.0-alpha.1, v0.1.0-beta.2,
+# v0.1.0-rc.1 → published as pre-releases (not "Latest").
+#
+# Design note: this workflow does NOT re-run the full integration
+# matrix on the tag. It assumes the tag points at a commit that
+# already passed ci.yml's matrix when pushed. Re-running the matrix
+# would burn macOS arm64 minutes (~$0.12/min × 5-8 min) on every
+# release. If a tag's commit hasn't been CI'd, push it to a branch
+# first, wait for green, then tag it. (Cheap to revisit by adding
+# a `needs: integration-matrix` gate before `publish`.)
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*.*-*'   # pre-release tags
+
+# Need contents:write to create the GitHub Release.
+permissions:
+  contents: write
+
+jobs:
+
+  # -----------------------------------------------------------------
+  # Build the .oxt for this tag's commit.
+  # -----------------------------------------------------------------
+  build:
+    name: Build .oxt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the full history so the changelog step can reach the
+          # previous tag.
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install 3.13
+
+      - name: Cache vendored wheels
+        uses: actions/cache@v4
+        with:
+          path: vendor/
+          key: vendor-${{ hashFiles('scripts/vendor_wheels.py') }}
+
+      - run: make dev
+
+      - name: Vendor wheels (if not cached)
+        run: |
+          if [ ! -d vendor/extracted ]; then
+            make vendor-wheels
+          fi
+
+      - name: Build .oxt
+        run: make package
+
+      - name: Verify tag matches pyproject version
+        # Catches the common mistake of tagging v0.1.1 while
+        # pyproject.toml still says 0.1.0. The .oxt's manifest
+        # version comes from pyproject so we want them in sync.
+        run: |
+          PYPROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          # Strip pre-release suffix for the comparison.
+          TAG_BASE="${TAG_VERSION%%-*}"
+          if [[ "$PYPROJECT_VERSION" != "$TAG_BASE" ]]; then
+            echo "ERROR: tag v$TAG_VERSION does not match pyproject.toml version $PYPROJECT_VERSION" >&2
+            echo "Bump pyproject.toml's version = \"$TAG_BASE\" and re-tag." >&2
+            exit 1
+          fi
+
+      - name: Upload .oxt artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: oxt-release
+          path: dist/Talk2ViewWriter.oxt
+          retention-days: 90
+
+  # -----------------------------------------------------------------
+  # Publish the GitHub Release with the .oxt attached.
+  # -----------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download .oxt
+        uses: actions/download-artifact@v4
+        with:
+          name: oxt-release
+          path: dist/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the previous tag (excluding the current one).
+          PREV_TAG=$(git describe --tags --abbrev=0 --exclude="${GITHUB_REF#refs/tags/}" 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found — using full history"
+            LOG=$(git log --pretty='- %s' --no-merges)
+          else
+            echo "Diffing $PREV_TAG..HEAD"
+            LOG=$(git log --pretty='- %s' --no-merges "$PREV_TAG..HEAD")
+          fi
+          # Multi-line output via the GITHUB_OUTPUT delimiter pattern.
+          {
+            echo 'body<<EOF'
+            echo "## Changes since $PREV_TAG"
+            echo ""
+            echo "$LOG"
+            echo ""
+            echo "## Installation"
+            echo ""
+            echo 'Download `Talk2ViewWriter.oxt` below, then run:'
+            echo ""
+            echo '```'
+            echo 'unopkg add --force Talk2ViewWriter.oxt'
+            echo '```'
+            echo ""
+            echo 'Or via the LibreOffice GUI: **Tools → Extension Manager → Add...**'
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Detect pre-release
+        id: prerelease
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ "$TAG" =~ -(alpha|beta|rc) ]]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Talk2ViewWriter.oxt
+          body: ${{ steps.changelog.outputs.body }}
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
+          generate_release_notes: false  # we generate our own above
+          fail_on_unmatched_files: true

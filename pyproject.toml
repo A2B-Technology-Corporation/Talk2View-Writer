@@ -40,6 +40,14 @@ dev = [
     "bandit[toml]>=1.7.0",
 ]
 
+# Dependencies needed only when running the GUI smoke test against a
+# real LibreOffice instance. Linux-only because dogtail wraps AT-SPI
+# which only exists on Linux/Wayland desktops. Installed on demand
+# by the CI workflow (Linux job): `uv sync --group gui-smoke`.
+gui-smoke = [
+    "dogtail; sys_platform == 'linux'",
+]
+
 [project.urls]
 Homepage = "https://talk2view.com"
 
@@ -82,8 +90,10 @@ python_files = ["test_*.py"]
 addopts = ["-v", "--tb=short", "--strict-markers"]
 markers = [
     "unit: Unit tests (fast, no external dependencies)",
-    "integration: Integration tests (may require live engine)",
-    "e2e: End-to-end tests (require LibreOffice)",
+    "integration: Requires headless soffice on 127.0.0.1:2002 (cross-platform)",
+    "gui_smoke: Linux-only AT-SPI sidebar test (dogtail). Required-pass.",
+    "live: Live chat E2E against engine.talk2view.com. Requires T2V_TEST_USER_EMAIL/PASSWORD env.",
+    "e2e: End-to-end tests (legacy alias; superseded by integration + gui_smoke + live)",
 ]
 
 [tool.mypy]

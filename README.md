@@ -1,9 +1,35 @@
 # Talk2View-Writer
 
+[![CI](https://github.com/A2B-Technology-Corporation/Talk2View-Writer/actions/workflows/ci.yml/badge.svg)](https://github.com/A2B-Technology-Corporation/Talk2View-Writer/actions/workflows/ci.yml)
+[![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-blue.svg)](LICENSE)
+
 AI-powered document assistant for **LibreOffice Writer**. Sibling project to
 [Talk2View-Word](../Talk2View-Word/) (Microsoft Word). Adds a Talk2View chat
 panel to the LibreOffice Writer sidebar and executes Writer-native versions of
 the Talk2View-Word tool catalog through the UNO API.
+
+## Install (end users)
+
+Download the latest `Talk2ViewWriter.oxt` from the
+[Releases page](https://github.com/A2B-Technology-Corporation/Talk2View-Writer/releases/latest),
+then either:
+
+- **From the LibreOffice GUI**: `Tools → Extension Manager → Add...` and
+  pick the `.oxt`. Accept the MPL 2.0 license when prompted.
+- **From the command line**:
+
+  ```bash
+  unopkg add --force Talk2ViewWriter.oxt
+  ```
+
+Restart LibreOffice Writer; the **Talk2View** deck appears in the right
+sidebar.
+
+The `.oxt` is a single universal package — same file works on Linux
+(x86_64 + aarch64), macOS (Intel + Apple Silicon), and Windows x86_64,
+across Python 3.10–3.13. The cross-platform `pydantic_core` wheel
+matrix is bundled in the package; the right one is selected
+automatically at first launch (see [ADR-0023](docs/adrs/0023-vendor-pydantic-core-wheels.md)).
 
 ## Status
 
