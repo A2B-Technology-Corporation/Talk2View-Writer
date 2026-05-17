@@ -42,6 +42,7 @@ applied.
 | [0018](0018-ui-thread-marshalling-queue.md)  | UI-thread marshalling via `AsyncCallback` + `XCallback` | C | Accepted |
 | [0019](0019-tool-registry-aggregation.md)    | Tool registry aggregation via per-module `TOOLS` list | C | Accepted |
 | [0020](0020-tool-context-via-singleton.md)   | Tool bodies fetch UNO context via the extension singleton | C | Accepted |
+| [0021](0021-json-string-tool-returns.md)     | Tools return JSON-encoded strings, not Python dicts   | D | Accepted |
 
 ## Writing a new ADR
 

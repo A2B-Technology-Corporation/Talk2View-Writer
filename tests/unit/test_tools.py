@@ -39,12 +39,18 @@ def fake_talk2view(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_all_tools_includes_expected_phase_c_set(fake_talk2view: None) -> None:
+def test_all_tools_includes_expected_phase_d_reading_set(
+    fake_talk2view: None,
+) -> None:
+    """After Phase D Group 1 the reading group is complete."""
     from talk2view_writer.tools import all_tools
 
     names = {fn.__name__ for fn in all_tools()}
-    # Phase C ships exactly two proof tools.
-    assert names == {"get_document", "insert_content"}
+    # Phase D Group 1: reading complete (3) + Phase C writing proof (1).
+    assert "get_document" in names
+    assert "get_selection" in names
+    assert "select_text" in names
+    assert "insert_content" in names
 
 
 @pytest.mark.unit

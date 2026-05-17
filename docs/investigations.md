@@ -281,3 +281,91 @@ much smaller change than building a full marshalling queue.
 **Next step:** Write a small standalone test extension that grabs
 `solar_mutex` from a background thread and mutates a document.
 Report results as an addendum to Investigation #5 and update ADR-0017.
+
+---
+
+## #13 — Word style names don't all map cleanly to LibreOffice
+
+**What:** Word's built-in paragraph style set differs from
+LibreOffice's. Most are close (`Heading 1` ↔ `Heading1`, with a
+space), but several Word styles have no LibreOffice equivalent:
+
+- `IntenseQuote` — we map to `Quotations`, same as `Quote`
+- `NoSpacing` — we map to `Default Paragraph Style`, same as `Normal`
+
+Round-tripping `IntenseQuote` → `Quotations` → `Quote` is lossy.
+
+**Where:** `Talk2View-Writer/src/talk2view_writer/uno_helpers/styles.py`.
+
+**Why it matters:** When the agent sends a Word style name through
+`insert_content` or `format_paragraph`, the resulting paragraph in
+Writer may not look exactly like the Word equivalent. Round-tripping
+through `get_document` will silently rename the style.
+
+**Next step:**
+
+1. Phase D Group 3 (Formatting): document which style names suffer
+   degradation in the system-prompt deltas section (Phase E).
+2. Long-term: ship a small set of LibreOffice paragraph styles named
+   `IntenseQuote`, `NoSpacing`, etc. that match Word's visual look,
+   so `word_to_libreoffice_style` becomes lossless. Could ship as
+   a `Talk2ViewTemplate.ott` inside the `.oxt`.
+
+---
+
+## #14 — LibreOffice text sections ≠ Word document sections
+
+**What:** Word's `document.sections` are page-layout boundaries that
+control headers / footers, page numbering, and margins per range of
+pages. LibreOffice has no direct equivalent — section concepts are
+split across **page styles** (per-page layout) and **text sections**
+(re-flowed content blocks). The Word agent treats `section_count` as
+"how many page-layout sections does the doc have" but our
+`get_document` returns `doc.getTextSections().getCount()` which is
+a different quantity entirely.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/reading.py::get_document`,
+`response["sections"]` field.
+
+**Why it matters:** The agent may interpret a value of 0 or 1 as
+"no section breaks" and make incorrect decisions about
+`insert_break` with `type="section_next_page"`.
+
+**Next step:**
+
+1. Phase D Group 5 (Structure): `insert_break` needs to either
+   simulate Word sections via page styles, or be honest about the
+   semantic gap.
+2. `get_document` should consider returning a richer
+   `page_styles` field (count of distinct page styles used) instead
+   of / alongside `sections`. Coordinate with Phase E system-prompt
+   deltas so the agent knows the field's actual semantics.
+
+---
+
+## #15 — UNO `XFont` API has no direct equivalent on a paragraph
+
+**What:** Word's `paragraph.getRange().font` gives a single Font
+object whose properties describe the entire paragraph's font (with
+the implicit assumption that the paragraph has uniform formatting,
+or returning the property at the first character if mixed).
+LibreOffice's UNO has no `paragraph.font` shortcut — to read font
+properties we create a text cursor across the paragraph and read
+`Char*` properties from it. The result for mixed-formatting
+paragraphs is the property of the *first* character only, not a
+union or majority.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/tools/reading.py::_read_font_properties`.
+
+**Why it matters:** If a paragraph contains a mix of bold and
+plain text, our `include_font_details=true` response will say the
+paragraph is bold (because the first character is) — but Word's
+Font object might say `bold = null` (mixed). Subtle but visible to
+the agent.
+
+**Next step:** When porting `format_text` (Phase D Group 3) decide
+whether to detect mixed formatting and report `null` for divergent
+properties, like Word does. May require walking each character of
+the paragraph, which is expensive — measure first.
