@@ -1,6 +1,7 @@
 # ADR-0009: Worker thread + UI-thread queue for SDK iteration
 
-**Status:** Accepted (design)
+**Status:** Accepted (design) — *partially relaxed for Phase B by
+[ADR-0017](0017-cross-thread-widget-updates-phase-b.md)*
 **Date:** 2026-05-17
 **Phase:** A (planning), Phase B (implementation)
 

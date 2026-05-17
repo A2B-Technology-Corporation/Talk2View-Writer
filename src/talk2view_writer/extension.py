@@ -9,22 +9,51 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
+    from com.sun.star.awt import XWindow
     from com.sun.star.uno import XComponentContext
+
+    from talk2view.types import User
+
+    from talk2view_writer.sdk_client import Talk2ViewSDKClient
+    from talk2view_writer.ui.sidebar_panel import Talk2ViewPanel
 
 logger = logging.getLogger(__name__)
 
 
 class Talk2ViewWriterExtension:
-    """Holds long-lived state for the extension across UNO invocations."""
+    """Holds long-lived state for the extension across UNO invocations.
+
+    Owns:
+
+    - the :class:`Talk2ViewSDKClient` (lazy-init on first ``sdk`` access),
+    - the list of open sidebar panels,
+    - the auth-state listener that broadcasts login/logout to panels.
+    """
 
     def __init__(self, ctx: "XComponentContext") -> None:
         self.ctx = ctx
         self._lock = threading.Lock()
-        self._sdk_client = None  # populated in Phase B
-        self._open_panels: list = []  # ChatPanel instances; weak refs in Phase B
+        self._sdk: Optional["Talk2ViewSDKClient"] = None
+        self._open_panels: List["Talk2ViewPanel"] = []
+
+    # ------------------------------------------------------------------
+    # SDK lifecycle
+    # ------------------------------------------------------------------
+
+    @property
+    def sdk(self) -> "Talk2ViewSDKClient":
+        """Lazily-instantiated Talk2View SDK wrapper."""
+        with self._lock:
+            if self._sdk is None:
+                from talk2view_writer.sdk_client import Talk2ViewSDKClient
+
+                self._sdk = Talk2ViewSDKClient()
+                self._sdk.add_auth_listener(self._on_auth_changed)
+                logger.info("SDK client instantiated")
+            return self._sdk
 
     # ------------------------------------------------------------------
     # Menu command handlers (called by Talk2ViewJob.trigger)
@@ -40,13 +69,10 @@ class Talk2ViewWriterExtension:
         if frame is None:
             raise RuntimeError("No active Writer window")
 
-        # Activate the Talk2View deck via the standard sidebar dispatcher.
-        # The URL ".uno:Sidebar" toggles it; ShowDeck switches to a specific deck.
         dispatcher = self.ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.frame.DispatchHelper", self.ctx
         )
-        import uno
-        from com.sun.star.beans import PropertyValue
+        from com.sun.star.beans import PropertyValue  # type: ignore[import-not-found]
 
         prop = PropertyValue()
         prop.Name = "Sidebar"
@@ -54,17 +80,29 @@ class Talk2ViewWriterExtension:
         dispatcher.executeDispatch(
             frame, ".uno:SidebarDeck", "_self", 0, (prop,)
         )
-        _ = uno  # silence unused-import linter for now
 
-    def show_login_dialog(self) -> None:
-        """Phase B: prompt for email/password and call ``t2v.auth.login``."""
-        logger.info("show_login_dialog (stub)")
-        raise NotImplementedError("Login dialog not yet implemented — Phase B")
+    def show_login_dialog(
+        self, parent_window: "Optional[XWindow]" = None
+    ) -> None:
+        """Prompt for credentials and call ``sdk.login``."""
+        logger.info("show_login_dialog")
+        from talk2view_writer.ui.login_dialog import show_login_dialog
+
+        creds = show_login_dialog(self.ctx, parent_window=parent_window)
+        if creds is None:
+            logger.info("Login cancelled by user")
+            return
+        email, password = creds
+        # SDK errors propagate to the caller (Talk2ViewJob.trigger), which
+        # surfaces them via an ERRORBOX. We deliberately do not catch
+        # AuthenticationError / NetworkError here — see ADR-0014.
+        user = self.sdk.login(email, password)
+        logger.info("Login succeeded for %s", user.email)
 
     def logout(self) -> None:
-        """Phase B: clear stored tokens and reset the SDK client."""
-        logger.info("logout (stub)")
-        raise NotImplementedError("Logout not yet implemented — Phase B")
+        """Clear local + server-side session."""
+        logger.info("logout")
+        self.sdk.logout()
 
     def show_settings_dialog(self) -> None:
         """Phase F: model picker, partner key override, etc."""
@@ -75,18 +113,42 @@ class Talk2ViewWriterExtension:
     # Panel lifecycle (called by ChatPanelFactory.createUIElement)
     # ------------------------------------------------------------------
 
-    def register_panel(self, panel: object) -> None:
-        """Track an open sidebar panel so we can broadcast events to it."""
+    def register_panel(self, panel: "Talk2ViewPanel") -> None:
         with self._lock:
             self._open_panels.append(panel)
+        # Push the current auth state to the new panel so its initial
+        # render reflects login status without waiting for a transition.
+        user = self.sdk.current_user if self._sdk is not None else None
+        try:
+            panel.on_auth_changed(user)
+        except Exception:
+            logger.exception("Initial on_auth_changed failed for new panel")
         logger.info("Panel registered (total open: %d)", len(self._open_panels))
 
-    def unregister_panel(self, panel: object) -> None:
-        """Remove a closed panel from the tracking list."""
+    def unregister_panel(self, panel: "Talk2ViewPanel") -> None:
         with self._lock:
             if panel in self._open_panels:
                 self._open_panels.remove(panel)
         logger.info("Panel unregistered (total open: %d)", len(self._open_panels))
+
+    # ------------------------------------------------------------------
+    # Internal: auth state fan-out
+    # ------------------------------------------------------------------
+
+    def _on_auth_changed(self, user: "Optional[User]") -> None:
+        """SDK auth-state callback — broadcast to all open panels."""
+        with self._lock:
+            panels = list(self._open_panels)
+        logger.info(
+            "Auth changed: user=%s; notifying %d panel(s)",
+            user.email if user else None,
+            len(panels),
+        )
+        for panel in panels:
+            try:
+                panel.on_auth_changed(user)
+            except Exception:
+                logger.exception("Panel on_auth_changed raised")
 
 
 _INSTANCE: Optional[Talk2ViewWriterExtension] = None

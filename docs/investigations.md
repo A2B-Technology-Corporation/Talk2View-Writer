@@ -234,3 +234,50 @@ invoked.
 
 **Next step:** Add `"test": "vitest run"` and `"test:watch":
 "vitest"` to `Talk2View-Word/package.json` scripts.
+
+---
+
+## #11 — Chat history `UnoControlEdit` has no built-in length cap
+
+**What:** The Phase B chat panel renders history into a
+`UnoControlEdit` and appends by concatenating the new chunk to the
+current `Text` property. There is no automatic trim when the history
+grows long, and the `setPropertyValue("Text", …)` call rewrites the
+entire buffer each time — O(n) per append.
+
+**Where:**
+`Talk2View-Writer/src/talk2view_writer/ui/sidebar_panel.py::Talk2ViewPanel._append_history`.
+
+**Why it matters:** Long sessions (multi-hour interactive editing)
+will degrade noticeably as the buffer grows. Also no upper bound on
+memory.
+
+**Next step:**
+
+1. Phase F: add a "Clear chat" button that resets the history widget.
+2. Phase F: cap the buffer at e.g. 200 KB and auto-trim the oldest
+   content (with a "[earlier history truncated]" marker).
+3. Consider using `UnoControlEditModel.MaximumTextLength` as a hard
+   safety net.
+
+---
+
+## #12 — `solar_mutex` from PyUNO — Phase B spike outcome TBD
+
+**What:** ADR-0017 ships cross-thread widget writes from the chat
+worker as a calculated risk, predicated on the assumption that
+`solar_mutex_acquire()` from PyUNO is either unavailable or too
+brittle to bet on. We have not actually verified this — the spike is
+deferred to Phase B / C.
+
+**Where:**
+`Talk2View-Writer/docs/adrs/0017-cross-thread-widget-updates-phase-b.md`,
+linked from Investigation #5.
+
+**Why it matters:** If the spike confirms `solar_mutex` works
+reliably from PyUNO, we can replace the direct-write pattern with a
+much smaller change than building a full marshalling queue.
+
+**Next step:** Write a small standalone test extension that grabs
+`solar_mutex` from a background thread and mutates a document.
+Report results as an addendum to Investigation #5 and update ADR-0017.

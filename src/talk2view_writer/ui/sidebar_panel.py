@@ -1,18 +1,43 @@
 """LibreOffice Writer sidebar panel for Talk2View.
 
-Implements the ``XUIElement`` returned from ``ChatPanelFactory`` in
-``extension/talk2view_writer.py``. Phase A renders a placeholder layout
-(status label + Log-in button) sufficient to verify the deck registers
-and the panel mounts. Phase B replaces this with the chat composer + history.
+Phase B layout:
+
+    +-----------------------------------------+
+    |  Logged in as you@example.com           |  status label
+    |  [ Log in... ] (only when logged out)   |  login button
+    |                                         |
+    |  +-----------------------------------+  |
+    |  | chat history (multiline, ro)      |  |
+    |  |                                   |  |
+    |  +-----------------------------------+  |
+    |                                         |
+    |  +-----------------------------------+  |
+    |  | composer (multiline)              |  |
+    |  +-----------------------------------+  |
+    |  [ Send ]                               |
+    +-----------------------------------------+
+
+The panel registers with the extension singleton so it receives
+:meth:`on_auth_changed` callbacks when login/logout state changes.
+
+Threading: the send-button handler spawns a worker thread that
+iterates ``sdk.chat(text)`` and writes streamed deltas directly to
+the history widget's ``Text`` property. This is technically a
+cross-thread UNO call; for plain text-property updates on a passive
+widget it is empirically safe and matches SpeedWriter's polling
+pattern. See ``docs/adrs/0017-cross-thread-widget-updates-phase-b.md``
+for the trade-off and the plan to introduce a proper UI-thread
+marshalling queue when tool execution lands in Phase C.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING, List, Optional
 
-import uno
-import unohelper
+import uno  # type: ignore[import-not-found]
+import unohelper  # type: ignore[import-not-found]
 from com.sun.star.awt import (  # type: ignore[import-not-found]
     XActionListener,
     XWindowListener,
@@ -35,13 +60,16 @@ if TYPE_CHECKING:
     from com.sun.star.lang import EventObject
     from com.sun.star.uno import XComponentContext
 
+    from talk2view.types import User
+
 logger = logging.getLogger(__name__)
 
-# Pixel constants for the placeholder layout. Values picked to look
-# sensible at the default sidebar width (~250-320 px).
-_PADDING = 8
-_BUTTON_HEIGHT = 28
-_LABEL_HEIGHT = 22
+_PADDING = 6
+_BUTTON_HEIGHT = 26
+_STATUS_HEIGHT = 20
+_LOGIN_BUTTON_HEIGHT = 26
+_COMPOSER_HEIGHT = 60
+_HISTORY_MIN_HEIGHT = 80
 
 
 # ---------------------------------------------------------------------------
@@ -62,13 +90,11 @@ def build_chat_panel(
     """
     panel = Talk2ViewPanel(ctx, parent_window, frame, resource_url)
 
-    # Register the panel with the extension singleton so future phases
-    # can route SDK events to all open panels.
     from talk2view_writer.extension import get_extension
 
     try:
         get_extension(ctx).register_panel(panel)
-    except Exception:  # registration failure should not break the panel
+    except Exception:
         logger.exception("Failed to register panel with extension singleton")
 
     return panel
@@ -80,12 +106,7 @@ def build_chat_panel(
 
 
 class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
-    """XUIElement wrapping the Talk2View sidebar panel.
-
-    The "real interface" returned to LibreOffice is the container
-    XWindow that holds the panel's widgets. LibreOffice will dock that
-    window inside the sidebar deck.
-    """
+    """Talk2View chat panel for LibreOffice Writer's sidebar deck."""
 
     def __init__(
         self,
@@ -100,17 +121,25 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         self._resource_url = resource_url
         self._listeners: List[object] = []
 
+        # Widgets
         self._container_window: "Optional[XWindow]" = None
         self._control_container: "Optional[XControlContainer]" = None
         self._status_label: "Optional[XControl]" = None
         self._login_button: "Optional[XControl]" = None
+        self._history_field: "Optional[XControl]" = None
+        self._composer_field: "Optional[XControl]" = None
+        self._send_button: "Optional[XControl]" = None
         self._window_listener: "Optional[_PanelResizeListener]" = None
+
+        # Auth + chat state
+        self._user: Optional["User"] = None
+        self._busy = threading.Event()  # set while a worker thread is running
 
         self._build_window()
 
     # ----- XUIElement -----------------------------------------------------
 
-    def getResourceURL(self) -> str:  # noqa: N802 — UNO interface naming
+    def getResourceURL(self) -> str:  # noqa: N802
         return self._resource_url
 
     def getType(self) -> int:  # noqa: N802
@@ -123,8 +152,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         assert self._container_window is not None  # noqa: S101
         return self._container_window
 
-    def setSettings(self, settings: object) -> None:  # noqa: N802
-        # Tool panels don't carry menu/toolbar settings.
+    def setSettings(self, settings: object) -> None:  # noqa: N802, ARG002
         pass
 
     def getSettings(self, write: bool) -> None:  # noqa: N802, ARG002
@@ -166,73 +194,72 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         if listener in self._listeners:
             self._listeners.remove(listener)
 
-    # ----- Internal: build the widget tree ----------------------------------
+    # ----- Public: auth state callback ------------------------------------
+
+    def on_auth_changed(self, user: "Optional[User]") -> None:
+        """Called by the extension singleton on every login/logout."""
+        self._user = user
+        self._apply_auth_state()
+
+    # ----- Internal: build the widget tree --------------------------------
 
     def _build_window(self) -> None:
-        """Create a container XWindow with placeholder widgets.
-
-        Uses the awt ``ContainerWindow`` service which provides an
-        ``XControlContainer`` we can attach individual controls
-        (FixedText, Button) to. The container honours the parent's
-        bounds; we reposition children manually on resize via
-        :class:`_PanelResizeListener`.
-        """
         toolkit = self._parent_window.getToolkit()
 
-        # Step 1: create the container window as a child of the sidebar parent.
+        # Container window (docks inside the sidebar panel area).
         descriptor = uno.createUnoStruct("com.sun.star.awt.WindowDescriptor")
         descriptor.Type = SIMPLE
         descriptor.WindowServiceName = "dockingwindow"
         descriptor.ParentIndex = -1
         descriptor.Parent = self._parent_window
         descriptor.Bounds = uno.createUnoStruct("com.sun.star.awt.Rectangle")
-        descriptor.WindowAttributes = 0  # default attributes
-
+        descriptor.WindowAttributes = 0
         container_peer = toolkit.createWindow(descriptor)
-        container_window: "XWindow" = container_peer  # type: ignore[assignment]
-        self._container_window = container_window
+        self._container_window = container_peer
 
-        # Step 2: create the control container that hosts our widgets.
-        control_container_model = self._create_service(
-            "com.sun.star.awt.UnoControlContainerModel"
-        )
-        control_container = self._create_service(
-            "com.sun.star.awt.UnoControlContainer"
-        )
-        control_container.setModel(control_container_model)
-        control_container.createPeer(toolkit, container_peer)
-        # Make the container window fill the deck panel area.
-        control_container_window: "XWindow" = control_container  # type: ignore[assignment]
-        control_container_window.setPosSize(
-            0,
-            0,
-            self._parent_window.getPosSize().Width,
-            self._parent_window.getPosSize().Height,
-            POSSIZE,
-        )
-        self._control_container = control_container
+        # Control container, sized to fill the deck area.
+        cc_model = self._create_service("com.sun.star.awt.UnoControlContainerModel")
+        cc = self._create_service("com.sun.star.awt.UnoControlContainer")
+        cc.setModel(cc_model)
+        cc.createPeer(toolkit, container_peer)
+        parent_size = self._parent_window.getPosSize()
+        cc_window: "XWindow" = cc  # type: ignore[assignment]
+        cc_window.setPosSize(0, 0, parent_size.Width, parent_size.Height, POSSIZE)
+        self._control_container = cc
 
-        # Step 3: status label.
+        # Children.
         self._status_label = self._add_label(
-            control_container,
-            "Talk2View — placeholder panel (Phase A)",
-            name="status_label",
+            cc, "Talk2View — not logged in", name="status_label"
         )
-
-        # Step 4: login button.
         self._login_button = self._add_button(
-            control_container,
-            "Log in…",
-            name="login_button",
-            on_click=self._on_login_clicked,
+            cc, "Log in...", name="login_button", on_click=self._on_login_clicked
+        )
+        self._history_field = self._add_edit(
+            cc,
+            name="history_field",
+            multiline=True,
+            read_only=True,
+            v_scroll=True,
+        )
+        self._composer_field = self._add_edit(
+            cc,
+            name="composer_field",
+            multiline=True,
+            read_only=False,
+            v_scroll=True,
+        )
+        self._send_button = self._add_button(
+            cc, "Send", name="send_button", on_click=self._on_send_clicked
         )
 
-        # Step 5: listen for parent resizes so we can reflow children.
         self._window_listener = _PanelResizeListener(self)
         self._parent_window.addWindowListener(self._window_listener)
-        self._layout_children()
 
-        logger.info("Talk2View sidebar panel built")
+        self._apply_auth_state()
+        self._layout_children()
+        logger.info("Talk2View chat panel built")
+
+    # ----- Widget factories -----------------------------------------------
 
     def _create_service(self, service_name: str) -> object:
         return self.ctx.ServiceManager.createInstanceWithContext(
@@ -240,11 +267,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         )
 
     def _add_label(
-        self,
-        container: "XControlContainer",
-        text: str,
-        *,
-        name: str,
+        self, container: "XControlContainer", text: str, *, name: str
     ) -> "XControl":
         model = self._create_service("com.sun.star.awt.UnoControlFixedTextModel")
         model.setPropertyValue("Label", text)
@@ -271,36 +294,209 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         control.addActionListener(_ActionForwarder(on_click))
         return control
 
-    # ----- Internal: layout / event handlers --------------------------------
+    def _add_edit(
+        self,
+        container: "XControlContainer",
+        *,
+        name: str,
+        multiline: bool,
+        read_only: bool,
+        v_scroll: bool,
+    ) -> "XControl":
+        model = self._create_service("com.sun.star.awt.UnoControlEditModel")
+        model.setPropertyValue("Name", name)
+        model.setPropertyValue("MultiLine", multiline)
+        model.setPropertyValue("ReadOnly", read_only)
+        model.setPropertyValue("VScroll", v_scroll)
+        model.setPropertyValue("HScroll", False)
+        control = self._create_service("com.sun.star.awt.UnoControlEdit")
+        control.setModel(model)
+        container.addControl(name, control)
+        return control
+
+    # ----- Layout ---------------------------------------------------------
 
     def _layout_children(self) -> None:
-        """Reposition the placeholder widgets to fill the panel width."""
         if self._control_container is None:
             return
-        parent_size = self._parent_window.getPosSize()
-        width = max(parent_size.Width - 2 * _PADDING, 100)
+        size = self._parent_window.getPosSize()
+        width = max(size.Width - 2 * _PADDING, 100)
+        x = _PADDING
         y = _PADDING
+
         if self._status_label is not None:
-            label_window: "XWindow" = self._status_label  # type: ignore[assignment]
-            label_window.setPosSize(_PADDING, y, width, _LABEL_HEIGHT, POSSIZE)
-            y += _LABEL_HEIGHT + _PADDING
+            (self._status_label).setPosSize(  # type: ignore[union-attr]
+                x, y, width, _STATUS_HEIGHT, POSSIZE
+            )
+            y += _STATUS_HEIGHT + _PADDING
+
+        login_visible = self._user is None
         if self._login_button is not None:
-            button_window: "XWindow" = self._login_button  # type: ignore[assignment]
-            button_window.setPosSize(_PADDING, y, width, _BUTTON_HEIGHT, POSSIZE)
+            (self._login_button).setVisible(login_visible)  # type: ignore[attr-defined]
+            if login_visible:
+                (self._login_button).setPosSize(  # type: ignore[union-attr]
+                    x, y, width, _LOGIN_BUTTON_HEIGHT, POSSIZE
+                )
+                y += _LOGIN_BUTTON_HEIGHT + _PADDING
+
+        # Composer + Send anchored to the bottom; history fills the rest.
+        bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
+        history_h = max(
+            size.Height - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT
+        )
+        if self._history_field is not None:
+            (self._history_field).setPosSize(  # type: ignore[union-attr]
+                x, y, width, history_h, POSSIZE
+            )
+            y += history_h + _PADDING
+
+        if self._composer_field is not None:
+            (self._composer_field).setPosSize(  # type: ignore[union-attr]
+                x, y, width, _COMPOSER_HEIGHT, POSSIZE
+            )
+            y += _COMPOSER_HEIGHT + _PADDING
+
+        if self._send_button is not None:
+            (self._send_button).setPosSize(  # type: ignore[union-attr]
+                x, y, width, _BUTTON_HEIGHT, POSSIZE
+            )
+
+    # ----- Auth state application -----------------------------------------
+
+    def _apply_auth_state(self) -> None:
+        """Update labels + enabled state to match ``self._user``."""
+        if self._status_label is not None:
+            text = (
+                f"Logged in as {self._user.email}"
+                if self._user is not None
+                else "Talk2View — not logged in"
+            )
+            self._status_label.getModel().setPropertyValue("Label", text)
+
+        is_auth = self._user is not None
+
+        if self._composer_field is not None:
+            self._composer_field.getModel().setPropertyValue("Enabled", is_auth)
+        if self._send_button is not None:
+            self._send_button.getModel().setPropertyValue("Enabled", is_auth)
+
+        # Show/hide the login button — layout has to re-run so other
+        # children fill the freed space.
+        self._layout_children()
+
+    # ----- Event handlers -------------------------------------------------
 
     def _on_login_clicked(self) -> None:
-        logger.info("Login button clicked (placeholder)")
-        # Phase B will route this to extension.show_login_dialog().
-        try:
-            from talk2view_writer.extension import get_extension
+        from talk2view_writer.extension import get_extension
 
-            get_extension(self.ctx).show_login_dialog()
-        except NotImplementedError:
-            # Expected in Phase A — surface to the user.
-            self._show_message("Talk2View", "Login arrives in Phase B.")
+        parent = (
+            self._frame.getContainerWindow() if self._frame is not None else None
+        )
+        try:
+            get_extension(self.ctx).show_login_dialog(parent_window=parent)
         except Exception as exc:
             logger.exception("Login flow failed")
-            self._show_message("Talk2View — error", str(exc))
+            self._show_message("Talk2View — login failed", str(exc))
+
+    def _on_send_clicked(self) -> None:
+        if self._busy.is_set():
+            logger.info("Send pressed while busy — ignoring")
+            return
+        if self._composer_field is None or self._history_field is None:
+            return
+        message = str(
+            self._composer_field.getModel().getPropertyValue("Text") or ""
+        ).strip()
+        if not message:
+            return
+
+        # Clear composer, append user message to history, mark busy.
+        self._composer_field.getModel().setPropertyValue("Text", "")
+        self._append_history(f"You: {message}\n")
+        self._append_history("Talk2View: ")
+        self._set_busy(True)
+
+        thread = threading.Thread(
+            target=self._chat_worker, args=(message,), daemon=True
+        )
+        thread.start()
+
+    # ----- Chat worker (background thread) --------------------------------
+
+    def _chat_worker(self, message: str) -> None:
+        from talk2view_writer.extension import get_extension
+
+        try:
+            sdk = get_extension(self.ctx).sdk
+            for event in sdk.chat(message):
+                self._handle_chat_event(event)
+            self._append_history("\n")
+        except Exception as exc:
+            logger.exception("Chat worker failed")
+            self._append_history(f"\n[error] {exc}\n")
+        finally:
+            self._set_busy(False)
+
+    def _handle_chat_event(self, event) -> None:
+        """Map a ``ChatEvent`` to UI updates.
+
+        Phase B handles the text-only event stream. Phase C/D add
+        ``tool_call`` event handling once tools land.
+        """
+        etype = getattr(event, "type", None)
+        if etype == "text" and event.content:
+            self._append_history(event.content)
+        elif etype == "status":
+            self._set_status(event.message or "")
+        elif etype == "error":
+            self._append_history(f"\n[error] {event.message}\n")
+        elif etype == "done":
+            return
+        elif etype == "tool_call":
+            tool_name = getattr(event, "tool_name", "?")
+            self._append_history(f"\n[tool: {tool_name}] (Phase C)\n")
+        else:
+            logger.debug("Unhandled ChatEvent type: %s", etype)
+
+    # ----- Cross-thread widget writers ------------------------------------
+    #
+    # These write to widget Text/Label properties from the worker
+    # thread directly. See ADR-0017 for why this is acceptable for
+    # Phase B and the plan to replace with proper UI-thread marshalling
+    # when tool execution starts mutating documents.
+
+    def _append_history(self, text: str) -> None:
+        if self._history_field is None:
+            return
+        model = self._history_field.getModel()
+        current = model.getPropertyValue("Text") or ""
+        model.setPropertyValue("Text", current + text)
+
+    def _set_status(self, text: str) -> None:
+        if self._status_label is None:
+            return
+        self._status_label.getModel().setPropertyValue("Label", text)
+
+    def _set_busy(self, busy: bool) -> None:
+        if busy:
+            self._busy.set()
+        else:
+            self._busy.clear()
+        if self._composer_field is not None:
+            self._composer_field.getModel().setPropertyValue(
+                "Enabled", not busy and self._user is not None
+            )
+        if self._send_button is not None:
+            self._send_button.getModel().setPropertyValue(
+                "Enabled", not busy and self._user is not None
+            )
+        if busy:
+            self._set_status("Thinking…")
+        else:
+            # Restore the per-auth-state status text.
+            self._apply_auth_state()
+
+    # ----- Misc -----------------------------------------------------------
 
     def _show_message(self, title: str, message: str) -> None:
         if self._frame is None:
@@ -310,7 +506,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         toolkit = window.getToolkit()
         msgbox = toolkit.createMessageBox(
             window,
-            uno.Enum("com.sun.star.awt.MessageBoxType", "INFOBOX"),
+            uno.Enum("com.sun.star.awt.MessageBoxType", "ERRORBOX"),
             1,
             title,
             message,
@@ -324,7 +520,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
 
 class _ActionForwarder(unohelper.Base, XActionListener):
-    """Tiny shim: forwards UNO action events to a Python callable."""
+    """Forward UNO action events to a Python callable."""
 
     def __init__(self, callback) -> None:
         self._callback = callback
@@ -337,7 +533,7 @@ class _ActionForwarder(unohelper.Base, XActionListener):
 
 
 class _PanelResizeListener(unohelper.Base, XWindowListener):
-    """Reflows the panel children when the parent sidebar window resizes."""
+    """Re-flow the panel when the parent sidebar window resizes."""
 
     def __init__(self, panel: Talk2ViewPanel) -> None:
         self._panel = panel

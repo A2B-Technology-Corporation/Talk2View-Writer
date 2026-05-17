@@ -33,8 +33,12 @@ applied.
 | [0009](0009-worker-thread-sse-iteration.md)  | Worker thread + UI-thread queue for SDK iteration     | A | Accepted |
 | [0010](0010-partner-key-shared-with-word.md) | Reuse Word partner key until a Writer key is issued    | A | Accepted |
 | [0011](0011-sidebar-context-writer-only.md)  | Sidebar deck scoped to Writer + Writer Global docs    | A | Accepted |
-| [0012](0012-token-storage-deferred.md)       | Token storage deferred to Phase B                     | A | Deferred |
+| [0012](0012-token-storage-deferred.md)       | Token storage deferred to Phase B                     | A | Superseded by 0014 |
 | [0013](0013-skill-and-prompt-copy-from-word.md) | Skills + system prompt copied verbatim from Word    | A | Accepted (planned) |
+| [0014](0014-file-token-storage.md)           | File-backed token storage in user config directory    | B | Accepted |
+| [0015](0015-programmatic-login-dialog.md)    | Login dialog built programmatically (not `.xdl`)      | B | Accepted |
+| [0016](0016-multiline-edit-history.md)       | Chat history rendered as a multiline `UnoControlEdit` | B | Accepted |
+| [0017](0017-cross-thread-widget-updates-phase-b.md) | Cross-thread widget updates from the chat worker (Phase B only) | B | Accepted (interim) |
 
 ## Writing a new ADR
 

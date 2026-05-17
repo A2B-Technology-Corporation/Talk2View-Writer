@@ -1,8 +1,11 @@
 # ADR-0012: Token storage deferred to Phase B
 
-**Status:** Deferred
+**Status:** Superseded by [ADR-0014](0014-file-token-storage.md)
 **Date:** 2026-05-17
 **Phase:** A (placeholder), Phase B (implementation)
+**Superseded by:** [ADR-0014](0014-file-token-storage.md) — chose
+`FileTokenStorage` writing to OS-conventional config dir with atomic
+writes and POSIX `0o600` perms.
 
 ## Context
 
