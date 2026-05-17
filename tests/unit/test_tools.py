@@ -39,10 +39,10 @@ def fake_talk2view(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_all_tools_includes_expected_phase_d_groups_1_to_4(
+def test_all_tools_includes_expected_phase_d_groups_1_to_5(
     fake_talk2view: None,
 ) -> None:
-    """After Phase D Groups 1-4 the reading + writing + formatting + search groups are complete."""
+    """After Phase D Groups 1-5 reading + writing + formatting + search + structure done."""
     from talk2view_writer.tools import all_tools
 
     names = {fn.__name__ for fn in all_tools()}
@@ -64,6 +64,11 @@ def test_all_tools_includes_expected_phase_d_groups_1_to_4(
         "manage_list",
         # Search (1)
         "search_document",
+        # Structure (4)
+        "insert_break",
+        "set_header_footer",
+        "insert_page_numbers",
+        "set_page_setup",
     }
     assert expected.issubset(names)
     assert len(names) == len(expected)

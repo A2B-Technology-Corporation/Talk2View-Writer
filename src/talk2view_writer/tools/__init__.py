@@ -25,6 +25,7 @@ from collections.abc import Callable
 from talk2view_writer.tools.formatting import TOOLS as _FORMATTING_TOOLS
 from talk2view_writer.tools.reading import TOOLS as _READING_TOOLS
 from talk2view_writer.tools.search import TOOLS as _SEARCH_TOOLS
+from talk2view_writer.tools.structure import TOOLS as _STRUCTURE_TOOLS
 from talk2view_writer.tools.writing import TOOLS as _WRITING_TOOLS
 
 
@@ -39,6 +40,7 @@ def all_tools() -> list[Callable]:
         *_WRITING_TOOLS,
         *_FORMATTING_TOOLS,
         *_SEARCH_TOOLS,
+        *_STRUCTURE_TOOLS,
     ]
 
 
