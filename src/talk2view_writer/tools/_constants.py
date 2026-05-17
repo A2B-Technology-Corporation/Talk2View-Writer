@@ -58,3 +58,42 @@ _POINTS_TO_HMM_FACTOR = 2540.0 / 72.0
 def points_to_hmm(points: float) -> int:
     """Convert points to UNO's 1/100-mm length units, rounded to int."""
     return round(points * _POINTS_TO_HMM_FACTOR)
+
+
+# Word's named highlight colours mapped to UNO `CharHighlight` int values
+# (0xRRGGBB). ``NoColor`` maps to ``-1`` which UNO interprets as "remove
+# highlighting" (Char* properties accept -1 for "auto / inherit").
+HIGHLIGHT_COLOR_RGB: dict[str, int] = {
+    "Yellow": 0xFFFF00,
+    "Green": 0x00FF00,
+    "Turquoise": 0x40E0D0,
+    "Pink": 0xFFC0CB,
+    "Blue": 0x0000FF,
+    "Red": 0xFF0000,
+    "DarkBlue": 0x00008B,
+    "Teal": 0x008080,
+    "Violet": 0xEE82EE,
+    "DarkRed": 0x8B0000,
+    "DarkYellow": 0x808000,
+    "Gray25": 0xBFBFBF,
+    "Gray50": 0x808080,
+    "Black": 0x000000,
+    "White": 0xFFFFFF,
+    "NoColor": -1,
+}
+
+
+def hex_to_rgb_int(hex_str: str) -> int:
+    """Parse a 6-char hex colour (no leading ``#``) into an ``0xRRGGBB`` int."""
+    return int(hex_str, 16)
+
+
+# com.sun.star.awt.FontUnderline values for the underline styles Word exposes.
+UNDERLINE_STYLE_UNO: dict[str, int] = {
+    "none": 0,
+    "single": 1,
+    "double": 2,
+    "dotted": 3,
+    "dashed": 5,
+    "wave": 10,
+}

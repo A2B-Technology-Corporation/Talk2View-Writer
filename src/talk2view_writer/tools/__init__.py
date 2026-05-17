@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from talk2view_writer.tools.formatting import TOOLS as _FORMATTING_TOOLS
 from talk2view_writer.tools.reading import TOOLS as _READING_TOOLS
 from talk2view_writer.tools.writing import TOOLS as _WRITING_TOOLS
 
@@ -35,6 +36,7 @@ def all_tools() -> list[Callable]:
     return [
         *_READING_TOOLS,
         *_WRITING_TOOLS,
+        *_FORMATTING_TOOLS,
     ]
 
 
