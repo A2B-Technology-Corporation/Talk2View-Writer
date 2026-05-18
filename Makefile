@@ -143,9 +143,25 @@ package: build
 	@echo "Package complete: $(OXT) ($$(du -h $(OXT) | cut -f1))"
 
 install-oxt: package
+	@# unopkg mutates the user-profile extension deployment registry.
+	@# Doing that while soffice is alive — even with --force — risks
+	@# leaving the registry in a half-committed state that wipes the
+	@# entire user extension set (Talk2View, Zotero, every other
+	@# user-installed .oxt) silently. The cache files get orphaned
+	@# from the pmap and "unopkg list" reports <none> on next launch.
+	@# Refuse to run unless soffice is fully closed.
+	@if pgrep -x soffice.bin >/dev/null 2>&1 || pgrep -x soffice >/dev/null 2>&1; then \
+		echo "ERROR: soffice is running. Close all LibreOffice windows and re-run."; \
+		echo "       Installing while soffice is alive can corrupt the user extension"; \
+		echo "       registry and wipe other extensions (e.g. Zotero)."; \
+		echo ""; \
+		echo "       Running soffice processes:"; \
+		pgrep -af "soffice" | sed 's/^/         /'; \
+		exit 1; \
+	fi
 	@echo "Installing extension into user's LibreOffice profile..."
-	@unopkg add --force $(OXT)
-	@echo "Installed. Restart LibreOffice Writer to see the Talk2View sidebar."
+	@unopkg add --force --suppress-license $(OXT)
+	@echo "Installed. Start LibreOffice Writer to see the Talk2View sidebar."
 
 clean:
 	rm -rf $(BUILD_DIR)/ $(DIST_DIR)/ .pytest_cache/ .ruff_cache/ .mypy_cache/ htmlcov/ .coverage

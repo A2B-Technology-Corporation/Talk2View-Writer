@@ -24,8 +24,17 @@ make dev            # uv sync --dev
 make lint test      # ruff + pytest
 make build          # stage extension into build/Talk2ViewWriter/
 make package        # dist/Talk2ViewWriter.oxt
-make install-oxt    # unopkg add --force dist/Talk2ViewWriter.oxt
+make install-oxt    # unopkg add --force dist/Talk2ViewWriter.oxt (refuses if soffice running)
 ```
+
+**Never** invoke `unopkg add --force` directly while LibreOffice is
+running. `--force` mutates the user-profile extension registry, and
+doing so against a live soffice can corrupt the deployment pmap —
+silently wiping **all** user-installed extensions (Talk2View, Zotero,
+everything). The cache files get orphaned and `unopkg list` reports
+`<none>` on next launch. `make install-oxt` checks for a running
+soffice and refuses; the manual `unopkg add` does not. Always kill
+soffice first, or use the make target.
 
 ## Project Layout
 
