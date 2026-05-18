@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Custom URL scheme handler.
+
+  Tells LibreOffice that URLs starting with `vnd.com.talk2view.writer:`
+  are handled by our XDispatchProvider implementation registered under
+  the implementation name `com.talk2view.writer.ProtocolHandler`.
+
+  The Addons.xcu menu items use URLs like
+  `vnd.com.talk2view.writer:showPanel` which LibreOffice routes here.
+  This is the canonical pattern for Python extensions that need to wire
+  menu items to custom code; the older `service:<impl>?<arg>` URL
+  scheme doesn't reliably create-by-impl-name in modern LibreOffice.
+-->
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry"
+                    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                    oor:name="ProtocolHandler"
+                    oor:package="org.openoffice.Office">
+    <node oor:name="HandlerSet">
+        <node oor:name="com.talk2view.writer.ProtocolHandler" oor:op="replace">
+            <prop oor:name="Protocols" oor:type="oor:string-list">
+                <!-- vnd.* is the IANA-blessed prefix for vendor schemes
+                     that aren't intended for general internet use. -->
+                <value>vnd.com.talk2view.writer:*</value>
+            </prop>
+        </node>
+    </node>
+</oor:component-data>

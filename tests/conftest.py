@@ -98,6 +98,11 @@ _awt_windowclass.SIMPLE = 0  # type: ignore[attr-defined]
 _task = _make_module("com.sun.star.task")
 _task.XJobExecutor = _StubInterface  # type: ignore[attr-defined]
 
+# ProtocolHandler interfaces used by extension/talk2view_writer.py.
+_frame = _make_module("com.sun.star.frame")
+_frame.XDispatch = _StubInterface  # type: ignore[attr-defined]
+_frame.XDispatchProvider = _StubInterface  # type: ignore[attr-defined]
+
 _lang = _make_module("com.sun.star.lang")
 _lang.XComponent = _StubInterface  # type: ignore[attr-defined]
 

@@ -2,11 +2,20 @@
 
 Two UNO components are registered:
 
-1. ``Talk2ViewJob`` (``com.sun.star.task.Job``) — handles menu commands
-   from ``Addons.xcu`` (Login, Logout, Settings, Show Panel).
+1. ``Talk2ViewProtocolHandler`` (``com.sun.star.frame.ProtocolHandler``)
+   — handles menu commands from ``Addons.xcu`` via the custom
+   ``vnd.com.talk2view.writer:<command>`` URL scheme. Implements
+   ``XDispatchProvider`` + ``XDispatch``. Wired by ``ProtocolHandler.xcu``.
 2. ``ChatPanelFactory`` (``com.sun.star.ui.UIElementFactory``) — called by
    LibreOffice when the Talk2View sidebar deck is opened. Returns the
    ``Talk2ViewPanel`` UI element that contains the chat widgets.
+
+The original ``service:com.talk2view.writer.Talk2ViewJob?<cmd>`` URL
+scheme + ``XJobExecutor`` registration was abandoned because modern
+LibreOffice's ``service:`` URL dispatcher does not reliably resolve
+custom Python implementation names — clicking menu items silently
+failed with no log output. See git history of this file for the
+removed Job-based code.
 """
 
 from __future__ import annotations
@@ -24,7 +33,7 @@ if _PYTHONPATH.exists() and str(_PYTHONPATH) not in sys.path:
 
 import uno  # noqa: E402
 import unohelper  # noqa: E402
-from com.sun.star.task import XJobExecutor  # noqa: E402
+from com.sun.star.frame import XDispatch, XDispatchProvider  # noqa: E402
 from com.sun.star.ui import XUIElementFactory  # noqa: E402
 
 # Bootstrap the persistent rotating log file as early as possible:
@@ -52,52 +61,146 @@ logger.info(
 
 
 # ---------------------------------------------------------------------------
-# Menu command handler
+# Menu command handler — ProtocolHandler dispatching the
+# vnd.com.talk2view.writer: URL scheme
 # ---------------------------------------------------------------------------
 
 
-class Talk2ViewJob(unohelper.Base, XJobExecutor):
-    """UNO job executor for Talk2View menu commands.
+class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
+    """ProtocolHandler for ``vnd.com.talk2view.writer:<command>`` URLs.
 
-    LibreOffice invokes ``trigger(args)`` with the command name from the
-    Addons.xcu URL (``service:...?<command>``).
+    Implements both XDispatchProvider and XDispatch on the same class —
+    when LibreOffice asks for a dispatcher for our URL scheme,
+    ``queryDispatch`` returns ``self``; when the user clicks a menu
+    item, ``dispatch`` is then called with the URL + property args.
+
+    The command name lives in ``url.Path`` (the part after the
+    ``vnd.com.talk2view.writer:`` scheme prefix), e.g. ``showPanel``.
+
+    Wired via ``ProtocolHandler.xcu`` which maps the URL scheme to
+    this implementation, and ``Addons.xcu`` which puts menu items
+    pointing at the scheme.
     """
+
+    # URL scheme this handler claims. Must match ProtocolHandler.xcu's
+    # `<value>vnd.com.talk2view.writer:*</value>` entry, with a
+    # trailing ":" because LibreOffice's URL parser includes it in
+    # `url.Protocol`.
+    URL_PROTOCOL: str = "vnd.com.talk2view.writer:"
 
     def __init__(self, ctx: "XComponentContext") -> None:
         self.ctx = ctx
         logger.info(
-            "Talk2ViewJob constructed (ctx=%r) — menu commands now wired",
+            "Talk2ViewProtocolHandler constructed (ctx=%r) — "
+            "menu commands now wired via %s URL scheme",
             ctx,
+            self.URL_PROTOCOL,
         )
 
-    def trigger(self, args: str) -> None:
-        """Dispatch a menu command.
+    # ----- XDispatchProvider -----------------------------------------
+
+    def queryDispatch(  # noqa: N802 — UNO interface naming
+        self,
+        url: object,  # com.sun.star.util.URL struct
+        target_frame_name: str,
+        search_flags: int,
+    ) -> "XDispatch | None":
+        """Return ``self`` if we own this URL scheme; else ``None``.
+
+        LibreOffice calls this for every URL it tries to dispatch
+        (menu, toolbar, keyboard shortcut). Returning ``None`` lets
+        the next dispatch provider in the chain try.
+        """
+        protocol = getattr(url, "Protocol", "")
+        if protocol == self.URL_PROTOCOL:
+            logger.debug(
+                "queryDispatch: claiming %s%s (frame=%s flags=%s)",
+                protocol,
+                getattr(url, "Path", ""),
+                target_frame_name,
+                search_flags,
+            )
+            return self
+        return None
+
+    def queryDispatches(  # noqa: N802 — UNO interface naming
+        self,
+        descriptors: "tuple[object, ...]",
+    ) -> "tuple[XDispatch | None, ...]":
+        """Batch form of queryDispatch — one entry per descriptor."""
+        return tuple(
+            self.queryDispatch(d.FeatureURL, d.FrameName, d.SearchFlags)
+            for d in descriptors
+        )
+
+    # ----- XDispatch -------------------------------------------------
+
+    def dispatch(  # noqa: N802 — UNO interface naming
+        self,
+        url: object,
+        args: "tuple[PropertyValue, ...]",
+    ) -> None:
+        """Execute the command encoded in the URL.
 
         Args:
-            args: Command name from ``Addons.xcu`` URL parameter.
+            url: ``com.sun.star.util.URL`` struct. ``url.Path`` is the
+                command name (everything after the protocol).
+            args: PropertyValues (unused — our commands don't accept
+                parameters today, but the interface mandates the slot).
 
-        Raises:
-            ValueError: If the command name is not recognised. The error is
-                surfaced via a UNO message box so the user sees it.
+        Errors are caught + surfaced via an ERRORBOX so the user sees
+        them. Without this, a thrown exception vanishes silently from
+        the dispatcher (LibreOffice doesn't propagate it to any UI
+        surface).
         """
-        logger.info("Talk2ViewJob.trigger: %s", args)
+        command = getattr(url, "Path", "")
+        logger.info(
+            "dispatch: command=%r url=%s%s args_count=%d",
+            command,
+            getattr(url, "Protocol", ""),
+            command,
+            len(args),
+        )
         try:
             from talk2view_writer.extension import get_extension
 
             ext = get_extension(self.ctx)
-            if args == "showPanel":
+            if command == "showPanel":
                 ext.show_sidebar()
-            elif args == "login":
+            elif command == "login":
                 ext.show_login_dialog()
-            elif args == "logout":
+            elif command == "logout":
                 ext.logout()
-            elif args == "settings":
+            elif command == "settings":
                 ext.show_settings_dialog()
             else:
-                raise ValueError(f"Unknown command: {args}")
-        except Exception as exc:  # surfaced to user via dialog — see _show_error
-            logger.exception("Command '%s' failed", args)
+                raise ValueError(f"Unknown command: {command!r}")
+            logger.info("dispatch: command=%r completed cleanly", command)
+        except Exception as exc:
+            logger.exception("dispatch: command %r failed", command)
             self._show_error("Talk2View", str(exc))
+
+    def addStatusListener(  # noqa: N802 — UNO interface naming
+        self,
+        listener: object,
+        url: object,
+    ) -> None:
+        """XDispatch: no-op — our commands have no status to broadcast.
+
+        Required by the interface but irrelevant for menu commands
+        that just fire-and-forget. A real implementation would
+        notify listeners when (e.g.) the login command becomes
+        unavailable after a successful login.
+        """
+
+    def removeStatusListener(  # noqa: N802 — UNO interface naming
+        self,
+        listener: object,
+        url: object,
+    ) -> None:
+        """XDispatch: no-op (see addStatusListener)."""
+
+    # ----- helpers ---------------------------------------------------
 
     def _show_error(self, title: str, message: str) -> None:
         desktop = self.ctx.ServiceManager.createInstanceWithContext(
@@ -216,9 +319,9 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
 
 g_ImplementationHelper = unohelper.ImplementationHelper()  # noqa: N816 — UNO convention
 g_ImplementationHelper.addImplementation(
-    Talk2ViewJob,
-    "com.talk2view.writer.Talk2ViewJob",
-    ("com.sun.star.task.Job",),
+    Talk2ViewProtocolHandler,
+    "com.talk2view.writer.ProtocolHandler",
+    ("com.sun.star.frame.ProtocolHandler",),
 )
 g_ImplementationHelper.addImplementation(
     ChatPanelFactory,

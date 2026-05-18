@@ -90,10 +90,13 @@ def desktop(uno_context: Any) -> Any:
 def oxt_installed(uno_context: Any) -> Any:
     """Assert the Talk2View-Writer .oxt is installed by querying its services.
 
-    The .oxt registers two UNO services:
+    The .oxt registers two UNO components:
 
-      - ``com.talk2view.writer.Talk2ViewJob``      (XJobExecutor)
-      - ``com.talk2view.writer.ChatPanelFactory``  (XUIElementFactory)
+      - ``com.talk2view.writer.ProtocolHandler`` (XDispatchProvider +
+        XDispatch) — handles menu commands via the
+        ``vnd.com.talk2view.writer:`` URL scheme.
+      - ``com.talk2view.writer.ChatPanelFactory`` (XUIElementFactory)
+        — builds the sidebar panel.
 
     If either fails to instantiate, the install failed — fail fast
     with a clear message that tells the operator to re-run
@@ -102,7 +105,7 @@ def oxt_installed(uno_context: Any) -> Any:
     """
     service_mgr = uno_context.ServiceManager
     expected = (
-        "com.talk2view.writer.Talk2ViewJob",
+        "com.talk2view.writer.ProtocolHandler",
         "com.talk2view.writer.ChatPanelFactory",
     )
     missing = []
