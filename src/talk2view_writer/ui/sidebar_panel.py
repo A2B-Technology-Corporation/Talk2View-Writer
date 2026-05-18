@@ -253,32 +253,65 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     # ----- Internal: build the widget tree --------------------------------
 
     def _build_window(self) -> None:
-        # IMPORTANT — read before changing this method.
+        # IMPORTANT — peer-creation contract, learned the hard way.
         #
         # The sidebar's ParentWindow is a thin XWindow wrapper that
-        # deliberately does NOT expose XWindowPeer (log shows
-        # supportedInterfaces = {XWeak, XComponent, XTypeProvider,
-        # XWindow} — nothing else). Earlier attempts at
-        #   cc.createPeer(toolkit, self._parent_window)
-        #   descriptor.Parent = self._parent_window
-        # both raised CannotConvertException: XWindowPeer queryInterface
-        # returns None on this object. The wrapping is intentional —
-        # LibreOffice's sidebar framework reserves peer creation for
-        # itself and provides the parent purely as a sizing/event
-        # reference.
+        # does NOT expose XWindowPeer (supportedInterfaces = {XWeak,
+        # XComponent, XTypeProvider, XWindow}). And we initially assumed
+        # the sidebar framework would create the peer for the XUIElement
+        # we return. It does NOT — it expects a peer-realised window
+        # and segfaults dereferencing a null peer pointer if it gets
+        # an unpeered container. The crash happens AFTER createUIElement
+        # returns, so it's invisible to Python try/except; the only
+        # signal is soffice exiting and a fresh pid appearing in the
+        # log.
         #
-        # The contract is: build an unpeered UnoControlContainer, add
-        # the children to it (also unpeered), return the container from
-        # getRealInterface(). When LibreOffice docks that returned
-        # XWindow into the deck slot, it creates the container's peer,
-        # which cascades peer creation through the children. setPosSize
-        # requires peers, so the inline _layout_children() call had to
-        # go too — the resize listener already wired to parent_window
-        # will fire once the dock completes and lay out the children
-        # then (by which point all peers exist).
+        # The fix is to create the peer ourselves using a different
+        # source of XWindowPeer than parent_window. The Frame's
+        # container window (frame.getContainerWindow()) is the document
+        # window — always peer-backed, always available as long as
+        # there's a doc open. Using it as the parent of createPeer
+        # gives us a peered container. LibreOffice's sidebar code can
+        # then dock it cleanly; the deck's slot machinery handles
+        # the visual reparenting.
+        toolkit = self._create_service("com.sun.star.awt.Toolkit")
+
         cc_model = self._create_service("com.sun.star.awt.UnoControlContainerModel")
         cc = self._create_service("com.sun.star.awt.UnoControlContainer")
         cc.setModel(cc_model)
+
+        # Source a real XWindowPeer from the document frame's container
+        # window. _frame is the XFrame arg passed into createUIElement;
+        # its container window is the top-level doc window and supports
+        # the peer interface PyUNO will accept here.
+        peer_parent: object | None = None
+        if self._frame is not None:
+            try:
+                peer_parent = self._frame.getContainerWindow()
+            except Exception:
+                logger.warning(
+                    "_frame.getContainerWindow() raised — falling back to "
+                    "peerless container (panel may render empty)",
+                    exc_info=True,
+                )
+        if peer_parent is None:
+            logger.warning(
+                "No frame.getContainerWindow() available; calling "
+                "cc.createPeer with no parent peer. This may segfault "
+                "soffice during dock — the framework expects a real "
+                "peer on the returned XUIElement."
+            )
+        try:
+            cc.createPeer(toolkit, peer_parent)
+            logger.info(
+                "UnoControlContainer peer created (parent=%s)",
+                "frame.getContainerWindow()" if peer_parent is not None else "None",
+            )
+        except Exception:
+            logger.exception(
+                "cc.createPeer FAILED — returning peerless container "
+                "to LibreOffice. Native sidebar dock code may segfault."
+            )
 
         # The control container IS our container window — return it
         # from getRealInterface(), tear it down on dispose().
