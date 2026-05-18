@@ -196,37 +196,57 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
     def _create_panel_window(self) -> Any:
         """Load chat_panel.xdl via ContainerWindowProvider.
 
-        The provider accepts the bare XWindow we received from the
-        sidebar (which doesn't expose XWindowPeer) and handles all
-        the peer-bridging plumbing internally — this is precisely why
-        we use it instead of building a UnoControlContainer manually.
+        Granular logging between every UNO call: createContainerWindow
+        can segfault soffice (silent exit, no Python exception). When
+        that happens the last log line we see pinpoints the failing
+        operation.
         """
+        logger.info("_create_panel_window: resolving PIP singleton")
         pip = self.ctx.getValueByName(
             "/singletons/com.sun.star.deployment.PackageInformationProvider"
         )
+        logger.info("_create_panel_window: PIP=%s", pip)
+
         extension_root = pip.getPackageLocation(_EXTENSION_ID)
         dialog_url = f"{extension_root}/{_XDL_PATH}"
-        logger.info("Loading chat panel layout from %s", dialog_url)
+        logger.info("_create_panel_window: dialog_url=%s", dialog_url)
 
+        logger.info("_create_panel_window: creating ContainerWindowProvider")
         provider = self.ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.awt.ContainerWindowProvider", self.ctx
+        )
+        logger.info("_create_panel_window: provider=%s", provider)
+
+        logger.info(
+            "_create_panel_window: calling createContainerWindow "
+            "(parent_supportedInterfaces=%s)",
+            self._parent_window,
         )
         window = provider.createContainerWindow(
             dialog_url, "", self._parent_window, None
         )
+        logger.info("_create_panel_window: createContainerWindow returned %s", window)
+
         self._panel_window = window
         return window
 
     def _bind_controls(self, window: Any) -> None:
         """Resolve XDL control ids to control references + wire actions."""
+        logger.info("_bind_controls: looking up status_label")
         self._status_label = window.getControl("status_label")
+        logger.info("_bind_controls: looking up login_button")
         self._login_button = window.getControl("login_button")
+        logger.info("_bind_controls: looking up history_field")
         self._history_field = window.getControl("history_field")
+        logger.info("_bind_controls: looking up composer_field")
         self._composer_field = window.getControl("composer_field")
+        logger.info("_bind_controls: looking up send_button")
         self._send_button = window.getControl("send_button")
 
+        logger.info("_bind_controls: wiring action listeners")
         self._login_button.addActionListener(_ActionForwarder(self._on_login_clicked))
         self._send_button.addActionListener(_ActionForwarder(self._on_send_clicked))
+        logger.info("_bind_controls: complete")
 
     # ----- Public: auth state callback ------------------------------------
 
