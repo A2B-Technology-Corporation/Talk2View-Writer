@@ -99,18 +99,8 @@ def build_chat_panel(
 
     from talk2view_writer.extension import get_extension
 
-    try:
-        get_extension(ctx).register_panel(panel)
-        logger.info("build_chat_panel: panel registered with extension singleton")
-    except Exception:
-        # Don't raise — the panel itself is still usable even if
-        # the singleton registration failed; we just won't get
-        # auth-state broadcast updates.
-        logger.exception("Failed to register panel with extension singleton")
-
-    logger.info(
-        "build_chat_panel complete — returning XUIElement to LibreOffice"
-    )
+    get_extension(ctx).register_panel(panel)
+    logger.info("build_chat_panel: panel registered with extension singleton")
     return panel
 
 
@@ -171,30 +161,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
         # whatever's most recently been written.
         self._last_size: tuple[int, int] = (0, 0)
 
-        logger.info(
-            "Talk2ViewPanel.__init__: about to call _build_window "
-            "(parent_window=%r resource_url=%s)",
-            parent_window,
-            resource_url,
-        )
-        try:
-            self._build_window()
-        except Exception:
-            # A failure here means the sidebar slot will be EMPTY for
-            # the user — log the full traceback so a "panel doesn't
-            # appear" report is debuggable from the log file alone.
-            logger.exception(
-                "_build_window FAILED — sidebar deck will appear empty. "
-                "Common causes: malformed UNO control properties, "
-                "parent_window invalid, com.sun.star.* service missing."
-            )
-            raise
-        logger.info(
-            "Talk2ViewPanel.__init__: _build_window complete — "
-            "container_window=%r send_button=%r",
-            self._container_window,
-            self._send_button,
-        )
+        self._build_window()
 
     # ----- XUIElement -----------------------------------------------------
     #
@@ -289,27 +256,20 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
         logger.info("Talk2ViewPanel.dispose")
         from talk2view_writer.extension import get_extension
 
-        try:
-            get_extension(self.ctx).unregister_panel(self)
-        except Exception:
-            logger.exception("Failed to unregister panel from singleton")
+        get_extension(self.ctx).unregister_panel(self)
 
         event = uno.createUnoStruct("com.sun.star.lang.EventObject")
         event.Source = self
         for listener in list(self._listeners):
-            try:
-                # Listeners are duck-typed XEventListener instances.
-                listener.disposing(event)  # type: ignore[attr-defined]
-            except Exception:
-                logger.exception("Listener.disposing raised")
+            # Listeners are duck-typed XEventListener instances. If one
+            # raises, that's a bug in the listener — surface the
+            # traceback at the call site, don't paper over it.
+            listener.disposing(event)  # type: ignore[attr-defined]
 
         if self._container_window is not None:
-            try:
-                if self._window_listener is not None:
-                    self._container_window.removeWindowListener(self._window_listener)
-                self._container_window.dispose()
-            except Exception:
-                logger.exception("Container window dispose failed")
+            if self._window_listener is not None:
+                self._container_window.removeWindowListener(self._window_listener)
+            self._container_window.dispose()
 
     def addEventListener(self, listener: object) -> None:  # noqa: N802
         """XComponent: subscribe to ``disposing`` notifications."""
@@ -385,39 +345,16 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
             cc, "Send", name="send_button", on_click=self._on_send_clicked
         )
 
-        # Resize listener. Try parent_window first (its windowResized
-        # event would be the cleanest signal that LibreOffice has
-        # docked us), then ALSO attach to our own container — the
-        # parent_window is largely a dummy on this LibreOffice build
-        # (its getPosSize raises "not implemented") so listener
-        # registration there may silently no-op. The container's own
-        # resize events will fire once the framework realises its
-        # peer and assigns it a size in the deck slot.
+        # Resize listener on the container — fires when LibreOffice
+        # realises its peer in the deck slot, which is our cue to
+        # call setPosSize on the children.
         self._window_listener = _PanelResizeListener(self)
-        try:
-            self._parent_window.addWindowListener(self._window_listener)
-        except Exception:
-            logger.warning(
-                "parent_window.addWindowListener failed — relying on "
-                "container's own resize events",
-                exc_info=True,
-            )
-        try:
-            cc.addWindowListener(self._window_listener)
-        except Exception:
-            logger.warning(
-                "container.addWindowListener failed — initial layout "
-                "may be delayed until next resize",
-                exc_info=True,
-            )
+        cc.addWindowListener(self._window_listener)
 
         # _apply_auth_state only touches model properties (label text,
         # enabled flags) — safe before peers exist.
         self._apply_auth_state()
-        logger.info(
-            "Talk2View chat panel built (peers pending; layout deferred "
-            "until first windowResized from parent_window)"
-        )
+        logger.info("Talk2View chat panel built (layout deferred until first resize)")
 
     # ----- Widget factories -----------------------------------------------
 
@@ -479,82 +416,49 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
     ) -> None:
         if self._control_container is None:
             return
-        # Determine the available size.
-        #
-        # The sidebar's ParentWindow is a dummy XWindow whose getPosSize
-        # raises RuntimeException: not implemented — so we can't read
-        # the size from it. The resize listener forwards the WindowEvent's
-        # Width/Height fields directly (when called from there). For other
-        # entry points (auth-state changes, etc.) we fall back to the
-        # most-recently-seen size.
+        # Size source: the WindowEvent's Width/Height when called from
+        # the resize listener; otherwise the most-recently-seen size.
+        # parent_window.getPosSize() is unusable on this LibreOffice
+        # build (raises "not implemented"), so we rely on resize events
+        # for the dimensions.
         if width_hint is not None and height_hint is not None:
             self._last_size = (width_hint, height_hint)
         size_w, size_h = self._last_size
         if size_w <= 0 or size_h <= 0:
-            # No size cached and none provided — nothing to lay out
-            # against. The first real resize event will trigger another
-            # layout pass with concrete dimensions.
-            logger.debug(
-                "_layout_children: no size known yet (last_size=%s), "
-                "deferring until resize event",
-                self._last_size,
-            )
+            # No size yet — wait for the first resize event.
             return
-        # setPosSize / setVisible on a control require its peer to
-        # exist. _build_window deliberately doesn't create peers — the
-        # sidebar framework does that on dock. If we somehow get here
-        # before peers exist, catch narrowly per-control so a single
-        # missing peer doesn't skip the rest, and let the next resize
-        # event retry.
         width = max(size_w - 2 * _PADDING, 100)
         x = _PADDING
         y = _PADDING
 
-        def _try_set_pos(ctrl: object, x: int, y: int, w: int, h: int) -> bool:
-            """Best-effort setPosSize. Returns True on success."""
-            try:
-                ctrl.setPosSize(x, y, w, h, POSSIZE)  # type: ignore[attr-defined]
-                return True
-            except Exception as exc:
-                logger.warning(
-                    "_layout_children: setPosSize failed on %r: %s "
-                    "(peer not yet realised? layout will retry on next resize)",
-                    ctrl,
-                    exc,
-                )
-                return False
-
-        if self._status_label is not None and _try_set_pos(
-            self._status_label, x, y, width, _STATUS_HEIGHT
-        ):
+        if self._status_label is not None:
+            self._status_label.setPosSize(x, y, width, _STATUS_HEIGHT, POSSIZE)  # type: ignore[attr-defined]
             y += _STATUS_HEIGHT + _PADDING
 
         login_visible = self._user is None
         if self._login_button is not None:
-            try:
-                self._login_button.setVisible(login_visible)  # type: ignore[attr-defined]
-            except Exception:
-                logger.warning("setVisible on login_button failed (peer pending)")
-            if login_visible and _try_set_pos(
-                self._login_button, x, y, width, _LOGIN_BUTTON_HEIGHT
-            ):
+            self._login_button.setVisible(login_visible)  # type: ignore[attr-defined]
+            if login_visible:
+                self._login_button.setPosSize(  # type: ignore[attr-defined]
+                    x, y, width, _LOGIN_BUTTON_HEIGHT, POSSIZE
+                )
                 y += _LOGIN_BUTTON_HEIGHT + _PADDING
 
         # Composer + Send anchored to the bottom; history fills the rest.
         bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
         history_h = max(size_h - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
-        if self._history_field is not None and _try_set_pos(
-            self._history_field, x, y, width, history_h
-        ):
+        if self._history_field is not None:
+            self._history_field.setPosSize(x, y, width, history_h, POSSIZE)  # type: ignore[attr-defined]
             y += history_h + _PADDING
 
-        if self._composer_field is not None and _try_set_pos(
-            self._composer_field, x, y, width, _COMPOSER_HEIGHT
-        ):
+        if self._composer_field is not None:
+            self._composer_field.setPosSize(  # type: ignore[attr-defined]
+                x, y, width, _COMPOSER_HEIGHT, POSSIZE
+            )
             y += _COMPOSER_HEIGHT + _PADDING
 
         if self._send_button is not None:
-            _try_set_pos(self._send_button, x, y, width, _BUTTON_HEIGHT)
+            self._send_button.setPosSize(x, y, width, _BUTTON_HEIGHT, POSSIZE)  # type: ignore[attr-defined]
 
     # ----- Auth state application -----------------------------------------
 

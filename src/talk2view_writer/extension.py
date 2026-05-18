@@ -228,10 +228,7 @@ class Talk2ViewWriterExtension:
         # Push the current auth state to the new panel so its initial
         # render reflects login status without waiting for a transition.
         user = self.sdk.current_user if self._sdk is not None else None
-        try:
-            panel.on_auth_changed(user)
-        except Exception:
-            logger.exception("Initial on_auth_changed failed for new panel")
+        panel.on_auth_changed(user)
         logger.info("Panel registered (total open: %d)", len(self._open_panels))
 
     def unregister_panel(self, panel: Talk2ViewPanel) -> None:
@@ -258,18 +255,7 @@ class Talk2ViewWriterExtension:
         with self._lock:
             panels = list(self._open_panels)
             if user is not None:
-                try:
-                    self._register_tools_locked()
-                except Exception:
-                    # Tool registration is best-effort here: if it
-                    # fails, the login itself still succeeded. The
-                    # error surfaces again the next time the user
-                    # tries to chat, and we don't want to silently
-                    # roll back a successful login.
-                    logger.exception(
-                        "Tool registration in _on_auth_changed failed "
-                        "— chat will likely error until re-login"
-                    )
+                self._register_tools_locked()
             else:
                 # Logout: server-side session is gone, our registration
                 # is invalid against the next session.
@@ -280,10 +266,7 @@ class Talk2ViewWriterExtension:
             len(panels),
         )
         for panel in panels:
-            try:
-                panel.on_auth_changed(user)
-            except Exception:
-                logger.exception("Panel on_auth_changed raised")
+            panel.on_auth_changed(user)
 
 
 _INSTANCE: Talk2ViewWriterExtension | None = None

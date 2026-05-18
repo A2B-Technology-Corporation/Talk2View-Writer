@@ -156,10 +156,16 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         self._done = done
 
     def notify(self, data: Any) -> None:
+        # Catch is *required* — this is cross-thread exception marshalling.
+        # The exception is shipped back to the caller via _slot and
+        # re-raised there, so the traceback surfaces at the worker
+        # thread (where the call originated) rather than the UI thread
+        # (where it's useless). Don't add logger.exception here: it
+        # duplicates noise; the worker-thread raise gives the real
+        # location.
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as exc:
-            logger.exception("UI-thread call to %r raised", getattr(self._fn, "__name__", self._fn))
             self._slot.append((False, exc))
         else:
             self._slot.append((True, result))

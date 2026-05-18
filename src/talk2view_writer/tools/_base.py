@@ -81,18 +81,7 @@ def ui_thread_tool(fn: _F) -> _F:
             kwarg_summary,
         )
         start = time.monotonic()
-        try:
-            result = ext.ui_thread.run_sync(fn, *args, **kwargs)
-        except Exception as exc:
-            elapsed_ms = (time.monotonic() - start) * 1000
-            logger.exception(
-                "tool %s FAILED after %.1fms: %s: %s",
-                tool_name,
-                elapsed_ms,
-                type(exc).__name__,
-                exc,
-            )
-            raise
+        result = ext.ui_thread.run_sync(fn, *args, **kwargs)
         elapsed_ms = (time.monotonic() - start) * 1000
         result_summary = _summary(result)
         logger.info(

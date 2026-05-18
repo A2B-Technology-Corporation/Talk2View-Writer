@@ -110,32 +110,11 @@ class Talk2ViewSDKClient:
         """
         client = self._ensure_client()
         logger.info("login: calling client.auth.login(email=%s)", email)
-        try:
-            user = client.auth.login(email, password)
-        except Exception as exc:
-            logger.exception(
-                "login: client.auth.login raised %s: %s",
-                type(exc).__name__,
-                exc,
-            )
-            raise
+        user = client.auth.login(email, password)
         with self._lock:
             self._user = user
         self._notify_listeners(user)
-        # Verify the token actually landed in storage. Helps diagnose
-        # "session expired on restart" — if storage shows no token
-        # immediately after a successful login(), the writer path is
-        # broken.
-        try:
-            persisted = self._storage.get("access_token") if hasattr(self._storage, "get") else None
-            persisted_str = "present" if persisted else "MISSING"
-        except Exception:
-            persisted_str = "<storage.get raised>"
-        logger.info(
-            "login: success for %s. Access-token persisted to storage: %s",
-            user.email,
-            persisted_str,
-        )
+        logger.info("login: success for %s", user.email)
         return user
 
     def logout(self) -> None:
@@ -144,11 +123,7 @@ class Talk2ViewSDKClient:
         client.auth.logout()
         with self._lock:
             self._user = None
-        # Clear the in-process session too so the next chat starts fresh.
-        try:
-            client.clear_session()
-        except Exception:
-            logger.exception("clear_session raised during logout")
+        client.clear_session()
         self._notify_listeners(None)
         logger.info("Logged out")
 
@@ -191,10 +166,7 @@ class Talk2ViewSDKClient:
         with self._lock:
             listeners = list(self._listeners)
         for listener in listeners:
-            try:
-                listener(user)
-            except Exception:
-                logger.exception("Auth listener raised")
+            listener(user)
 
     # ----- chat --------------------------------------------------------
 
@@ -228,22 +200,10 @@ class Talk2ViewSDKClient:
             "supplied" if system_prompt is not None else "engine default",
         )
         event_count = 0
-        try:
-            for event in client.chat(message, system_prompt=system_prompt):
-                event_count += 1
-                # Log a compact summary at DEBUG so we don't spam INFO,
-                # but still get the wire-level event trail when
-                # T2V_WRITER_DEBUG=1.
-                logger.debug("chat event #%d: %s", event_count, type(event).__name__)
-                yield event
-        except Exception as exc:
-            logger.exception(
-                "chat: stream raised after %d events: %s: %s",
-                event_count,
-                type(exc).__name__,
-                exc,
-            )
-            raise
+        for event in client.chat(message, system_prompt=system_prompt):
+            event_count += 1
+            logger.debug("chat event #%d: %s", event_count, type(event).__name__)
+            yield event
         logger.info("chat: stream complete after %d events", event_count)
 
     # ----- tools (Phase C entry point) ---------------------------------
