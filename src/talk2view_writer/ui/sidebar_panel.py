@@ -246,7 +246,16 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     # ----- Internal: build the widget tree --------------------------------
 
     def _build_window(self) -> None:
-        toolkit = self._parent_window.getToolkit()
+        # The ParentWindow passed in by the sidebar deck is a bare XWindow
+        # — it supports only XWindow / XComponent / XTypeProvider / XWeak.
+        # XWindow has no getToolkit() (that lives on XControl /
+        # XWindow2), so we can't ask the parent for one. The portable
+        # way to obtain a Toolkit is to instantiate the
+        # com.sun.star.awt.Toolkit singleton service from the context
+        # we already hold. It's the same toolkit the parent window is
+        # using, so newly-created peers will share its display, theme,
+        # etc.
+        toolkit = self._create_service("com.sun.star.awt.Toolkit")
 
         # Container window (docks inside the sidebar panel area).
         descriptor = uno.createUnoStruct("com.sun.star.awt.WindowDescriptor")
