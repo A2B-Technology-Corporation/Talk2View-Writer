@@ -132,17 +132,23 @@ jobs:
     strategy:
       fail-fast: false  # one OS failing shouldn't cancel the others
       matrix:
+        # macos-13 (Intel) DISABLED 2026-05-18 — queues for 9+ hours on
+        # the free tier and blocks the whole run from completing (matrix
+        # only marks "done" when every entry finishes). The wheel matrix
+        # still bundles a macOS Intel pydantic_core, so the .oxt remains
+        # installable for Intel-Mac users; we just don't run CI against
+        # that environment automatically. Revisit when GitHub-hosted
+        # Intel macOS runners are faster, or move to a self-hosted runner.
         os:
           - ubuntu-latest    # Linux x86_64
-          - macos-13         # macOS Intel (free tier)
           - macos-14         # macOS Apple Silicon (PAID; ~$0.12/min)
           - windows-latest   # Windows x86_64
         include:
           # Which OSes also run dogtail GUI smoke?
           - os: ubuntu-latest
             run_gui_smoke: true
-          # Which OSes run the live chat E2E? Skip macos-13 to save
-          # Intel minutes (arm64 macOS exercises the same code path).
+          # Which OSes run the live chat E2E? All of them — every
+          # platform validates the SDK round-trip on its own Python ABI.
           - os: ubuntu-latest
             run_live_chat: true
           - os: macos-14
