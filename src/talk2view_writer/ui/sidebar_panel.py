@@ -59,6 +59,34 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _ru(obj: Any) -> str:
+    """Render a UNO proxy for safe logging.
+
+    Python's ``logging`` module has a single-positional-arg fast path
+    that checks ``isinstance(args[0], Mapping)`` to decide whether to
+    treat the value as ``%(name)s``-style kwargs. The isinstance call
+    delegates to ABC's ``__subclasscheck__``, which dereferences
+    ``args[0].__class__``. UNO proxies expose a synthetic ``__class__``
+    that isn't a real Python class, so the check raises ``TypeError``
+    — and because this happens inside Python's C-implemented logging
+    fast path, the exception silently crashes soffice instead of
+    surfacing as a Python traceback.
+
+    Use ``_ru(obj)`` (UNO-safe repr) on every UNO value before passing
+    it to a logger. Result is a plain ``str``, which is safe for the
+    fast path. This is the third time this bug has bitten the
+    codebase — make it impossible to write the broken form by always
+    using this helper.
+    """
+    try:
+        return repr(obj)
+    except Exception as exc:
+        # If repr itself raises (some UNO proxies don't implement it
+        # cleanly), fall back to a type-name string.
+        return f"<repr failed: {type(exc).__name__}>"
+
+
 # Must match the identifier in extension/description.xml — looked up
 # at runtime via the deployment singleton to find the extension's
 # install path on disk.
@@ -200,12 +228,15 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         can segfault soffice (silent exit, no Python exception). When
         that happens the last log line we see pinpoints the failing
         operation.
+
+        NB: every UNO-proxy log uses _ru() because Python's logging
+        single-arg fast path crashes on UNO proxies. See _ru().
         """
         logger.info("_create_panel_window: resolving PIP singleton")
         pip = self.ctx.getValueByName(
             "/singletons/com.sun.star.deployment.PackageInformationProvider"
         )
-        logger.info("_create_panel_window: PIP=%s", pip)
+        logger.info("_create_panel_window: PIP %s", _ru(pip))
 
         extension_root = pip.getPackageLocation(_EXTENSION_ID)
         dialog_url = f"{extension_root}/{_XDL_PATH}"
@@ -215,17 +246,18 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         provider = self.ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.awt.ContainerWindowProvider", self.ctx
         )
-        logger.info("_create_panel_window: provider=%s", provider)
+        logger.info("_create_panel_window: provider %s", _ru(provider))
 
         logger.info(
-            "_create_panel_window: calling createContainerWindow "
-            "(parent_supportedInterfaces=%s)",
-            self._parent_window,
+            "_create_panel_window: calling createContainerWindow (parent %s)",
+            _ru(self._parent_window),
         )
         window = provider.createContainerWindow(
             dialog_url, "", self._parent_window, None
         )
-        logger.info("_create_panel_window: createContainerWindow returned %s", window)
+        logger.info(
+            "_create_panel_window: createContainerWindow returned %s", _ru(window)
+        )
 
         self._panel_window = window
         return window
