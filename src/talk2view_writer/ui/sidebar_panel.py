@@ -1,31 +1,37 @@
 """LibreOffice Writer sidebar panel for Talk2View.
 
-Phase B layout:
+Implements the *canonical* Python sidebar pattern from LibreOffice's
+SDK example ``odk/examples/python/toolpanel/toolpanel.py``:
 
-    +-----------------------------------------+
-    |  Logged in as you@example.com           |  status label
-    |  [ Log in... ] (only when logged out)   |  login button
-    |                                         |
-    |  +-----------------------------------+  |
-    |  | chat history (multiline, ro)      |  |
-    |  |                                   |  |
-    |  +-----------------------------------+  |
-    |                                         |
-    |  +-----------------------------------+  |
-    |  | composer (multiline)              |  |
-    |  +-----------------------------------+  |
-    |  [ Send ]                               |
-    +-----------------------------------------+
+  1. The sidebar deck calls ``ChatPanelFactory.createUIElement`` (in
+     ``extension/talk2view_writer.py``) with a ``ParentWindow`` XWindow
+     and an XFrame.
+  2. We return a :class:`Talk2ViewPanel` (XUIElement) — at this point
+     **no window is created**. ``Frame``, ``ResourceURL``, ``Type``
+     are exposed as direct instance attributes per the PyUNO IDL-to-
+     attribute mapping.
+  3. LibreOffice calls ``getRealInterface()``. *Now* we lazily build the
+     panel window via
+     ``com.sun.star.awt.ContainerWindowProvider.createContainerWindow``,
+     loading the layout from ``panels/chat_panel.xdl`` shipped in the
+     ``.oxt``. The provider accepts the bare XWindow as the parent
+     and handles all peer creation internally — this is the workaround
+     for the sidebar's ParentWindow not exposing XWindowPeer.
+  4. ``getRealInterface()`` returns a :class:`Talk2ViewToolPanel`
+     (XToolPanel) whose ``.PanelWindow`` / ``.Window`` attributes
+     point at the loaded container. The sidebar dock code uses those
+     to slot the panel into the deck.
 
-The panel registers with the extension singleton so it receives
-:meth:`on_auth_changed` callbacks when login/logout state changes.
+Why this pattern: the manual ``UnoControlContainer + createPeer``
+approach we tried before segfaulted soffice on every dock attempt
+(see git log 2026-05-18). The dock code expects a VCL-bridged window
+from ``ContainerWindowProvider``; an unbridged UnoControlContainer
+is for embedded dialogs, not sidebar panels.
 
 Threading: the send-button handler spawns a worker thread that
-iterates ``sdk.chat(text)``. Every UNO call the worker makes —
-widget Text updates, label updates, enabled-state toggles — is
-marshalled through :class:`UIThreadDispatcher` (Phase C). The
-Phase B direct-write relaxation (ADR-0017) is now superseded by
-ADR-0018.
+iterates ``sdk.chat(text)``. Every UNO call from the worker is
+marshalled to the UI thread via :class:`UIThreadDispatcher`
+(see ADR-0018).
 """
 
 from __future__ import annotations
@@ -37,26 +43,16 @@ from typing import TYPE_CHECKING, Any
 
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
-from com.sun.star.awt import (  # type: ignore[import-not-found]
-    XActionListener,
-    XWindowListener,
-)
-from com.sun.star.awt.PosSize import POSSIZE  # type: ignore[import-not-found]
+from com.sun.star.awt import XActionListener  # type: ignore[import-not-found]
 from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
 from com.sun.star.ui import (  # type: ignore[import-not-found]
     UIElementType,
-    XSidebarPanel,
+    XToolPanel,
     XUIElement,
 )
 
 if TYPE_CHECKING:
-    from com.sun.star.awt import (
-        ActionEvent,
-        WindowEvent,
-        XControl,
-        XControlContainer,
-        XWindow,
-    )
+    from com.sun.star.awt import ActionEvent, XWindow
     from com.sun.star.frame import XFrame
     from com.sun.star.lang import EventObject
     from com.sun.star.uno import XComponentContext
@@ -64,12 +60,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PADDING = 6
-_BUTTON_HEIGHT = 26
-_STATUS_HEIGHT = 20
-_LOGIN_BUTTON_HEIGHT = 26
-_COMPOSER_HEIGHT = 60
-_HISTORY_MIN_HEIGHT = 80
+# Must match the identifier in extension/description.xml — looked up
+# at runtime via the deployment singleton to find the extension's
+# install path on disk.
+_EXTENSION_ID = "com.talk2view.writer"
+_XDL_PATH = "panels/chat_panel.xdl"
 
 
 # ---------------------------------------------------------------------------
@@ -83,176 +78,157 @@ def build_chat_panel(
     frame: XFrame | None,
     resource_url: str,
 ) -> XUIElement:
-    """Build the Talk2View sidebar panel and return it as an XUIElement.
+    """Construct the Talk2View XUIElement.
 
-    Called by ``ChatPanelFactory.createUIElement`` when LibreOffice opens
-    the Talk2View deck.
+    Called from ``ChatPanelFactory.createUIElement``. Window creation
+    is deferred to ``getRealInterface`` per the canonical pattern;
+    this function just builds the XUIElement wrapper and registers
+    it with the extension singleton.
     """
     logger.info(
-        "build_chat_panel starting: resource_url=%s parent_window=%r frame=%r",
+        "build_chat_panel: resource_url=%s frame=%s",
         resource_url,
-        parent_window,
-        frame,
+        "present" if frame is not None else "None",
     )
-    panel = Talk2ViewPanel(ctx, parent_window, frame, resource_url)
-    logger.info("build_chat_panel: Talk2ViewPanel construction returned")
+    panel = Talk2ViewPanel(ctx, frame, parent_window, resource_url)
 
     from talk2view_writer.extension import get_extension
 
     get_extension(ctx).register_panel(panel)
-    logger.info("build_chat_panel: panel registered with extension singleton")
     return panel
 
 
 # ---------------------------------------------------------------------------
-# XUIElement implementation
+# XToolPanel — wraps the loaded container window for the sidebar dock
 # ---------------------------------------------------------------------------
 
 
-class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
-    """Talk2View chat panel for LibreOffice Writer's sidebar deck.
+class Talk2ViewToolPanel(unohelper.Base, XToolPanel):
+    """The XToolPanel returned from XUIElement.getRealInterface.
 
-    Implements the **three** UNO interfaces LibreOffice's sidebar
-    framework asks for via queryInterface:
+    The sidebar dock code reads ``.Window`` / ``.PanelWindow`` to slot
+    the panel into the deck, and ``createAccessible`` to wire it into
+    the AT-SPI tree. Mirrors LibreOffice SDK's ``pocToolPanel``.
+    """
 
-      - ``XUIElement`` — the generic framework UI element (resource URL,
-        type, real-interface accessor).
-      - ``XSidebarPanel`` — sidebar-specific layout queries
-        (``getHeightForWidth`` / ``getWidthForHeight``). This is the
-        one we were missing, and its absence segfaulted soffice after
-        ``createUIElement`` returned: native sidebar code called
-        ``queryInterface(XSidebarPanel)`` on our panel, got null, and
-        dereferenced it.
-      - ``XComponent`` — lifecycle (dispose + listener registration).
+    def __init__(self, panel_window: Any, ctx: XComponentContext) -> None:
+        self.ctx = ctx
+        self.PanelWindow = panel_window
+        self.Window = panel_window
+
+    def createAccessible(self, parent_accessible: object) -> Any:  # noqa: N802
+        """XToolPanel: return our panel window as its own accessible root."""
+        return self.PanelWindow
+
+
+# ---------------------------------------------------------------------------
+# XUIElement — the object returned from createUIElement
+# ---------------------------------------------------------------------------
+
+
+class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
+    """Talk2View chat panel.
+
+    XUIElement attributes (``Frame``, ``ResourceURL``, ``Type``) are
+    set as direct Python attributes — PyUNO's attribute synthesis
+    binds them to the IDL-declared read-only attributes. This is how
+    LibreOffice's SDK toolpanel example does it.
     """
 
     def __init__(
         self,
         ctx: XComponentContext,
-        parent_window: XWindow,
         frame: XFrame | None,
+        parent_window: XWindow,
         resource_url: str,
     ) -> None:
         self.ctx = ctx
+        self._frame_ref = frame  # used by handlers; XUIElement.Frame is set below
         self._parent_window = parent_window
-        self._frame = frame
-        self._resource_url = resource_url
+
+        # XUIElement attributes (PyUNO maps these to the IDL attributes).
+        self.Frame = frame
+        self.ResourceURL = resource_url
+        self.Type = int(UIElementType.TOOLPANEL)
+
+        # Lazy-built on first getRealInterface() call.
+        self._tool_panel: Talk2ViewToolPanel | None = None
+        self._panel_window: Any | None = None  # ContainerWindowProvider result
+
+        # Widget refs — bound after panel_window is created.
+        self._status_label: Any | None = None
+        self._login_button: Any | None = None
+        self._history_field: Any | None = None
+        self._composer_field: Any | None = None
+        self._send_button: Any | None = None
+
+        # Auth + chat state.
+        self._user: User | None = None
+        self._busy = threading.Event()
+
+        # XComponent listeners.
         self._listeners: list[object] = []
 
-        # Widgets
-        self._container_window: XWindow | None = None
-        self._control_container: XControlContainer | None = None
-        self._status_label: XControl | None = None
-        self._login_button: XControl | None = None
-        self._history_field: XControl | None = None
-        self._composer_field: XControl | None = None
-        self._send_button: XControl | None = None
-        self._window_listener: _PanelResizeListener | None = None
-
-        # Auth + chat state
-        self._user: User | None = None
-        self._busy = threading.Event()  # set while a worker thread is running
-
-        # Last known panel size (width, height) — populated by resize
-        # events because parent_window.getPosSize() throws "not
-        # implemented" on the sidebar's dummy parent wrapper, and the
-        # container's own getPosSize is unreliable before peer
-        # realisation. Layout reads this; auth-state changes use
-        # whatever's most recently been written.
-        self._last_size: tuple[int, int] = (0, 0)
-
-        self._build_window()
-
     # ----- XUIElement -----------------------------------------------------
-    #
-    # Each interface method is logged at entry. This is the *only* way
-    # to debug native crashes after createUIElement returns: if soffice
-    # exits without a Python exception, the last interface method we
-    # logged is the one that triggered the crash. Keep the entry logs
-    # cheap — DEBUG level + small payload — so production runs aren't
-    # noisy unless T2V_WRITER_DEBUG=1 is set.
 
-    def getResourceURL(self) -> str:  # noqa: N802
-        """XUIElement: the panel's ``private:resource/toolpanel/...`` URL."""
-        logger.debug("XUIElement.getResourceURL → %s", self._resource_url)
-        return self._resource_url
-
-    def getType(self) -> int:  # noqa: N802
-        """XUIElement: ``UIElementType.TOOLPANEL`` for sidebar panels."""
-        # UIElementType.TOOLPANEL is a UNO constant — annotate the cast.
-        value = int(UIElementType.TOOLPANEL)
-        logger.debug("XUIElement.getType → %d", value)
-        return value
-
-    def getFrame(self) -> XFrame | None:  # noqa: N802
-        """XUIElement: the frame this panel is docked into."""
-        logger.debug("XUIElement.getFrame → %s", "frame" if self._frame else "None")
-        return self._frame
-
-    def getRealInterface(self) -> XWindow:  # noqa: N802
-        """XUIElement: the container window LibreOffice docks in the deck."""
-        logger.debug(
-            "XUIElement.getRealInterface called — returning %s",
-            "container" if self._container_window is not None else "None",
-        )
-        assert self._container_window is not None
-        return self._container_window
-
-    # ----- XSidebarPanel --------------------------------------------------
-    #
-    # The sidebar framework calls these to figure out our preferred /
-    # minimum / maximum dimensions when computing the deck layout. The
-    # absence of this interface (before commit 8e9e8c4) caused soffice
-    # to segfault after createUIElement: native code queried for
-    # XSidebarPanel via queryInterface, got null, and dereferenced it.
-
-    def _layout_size(self, minimum: int, preferred: int, maximum: int = -1) -> object:
-        """Construct a ``com.sun.star.ui.LayoutSize`` UNO struct.
-
-        ``maximum = -1`` means "no upper bound" per the IDL convention.
-        """
-        layout = uno.createUnoStruct("com.sun.star.ui.LayoutSize")
-        layout.Minimum = minimum
-        layout.Preferred = preferred
-        layout.Maximum = maximum
-        return layout
-
-    def getHeightForWidth(self, width: int) -> object:  # noqa: N802
-        """XSidebarPanel: vertical extent we'd like at this width.
-
-        We're a chat panel; height should be as tall as the deck
-        allows. Preferred = 600 px, minimum = 200 px (enough for the
-        composer + send button to remain usable), no max bound.
-        """
-        layout = self._layout_size(minimum=200, preferred=600, maximum=-1)
-        logger.debug(
-            "XSidebarPanel.getHeightForWidth(width=%d) → min=200 pref=600 max=-1",
-            width,
-        )
-        return layout
-
-    def getWidthForHeight(self, height: int) -> object:  # noqa: N802
-        """XSidebarPanel: horizontal extent we'd like at this height."""
-        layout = self._layout_size(minimum=150, preferred=300, maximum=-1)
-        logger.debug(
-            "XSidebarPanel.getWidthForHeight(height=%d) → min=150 pref=300 max=-1",
-            height,
-        )
-        return layout
+    def getRealInterface(self) -> Any:  # noqa: N802
+        """Lazily build the panel window + return an XToolPanel wrapping it."""
+        if self._tool_panel is None:
+            window = self._create_panel_window()
+            self._bind_controls(window)
+            self._apply_auth_state()
+            self._tool_panel = Talk2ViewToolPanel(window, self.ctx)
+            logger.info("Talk2View panel window created and bound")
+        return self._tool_panel
 
     def setSettings(self, settings: object) -> None:  # noqa: N802
-        """XUIElement: no-op — tool panels do not carry settings."""
-        logger.debug("XUIElement.setSettings called (ignored)")
+        """XUIElement: no-op — tool panels don't carry settings."""
 
-    def getSettings(self, write: bool) -> None:  # noqa: N802
-        """XUIElement: no-op — tool panels do not carry settings."""
-        logger.debug("XUIElement.getSettings(write=%s) → None", write)
+    def getSettings(self, write: bool) -> object | None:  # noqa: N802
+        """XUIElement: no-op — tool panels don't carry settings."""
         return None
+
+    # ----- Window construction --------------------------------------------
+
+    def _create_panel_window(self) -> Any:
+        """Load chat_panel.xdl via ContainerWindowProvider.
+
+        The provider accepts the bare XWindow we received from the
+        sidebar (which doesn't expose XWindowPeer) and handles all
+        the peer-bridging plumbing internally — this is precisely why
+        we use it instead of building a UnoControlContainer manually.
+        """
+        pip = self.ctx.getValueByName(
+            "/singletons/com.sun.star.deployment.PackageInformationProvider"
+        )
+        extension_root = pip.getPackageLocation(_EXTENSION_ID)
+        dialog_url = f"{extension_root}/{_XDL_PATH}"
+        logger.info("Loading chat panel layout from %s", dialog_url)
+
+        provider = self.ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.ContainerWindowProvider", self.ctx
+        )
+        window = provider.createContainerWindow(
+            dialog_url, "", self._parent_window, None
+        )
+        self._panel_window = window
+        return window
+
+    def _bind_controls(self, window: Any) -> None:
+        """Resolve XDL control ids to control references + wire actions."""
+        self._status_label = window.getControl("status_label")
+        self._login_button = window.getControl("login_button")
+        self._history_field = window.getControl("history_field")
+        self._composer_field = window.getControl("composer_field")
+        self._send_button = window.getControl("send_button")
+
+        self._login_button.addActionListener(_ActionForwarder(self._on_login_clicked))
+        self._send_button.addActionListener(_ActionForwarder(self._on_send_clicked))
 
     # ----- XComponent -----------------------------------------------------
 
     def dispose(self) -> None:
-        """XComponent: tear down listeners and the container window."""
+        """XComponent: tear down listeners and the panel window."""
         logger.info("Talk2ViewPanel.dispose")
         from talk2view_writer.extension import get_extension
 
@@ -261,18 +237,15 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
         event = uno.createUnoStruct("com.sun.star.lang.EventObject")
         event.Source = self
         for listener in list(self._listeners):
-            # Listeners are duck-typed XEventListener instances. If one
-            # raises, that's a bug in the listener — surface the
-            # traceback at the call site, don't paper over it.
             listener.disposing(event)  # type: ignore[attr-defined]
 
-        if self._container_window is not None:
-            if self._window_listener is not None:
-                self._container_window.removeWindowListener(self._window_listener)
-            self._container_window.dispose()
+        if self._panel_window is not None:
+            self._panel_window.dispose()
+            self._panel_window = None
+        self._tool_panel = None
 
     def addEventListener(self, listener: object) -> None:  # noqa: N802
-        """XComponent: subscribe to ``disposing`` notifications."""
+        """XComponent: subscribe to disposing notifications."""
         self._listeners.append(listener)
 
     def removeEventListener(self, listener: object) -> None:  # noqa: N802
@@ -285,185 +258,16 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
     def on_auth_changed(self, user: User | None) -> None:
         """Called by the extension singleton on every login/logout."""
         self._user = user
-        self._apply_auth_state()
-
-    # ----- Internal: build the widget tree --------------------------------
-
-    def _build_window(self) -> None:
-        # IMPORTANT — peer-creation history, learned the hard way.
-        #
-        # Two failure modes we've seen:
-        #
-        # 1. cc.createPeer(toolkit, self._parent_window) raised
-        #    CannotConvertException because parent_window doesn't
-        #    expose XWindowPeer on this LibreOffice build.
-        # 2. cc.createPeer(toolkit, frame.getContainerWindow()) put
-        #    the peer in the WRONG window hierarchy (under the doc
-        #    frame, not under the sidebar slot). LibreOffice's docking
-        #    code then segfaulted trying to reparent — visible in the
-        #    log as 4 stderr lines "This plugin supports grabbing the
-        #    mouse only for popup windows" followed by soffice exiting
-        #    before any layout event fired.
-        #
-        # Surprising answer: don't pre-create the peer at all. Return
-        # an unpeered UnoControlContainer. LibreOffice's sidebar dock
-        # code DOES handle peer creation for the returned XUIElement
-        # — it just doesn't fire the windowResized event in a way our
-        # layout code can pick up, so children stay invisible. That's
-        # a layout problem, not a crash problem. Empty-but-visible
-        # panel beats crash-on-click; we iterate on rendering next.
-        cc_model = self._create_service("com.sun.star.awt.UnoControlContainerModel")
-        cc = self._create_service("com.sun.star.awt.UnoControlContainer")
-        cc.setModel(cc_model)
-
-        # The control container IS our container window — return it
-        # from getRealInterface(), tear it down on dispose().
-        self._control_container = cc
-        self._container_window = cc  # type: ignore[assignment]
-
-        # Children attach to the model side; their peers materialise
-        # when the container's peer does.
-        self._status_label = self._add_label(cc, "Talk2View — not logged in", name="status_label")
-        self._login_button = self._add_button(
-            cc, "Log in...", name="login_button", on_click=self._on_login_clicked
-        )
-        self._history_field = self._add_edit(
-            cc,
-            name="history_field",
-            multiline=True,
-            read_only=True,
-            v_scroll=True,
-        )
-        self._composer_field = self._add_edit(
-            cc,
-            name="composer_field",
-            multiline=True,
-            read_only=False,
-            v_scroll=True,
-        )
-        self._send_button = self._add_button(
-            cc, "Send", name="send_button", on_click=self._on_send_clicked
-        )
-
-        # Resize listener on the container — fires when LibreOffice
-        # realises its peer in the deck slot, which is our cue to
-        # call setPosSize on the children.
-        self._window_listener = _PanelResizeListener(self)
-        cc.addWindowListener(self._window_listener)
-
-        # _apply_auth_state only touches model properties (label text,
-        # enabled flags) — safe before peers exist.
-        self._apply_auth_state()
-        logger.info("Talk2View chat panel built (layout deferred until first resize)")
-
-    # ----- Widget factories -----------------------------------------------
-
-    def _create_service(self, service_name: str) -> Any:
-        # Returns whatever UNO service is named; callers cast implicitly
-        # by calling UNO methods on the result.
-        return self.ctx.ServiceManager.createInstanceWithContext(service_name, self.ctx)
-
-    def _add_label(self, container: XControlContainer, text: str, *, name: str) -> XControl:
-        model = self._create_service("com.sun.star.awt.UnoControlFixedTextModel")
-        model.setPropertyValue("Label", text)
-        model.setPropertyValue("Name", name)
-        control = self._create_service("com.sun.star.awt.UnoControlFixedText")
-        control.setModel(model)
-        container.addControl(name, control)
-        return control
-
-    def _add_button(
-        self,
-        container: XControlContainer,
-        text: str,
-        *,
-        name: str,
-        on_click: Callable[[], None],
-    ) -> XControl:
-        model = self._create_service("com.sun.star.awt.UnoControlButtonModel")
-        model.setPropertyValue("Label", text)
-        model.setPropertyValue("Name", name)
-        control = self._create_service("com.sun.star.awt.UnoControlButton")
-        control.setModel(model)
-        container.addControl(name, control)
-        control.addActionListener(_ActionForwarder(on_click))
-        return control
-
-    def _add_edit(
-        self,
-        container: XControlContainer,
-        *,
-        name: str,
-        multiline: bool,
-        read_only: bool,
-        v_scroll: bool,
-    ) -> XControl:
-        model = self._create_service("com.sun.star.awt.UnoControlEditModel")
-        model.setPropertyValue("Name", name)
-        model.setPropertyValue("MultiLine", multiline)
-        model.setPropertyValue("ReadOnly", read_only)
-        model.setPropertyValue("VScroll", v_scroll)
-        model.setPropertyValue("HScroll", False)
-        control = self._create_service("com.sun.star.awt.UnoControlEdit")
-        control.setModel(model)
-        container.addControl(name, control)
-        return control
-
-    # ----- Layout ---------------------------------------------------------
-
-    def _layout_children(
-        self, width_hint: int | None = None, height_hint: int | None = None
-    ) -> None:
-        if self._control_container is None:
-            return
-        # Size source: the WindowEvent's Width/Height when called from
-        # the resize listener; otherwise the most-recently-seen size.
-        # parent_window.getPosSize() is unusable on this LibreOffice
-        # build (raises "not implemented"), so we rely on resize events
-        # for the dimensions.
-        if width_hint is not None and height_hint is not None:
-            self._last_size = (width_hint, height_hint)
-        size_w, size_h = self._last_size
-        if size_w <= 0 or size_h <= 0:
-            # No size yet — wait for the first resize event.
-            return
-        width = max(size_w - 2 * _PADDING, 100)
-        x = _PADDING
-        y = _PADDING
-
-        if self._status_label is not None:
-            self._status_label.setPosSize(x, y, width, _STATUS_HEIGHT, POSSIZE)  # type: ignore[attr-defined]
-            y += _STATUS_HEIGHT + _PADDING
-
-        login_visible = self._user is None
-        if self._login_button is not None:
-            self._login_button.setVisible(login_visible)  # type: ignore[attr-defined]
-            if login_visible:
-                self._login_button.setPosSize(  # type: ignore[attr-defined]
-                    x, y, width, _LOGIN_BUTTON_HEIGHT, POSSIZE
-                )
-                y += _LOGIN_BUTTON_HEIGHT + _PADDING
-
-        # Composer + Send anchored to the bottom; history fills the rest.
-        bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
-        history_h = max(size_h - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
-        if self._history_field is not None:
-            self._history_field.setPosSize(x, y, width, history_h, POSSIZE)  # type: ignore[attr-defined]
-            y += history_h + _PADDING
-
-        if self._composer_field is not None:
-            self._composer_field.setPosSize(  # type: ignore[attr-defined]
-                x, y, width, _COMPOSER_HEIGHT, POSSIZE
-            )
-            y += _COMPOSER_HEIGHT + _PADDING
-
-        if self._send_button is not None:
-            self._send_button.setPosSize(x, y, width, _BUTTON_HEIGHT, POSSIZE)  # type: ignore[attr-defined]
+        if self._tool_panel is not None:
+            # Only update widgets once the panel has actually been built.
+            self._apply_auth_state()
 
     # ----- Auth state application -----------------------------------------
 
     def _apply_auth_state(self) -> None:
         """Update labels + enabled state to match ``self._user``."""
+        is_auth = self._user is not None
+
         if self._status_label is not None:
             text = (
                 f"Logged in as {self._user.email}"
@@ -472,23 +276,22 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
             )
             self._status_label.getModel().setPropertyValue("Label", text)
 
-        is_auth = self._user is not None
+        if self._login_button is not None:
+            self._login_button.getModel().setPropertyValue("EnableVisible", not is_auth)
 
         if self._composer_field is not None:
             self._composer_field.getModel().setPropertyValue("Enabled", is_auth)
         if self._send_button is not None:
             self._send_button.getModel().setPropertyValue("Enabled", is_auth)
 
-        # Show/hide the login button — layout has to re-run so other
-        # children fill the freed space.
-        self._layout_children()
-
     # ----- Event handlers -------------------------------------------------
 
     def _on_login_clicked(self) -> None:
         from talk2view_writer.extension import get_extension
 
-        parent = self._frame.getContainerWindow() if self._frame is not None else None
+        parent = (
+            self._frame_ref.getContainerWindow() if self._frame_ref is not None else None
+        )
         try:
             get_extension(self.ctx).show_login_dialog(parent_window=parent)
         except Exception as exc:
@@ -501,11 +304,12 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
             return
         if self._composer_field is None or self._history_field is None:
             return
-        message = str(self._composer_field.getModel().getPropertyValue("Text") or "").strip()
+        message = str(
+            self._composer_field.getModel().getPropertyValue("Text") or ""
+        ).strip()
         if not message:
             return
 
-        # Clear composer, append user message to history, mark busy.
         self._composer_field.getModel().setPropertyValue("Text", "")
         self._append_history(f"You: {message}\n")
         self._append_history("Talk2View: ")
@@ -533,28 +337,19 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
                 event_count += 1
                 self._handle_chat_event(event)
             self._append_history("\n")
-            logger.info(
-                "chat_worker finished cleanly after %d events", event_count
-            )
+            logger.info("chat_worker finished cleanly after %d events", event_count)
         except Exception as exc:
-            logger.exception(
-                "chat_worker FAILED: %s: %s", type(exc).__name__, exc
-            )
+            # UI boundary: catching `Exception` here is justified because
+            # the chat-worker thread has no other way to surface failure
+            # to the user; we write the error into the history field
+            # (visible UI) before exiting cleanly. Re-raising would
+            # crash the thread silently.
+            logger.exception("chat_worker failed")
             self._append_history(f"\n[error] {exc}\n")
         finally:
             self._set_busy(False)
-            logger.debug("chat_worker exit — busy flag cleared")
 
     def _handle_chat_event(self, event: Any) -> None:
-        """Map a ``ChatEvent`` to UI updates.
-
-        Phase B handles the text-only event stream. Phase C/D add
-        ``tool_call`` event handling once tools land.
-
-        ``event`` is annotated as ``Any`` because :class:`ChatEvent`
-        lives in the ``talk2view`` SDK, which we don't import at
-        module top-level (the SDK is bundled only at runtime).
-        """
         etype = getattr(event, "type", None)
         if etype == "text" and event.content:
             self._append_history(event.content)
@@ -571,20 +366,8 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
             logger.debug("Unhandled ChatEvent type: %s", etype)
 
     # ----- Cross-thread widget writers ------------------------------------
-    #
-    # All UNO calls these methods make are marshalled to the UI thread
-    # via the extension singleton's UIThreadDispatcher — see ADR-0018.
-    # ``_dispatch_ui`` may be called from any thread; the wrapped
-    # callable runs on the UI thread and the calling thread blocks
-    # until it returns. Methods named ``_*_ui`` are the UI-thread-only
-    # halves.
 
     def _dispatch_ui(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run ``fn(*args, **kwargs)`` on the UI thread.
-
-        Thin wrapper around :meth:`UIThreadDispatcher.run_sync` that
-        avoids importing the extension at module top-level.
-        """
         from talk2view_writer.extension import get_extension
 
         return get_extension(self.ctx).ui_thread.run_sync(fn, *args, **kwargs)
@@ -627,20 +410,18 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
             self._send_button.getModel().setPropertyValue(
                 "Enabled", not busy and self._user is not None
             )
-        if busy:
-            self._status_label.getModel().setPropertyValue("Label", "Thinking…")  # type: ignore[union-attr]
-        else:
-            # Restore the per-auth-state status text directly here so
-            # we stay on the UI thread without re-dispatching.
+        if busy and self._status_label is not None:
+            self._status_label.getModel().setPropertyValue("Label", "Thinking…")
+        elif not busy:
             self._apply_auth_state()
 
     # ----- Misc -----------------------------------------------------------
 
     def _show_message(self, title: str, message: str) -> None:
-        if self._frame is None:
+        if self._frame_ref is None:
             logger.warning("No frame; cannot show message: %s", message)
             return
-        window = self._frame.getContainerWindow()
+        window = self._frame_ref.getContainerWindow()
         toolkit = window.getToolkit()
         msgbox = toolkit.createMessageBox(
             window,
@@ -653,7 +434,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
 
 
 # ---------------------------------------------------------------------------
-# Helper listener implementations
+# Helper: bridge between UNO XActionListener and a plain Python callable
 # ---------------------------------------------------------------------------
 
 
@@ -665,42 +446,6 @@ class _ActionForwarder(unohelper.Base, XActionListener):
 
     def actionPerformed(self, event: ActionEvent) -> None:  # noqa: N802
         self._callback()
-
-    def disposing(self, event: EventObject) -> None:
-        pass
-
-
-class _PanelResizeListener(unohelper.Base, XWindowListener):
-    """Re-flow the panel when the parent sidebar window resizes.
-
-    The first windowResized / windowShown firing after a fresh dock
-    is also our cue that LibreOffice has realised our container's
-    peer (and cascaded peers down to the children) — that's when
-    _layout_children's setPosSize calls can succeed.
-    """
-
-    def __init__(self, panel: Talk2ViewPanel) -> None:
-        self._panel = panel
-
-    def windowResized(self, event: WindowEvent) -> None:  # noqa: N802
-        width = getattr(event, "Width", None)
-        height = getattr(event, "Height", None)
-        logger.debug(
-            "windowResized fired: width=%s height=%s — relaying out children",
-            width,
-            height,
-        )
-        self._panel._layout_children(width_hint=width, height_hint=height)
-
-    def windowMoved(self, event: WindowEvent) -> None:  # noqa: N802
-        pass
-
-    def windowShown(self, event: EventObject) -> None:  # noqa: N802
-        logger.info("windowShown fired — laying out children (peer should exist now)")
-        self._panel._layout_children()
-
-    def windowHidden(self, event: EventObject) -> None:  # noqa: N802
-        pass
 
     def disposing(self, event: EventObject) -> None:
         pass

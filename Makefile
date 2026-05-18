@@ -103,6 +103,7 @@ build: lint test-unit
 	@cp SYSTEM_PROMPT.md $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r extension/icons $(BUILD_DIR)/$(EXT_NAME)/icons
+	@cp -r extension/panels $(BUILD_DIR)/$(EXT_NAME)/panels
 	@echo "Bundling pure-Python runtime dependencies..."
 	@# Resolve each dep via the venv's Python so editable installs
 	@# (.pth indirection — e.g. our local talk2view SDK) and single-
