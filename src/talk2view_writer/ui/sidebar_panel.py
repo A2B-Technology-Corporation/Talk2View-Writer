@@ -245,45 +245,40 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     # ----- Internal: build the widget tree --------------------------------
 
     def _build_window(self) -> None:
-        # The ParentWindow passed in by the sidebar deck is a bare XWindow
-        # — supportedInterfaces logs as exactly {XWeak, XComponent,
-        # XTypeProvider, XWindow}. Two PyUNO gotchas this triggers:
+        # IMPORTANT — read before changing this method.
         #
-        # 1. XWindow has no getToolkit() (that's on XControl / XWindow2).
-        #    Get one from the service manager instead.
-        # 2. XWindow can't be assigned to a struct field typed as
-        #    XWindowPeer — PyUNO's field-assignment path skips
-        #    queryInterface, so descriptor.Parent = self._parent_window
-        #    raises CannotConvertException. Method-arg coercion is
-        #    different: PyUNO DOES call queryInterface there, so
-        #    cc.createPeer(toolkit, self._parent_window) succeeds
-        #    because the underlying vcl::Window does support
-        #    XWindowPeer at the C++ level even though PyUNO didn't
-        #    declare it in supportedInterfaces.
+        # The sidebar's ParentWindow is a thin XWindow wrapper that
+        # deliberately does NOT expose XWindowPeer (log shows
+        # supportedInterfaces = {XWeak, XComponent, XTypeProvider,
+        # XWindow} — nothing else). Earlier attempts at
+        #   cc.createPeer(toolkit, self._parent_window)
+        #   descriptor.Parent = self._parent_window
+        # both raised CannotConvertException: XWindowPeer queryInterface
+        # returns None on this object. The wrapping is intentional —
+        # LibreOffice's sidebar framework reserves peer creation for
+        # itself and provides the parent purely as a sizing/event
+        # reference.
         #
-        # That's why we skip the WindowDescriptor + toolkit.createWindow
-        # intermediate (which needed descriptor.Parent typed as
-        # XWindowPeer) and bind UnoControlContainer directly to the
-        # sidebar's ParentWindow. The container becomes our dockable
-        # window — getRealInterface() returns it, dispose() tears it
-        # down.
-        toolkit = self._create_service("com.sun.star.awt.Toolkit")
-
+        # The contract is: build an unpeered UnoControlContainer, add
+        # the children to it (also unpeered), return the container from
+        # getRealInterface(). When LibreOffice docks that returned
+        # XWindow into the deck slot, it creates the container's peer,
+        # which cascades peer creation through the children. setPosSize
+        # requires peers, so the inline _layout_children() call had to
+        # go too — the resize listener already wired to parent_window
+        # will fire once the dock completes and lay out the children
+        # then (by which point all peers exist).
         cc_model = self._create_service("com.sun.star.awt.UnoControlContainerModel")
         cc = self._create_service("com.sun.star.awt.UnoControlContainer")
         cc.setModel(cc_model)
-        cc.createPeer(toolkit, self._parent_window)
-
-        parent_size = self._parent_window.getPosSize()
-        cc_window: XWindow = cc  # type: ignore[assignment]
-        cc_window.setPosSize(0, 0, parent_size.Width, parent_size.Height, POSSIZE)
 
         # The control container IS our container window — return it
         # from getRealInterface(), tear it down on dispose().
         self._control_container = cc
-        self._container_window = cc_window
+        self._container_window = cc  # type: ignore[assignment]
 
-        # Children.
+        # Children attach to the model side; their peers materialise
+        # when the container's peer does.
         self._status_label = self._add_label(cc, "Talk2View — not logged in", name="status_label")
         self._login_button = self._add_button(
             cc, "Log in...", name="login_button", on_click=self._on_login_clicked
@@ -306,12 +301,19 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
             cc, "Send", name="send_button", on_click=self._on_send_clicked
         )
 
+        # Resize listener on parent_window — its first windowResized /
+        # windowShown event after docking is our cue that peers exist
+        # and we can call setPosSize on the children.
         self._window_listener = _PanelResizeListener(self)
         self._parent_window.addWindowListener(self._window_listener)
 
+        # _apply_auth_state only touches model properties (label text,
+        # enabled flags) — safe before peers exist.
         self._apply_auth_state()
-        self._layout_children()
-        logger.info("Talk2View chat panel built")
+        logger.info(
+            "Talk2View chat panel built (peers pending; layout deferred "
+            "until first windowResized from parent_window)"
+        )
 
     # ----- Widget factories -----------------------------------------------
 
@@ -371,45 +373,68 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
     def _layout_children(self) -> None:
         if self._control_container is None:
             return
-        size = self._parent_window.getPosSize()
+        # setPosSize / setVisible on a control require its peer to
+        # exist. _build_window deliberately doesn't create peers — the
+        # sidebar framework does that on dock. The first windowResized
+        # event from parent_window is normally the signal that the
+        # dock has completed and peers exist, but if for any reason
+        # this fires too early we'd rather log than crash and let the
+        # next event retry. Catch narrowly per-control so a single
+        # missing peer doesn't skip the rest.
+        try:
+            size = self._parent_window.getPosSize()
+        except Exception:
+            logger.exception("_layout_children: getPosSize on parent failed; skipping pass")
+            return
         width = max(size.Width - 2 * _PADDING, 100)
         x = _PADDING
         y = _PADDING
 
-        if self._status_label is not None:
-            (self._status_label).setPosSize(  # type: ignore[union-attr]
-                x, y, width, _STATUS_HEIGHT, POSSIZE
-            )
+        def _try_set_pos(ctrl: object, x: int, y: int, w: int, h: int) -> bool:
+            """Best-effort setPosSize. Returns True on success."""
+            try:
+                ctrl.setPosSize(x, y, w, h, POSSIZE)  # type: ignore[attr-defined]
+                return True
+            except Exception as exc:
+                logger.warning(
+                    "_layout_children: setPosSize failed on %r: %s "
+                    "(peer not yet realised? layout will retry on next resize)",
+                    ctrl,
+                    exc,
+                )
+                return False
+
+        if self._status_label is not None and _try_set_pos(
+            self._status_label, x, y, width, _STATUS_HEIGHT
+        ):
             y += _STATUS_HEIGHT + _PADDING
 
         login_visible = self._user is None
         if self._login_button is not None:
-            (self._login_button).setVisible(login_visible)  # type: ignore[attr-defined]
-            if login_visible:
-                (self._login_button).setPosSize(  # type: ignore[union-attr]
-                    x, y, width, _LOGIN_BUTTON_HEIGHT, POSSIZE
-                )
+            try:
+                self._login_button.setVisible(login_visible)  # type: ignore[attr-defined]
+            except Exception:
+                logger.warning("setVisible on login_button failed (peer pending)")
+            if login_visible and _try_set_pos(
+                self._login_button, x, y, width, _LOGIN_BUTTON_HEIGHT
+            ):
                 y += _LOGIN_BUTTON_HEIGHT + _PADDING
 
         # Composer + Send anchored to the bottom; history fills the rest.
         bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
         history_h = max(size.Height - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
-        if self._history_field is not None:
-            (self._history_field).setPosSize(  # type: ignore[union-attr]
-                x, y, width, history_h, POSSIZE
-            )
+        if self._history_field is not None and _try_set_pos(
+            self._history_field, x, y, width, history_h
+        ):
             y += history_h + _PADDING
 
-        if self._composer_field is not None:
-            (self._composer_field).setPosSize(  # type: ignore[union-attr]
-                x, y, width, _COMPOSER_HEIGHT, POSSIZE
-            )
+        if self._composer_field is not None and _try_set_pos(
+            self._composer_field, x, y, width, _COMPOSER_HEIGHT
+        ):
             y += _COMPOSER_HEIGHT + _PADDING
 
         if self._send_button is not None:
-            (self._send_button).setPosSize(  # type: ignore[union-attr]
-                x, y, width, _BUTTON_HEIGHT, POSSIZE
-            )
+            _try_set_pos(self._send_button, x, y, width, _BUTTON_HEIGHT)
 
     # ----- Auth state application -----------------------------------------
 
@@ -622,18 +647,30 @@ class _ActionForwarder(unohelper.Base, XActionListener):
 
 
 class _PanelResizeListener(unohelper.Base, XWindowListener):
-    """Re-flow the panel when the parent sidebar window resizes."""
+    """Re-flow the panel when the parent sidebar window resizes.
+
+    The first windowResized / windowShown firing after a fresh dock
+    is also our cue that LibreOffice has realised our container's
+    peer (and cascaded peers down to the children) — that's when
+    _layout_children's setPosSize calls can succeed.
+    """
 
     def __init__(self, panel: Talk2ViewPanel) -> None:
         self._panel = panel
 
     def windowResized(self, event: WindowEvent) -> None:  # noqa: N802
+        logger.debug(
+            "windowResized fired: width=%s height=%s — relaying out children",
+            getattr(event, "Width", "?"),
+            getattr(event, "Height", "?"),
+        )
         self._panel._layout_children()
 
     def windowMoved(self, event: WindowEvent) -> None:  # noqa: N802
         pass
 
     def windowShown(self, event: EventObject) -> None:  # noqa: N802
+        logger.info("windowShown fired — laying out children (peer should exist now)")
         self._panel._layout_children()
 
     def windowHidden(self, event: EventObject) -> None:  # noqa: N802
