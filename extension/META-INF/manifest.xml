@@ -12,4 +12,7 @@
     <manifest:file-entry
         manifest:media-type="application/vnd.sun.star.configuration-data"
         manifest:full-path="ProtocolHandler.xcu"/>
+    <manifest:file-entry
+        manifest:media-type="application/vnd.sun.star.configuration-data"
+        manifest:full-path="Factories.xcu"/>
 </manifest:manifest>

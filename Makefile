@@ -92,6 +92,7 @@ build: lint test-unit
 	@cp extension/Addons.xcu              $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/Sidebar.xcu             $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/ProtocolHandler.xcu     $(BUILD_DIR)/$(EXT_NAME)/
+	@cp extension/Factories.xcu          $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/META-INF/manifest.xml   $(BUILD_DIR)/$(EXT_NAME)/META-INF/
 	@cp extension/description/description_en.txt $(BUILD_DIR)/$(EXT_NAME)/description/
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/registration
@@ -101,6 +102,7 @@ build: lint test-unit
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/resources
 	@cp SYSTEM_PROMPT.md $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
+	@cp -r extension/icons $(BUILD_DIR)/$(EXT_NAME)/icons
 	@echo "Bundling pure-Python runtime dependencies..."
 	@# Resolve each dep via the venv's Python so editable installs
 	@# (.pth indirection — e.g. our local talk2view SDK) and single-

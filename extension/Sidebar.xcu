@@ -24,7 +24,7 @@
                     <value>com.talk2view.writer.Deck</value>
                 </prop>
                 <prop oor:name="IconURL" oor:type="xs:string">
-                    <value>private:graphicrepository/cmd/lc_inspectordeck.png</value>
+                    <value>vnd.sun.star.extension://com.talk2view.writer/icons/talk2view.png</value>
                 </prop>
                 <prop oor:name="ContextList">
                     <value oor:separator=";">

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<oor:component-data xmlns:oor="http://openoffice.org/2001/registry"
+                    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                    oor:name="Factories"
+                    oor:package="org.openoffice.Office.UI">
+
+    <!-- Register our Python ChatPanelFactory under LibreOffice's
+         UIElementFactories registry. Without this entry, LibreOffice's
+         sidebar URL resolver cannot map
+         private:resource/toolpanel/com.talk2view.writer.ChatPanelFactory/Chat
+         to anything — the deck tab shows (Sidebar.xcu loaded), but the
+         panel area inside stays empty because the factory lookup
+         silently returns NULL. addImplementation() in
+         talk2view_writer.py is necessary but not sufficient: that just
+         tells the service manager an implementation exists; this file
+         is what tells the sidebar's URL resolver which implementation
+         to call for a given private:resource URL.
+
+         Field meanings (verified against stock LibreOffice's main.xcd
+         SwPanelFactory entry):
+           - oor:name (the registry node name): any unique identifier
+           - Type:                "toolpanel" — matches the <type>
+                                  segment of the resource URL
+                                  (private:resource/<type>/<Name>/<id>)
+           - Name:                matches the <Name> segment of the URL
+           - Module:              empty = applies to all applications
+           - FactoryImplementation: the UNO implementation name passed
+                                  to g_ImplementationHelper.addImplementation
+                                  in talk2view_writer.py
+    -->
+    <node oor:name="Registered">
+        <node oor:name="UIElementFactories">
+            <node oor:name="com.talk2view.writer.ChatPanelFactory" oor:op="replace">
+                <prop oor:name="Type">
+                    <value>toolpanel</value>
+                </prop>
+                <prop oor:name="Name">
+                    <value>com.talk2view.writer.ChatPanelFactory</value>
+                </prop>
+                <prop oor:name="Module">
+                    <value/>
+                </prop>
+                <prop oor:name="FactoryImplementation">
+                    <value>com.talk2view.writer.ChatPanelFactory</value>
+                </prop>
+            </node>
+        </node>
+    </node>
+
+</oor:component-data>
