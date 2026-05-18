@@ -145,6 +145,14 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         self._user: User | None = None
         self._busy = threading.Event()  # set while a worker thread is running
 
+        # Last known panel size (width, height) — populated by resize
+        # events because parent_window.getPosSize() throws "not
+        # implemented" on the sidebar's dummy parent wrapper, and the
+        # container's own getPosSize is unreliable before peer
+        # realisation. Layout reads this; auth-state changes use
+        # whatever's most recently been written.
+        self._last_size: tuple[int, int] = (0, 0)
+
         logger.info(
             "Talk2ViewPanel.__init__: about to call _build_window "
             "(parent_window=%r resource_url=%s)",
@@ -301,11 +309,31 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
             cc, "Send", name="send_button", on_click=self._on_send_clicked
         )
 
-        # Resize listener on parent_window — its first windowResized /
-        # windowShown event after docking is our cue that peers exist
-        # and we can call setPosSize on the children.
+        # Resize listener. Try parent_window first (its windowResized
+        # event would be the cleanest signal that LibreOffice has
+        # docked us), then ALSO attach to our own container — the
+        # parent_window is largely a dummy on this LibreOffice build
+        # (its getPosSize raises "not implemented") so listener
+        # registration there may silently no-op. The container's own
+        # resize events will fire once the framework realises its
+        # peer and assigns it a size in the deck slot.
         self._window_listener = _PanelResizeListener(self)
-        self._parent_window.addWindowListener(self._window_listener)
+        try:
+            self._parent_window.addWindowListener(self._window_listener)
+        except Exception:
+            logger.warning(
+                "parent_window.addWindowListener failed — relying on "
+                "container's own resize events",
+                exc_info=True,
+            )
+        try:
+            cc.addWindowListener(self._window_listener)
+        except Exception:
+            logger.warning(
+                "container.addWindowListener failed — initial layout "
+                "may be delayed until next resize",
+                exc_info=True,
+            )
 
         # _apply_auth_state only touches model properties (label text,
         # enabled flags) — safe before peers exist.
@@ -370,23 +398,39 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     # ----- Layout ---------------------------------------------------------
 
-    def _layout_children(self) -> None:
+    def _layout_children(
+        self, width_hint: int | None = None, height_hint: int | None = None
+    ) -> None:
         if self._control_container is None:
+            return
+        # Determine the available size.
+        #
+        # The sidebar's ParentWindow is a dummy XWindow whose getPosSize
+        # raises RuntimeException: not implemented — so we can't read
+        # the size from it. The resize listener forwards the WindowEvent's
+        # Width/Height fields directly (when called from there). For other
+        # entry points (auth-state changes, etc.) we fall back to the
+        # most-recently-seen size.
+        if width_hint is not None and height_hint is not None:
+            self._last_size = (width_hint, height_hint)
+        size_w, size_h = self._last_size
+        if size_w <= 0 or size_h <= 0:
+            # No size cached and none provided — nothing to lay out
+            # against. The first real resize event will trigger another
+            # layout pass with concrete dimensions.
+            logger.debug(
+                "_layout_children: no size known yet (last_size=%s), "
+                "deferring until resize event",
+                self._last_size,
+            )
             return
         # setPosSize / setVisible on a control require its peer to
         # exist. _build_window deliberately doesn't create peers — the
-        # sidebar framework does that on dock. The first windowResized
-        # event from parent_window is normally the signal that the
-        # dock has completed and peers exist, but if for any reason
-        # this fires too early we'd rather log than crash and let the
-        # next event retry. Catch narrowly per-control so a single
-        # missing peer doesn't skip the rest.
-        try:
-            size = self._parent_window.getPosSize()
-        except Exception:
-            logger.exception("_layout_children: getPosSize on parent failed; skipping pass")
-            return
-        width = max(size.Width - 2 * _PADDING, 100)
+        # sidebar framework does that on dock. If we somehow get here
+        # before peers exist, catch narrowly per-control so a single
+        # missing peer doesn't skip the rest, and let the next resize
+        # event retry.
+        width = max(size_w - 2 * _PADDING, 100)
         x = _PADDING
         y = _PADDING
 
@@ -422,7 +466,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
         # Composer + Send anchored to the bottom; history fills the rest.
         bottom_block_h = _COMPOSER_HEIGHT + _PADDING + _BUTTON_HEIGHT + _PADDING
-        history_h = max(size.Height - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
+        history_h = max(size_h - y - bottom_block_h - _PADDING, _HISTORY_MIN_HEIGHT)
         if self._history_field is not None and _try_set_pos(
             self._history_field, x, y, width, history_h
         ):
@@ -659,12 +703,14 @@ class _PanelResizeListener(unohelper.Base, XWindowListener):
         self._panel = panel
 
     def windowResized(self, event: WindowEvent) -> None:  # noqa: N802
+        width = getattr(event, "Width", None)
+        height = getattr(event, "Height", None)
         logger.debug(
             "windowResized fired: width=%s height=%s — relaying out children",
-            getattr(event, "Width", "?"),
-            getattr(event, "Height", "?"),
+            width,
+            height,
         )
-        self._panel._layout_children()
+        self._panel._layout_children(width_hint=width, height_hint=height)
 
     def windowMoved(self, event: WindowEvent) -> None:  # noqa: N802
         pass
