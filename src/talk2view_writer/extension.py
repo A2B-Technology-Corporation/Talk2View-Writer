@@ -81,9 +81,16 @@ class Talk2ViewWriterExtension:
     def sdk(self) -> Talk2ViewSDKClient:
         """Lazily-instantiated Talk2View SDK wrapper.
 
-        On first access this also registers every tool from
-        :mod:`talk2view_writer.tools` with the SDK so the agent sees
-        the full tool surface immediately.
+        Side-effect-free beyond constructing the client. Tool
+        registration deliberately happens elsewhere — see
+        :meth:`_register_tools_if_needed`. That call hits an
+        authenticated endpoint (``/v1/tools/register``); putting it
+        here meant every menu action (login, logout, settings) tried
+        to register tools *before* the user had a session, raising
+        ``AuthenticationError`` and aborting the action. Worse, the
+        login path itself read ``self.sdk.login(...)``, so the
+        property fired before the credentials could be sent — a
+        deadlock-by-property.
         """
         with self._lock:
             if self._sdk is None:
@@ -100,20 +107,39 @@ class Talk2ViewWriterExtension:
                 self._sdk = Talk2ViewSDKClient()
                 self._sdk.add_auth_listener(self._on_auth_changed)
                 logger.info("SDK client instantiated")
-            # Register tools once per process. Done under the same lock so
-            # concurrent first-accessors don't double-register.
-            if not self._tools_registered:
-                from talk2view_writer.tools import all_tools
-
-                tools = all_tools()
-                self._sdk.register_tools(tools)
-                self._tools_registered = True
-                logger.info(
-                    "Registered %d tool(s) with SDK: %s",
-                    len(tools),
-                    [getattr(t, "__name__", repr(t)) for t in tools],
-                )
+                # If the user is already authenticated from a previous
+                # session (token in storage), the auth listener will
+                # never fire — register tools now while we hold the
+                # lock.
+                if self._sdk.is_authenticated():
+                    logger.info(
+                        "SDK init: cached auth detected, registering "
+                        "tools immediately"
+                    )
+                    self._register_tools_locked()
             return self._sdk
+
+    def _register_tools_locked(self) -> None:
+        """Register every tool with the SDK. Caller must hold ``self._lock``.
+
+        Hits ``/v1/tools/register`` — authentication required. Only
+        invoke when ``self._sdk.is_authenticated()`` is True (i.e. from
+        the auth-change listener on login, or from the ``sdk`` getter
+        when a cached session was restored).
+        """
+        if self._tools_registered:
+            return
+        assert self._sdk is not None, "sdk must exist before tool registration"
+        from talk2view_writer.tools import all_tools
+
+        tools = all_tools()
+        self._sdk.register_tools(tools)
+        self._tools_registered = True
+        logger.info(
+            "Registered %d tool(s) with SDK: %s",
+            len(tools),
+            [getattr(t, "__name__", repr(t)) for t in tools],
+        )
 
     # ------------------------------------------------------------------
     # Menu command handlers (called by Talk2ViewJob.trigger)
@@ -220,9 +246,34 @@ class Talk2ViewWriterExtension:
     # ------------------------------------------------------------------
 
     def _on_auth_changed(self, user: User | None) -> None:
-        """SDK auth-state callback — broadcast to all open panels."""
+        """SDK auth-state callback — register/unregister tools + fan out to panels.
+
+        Tool registration belongs here (not in the ``sdk`` getter)
+        because ``/v1/tools/register`` needs an active session. Login
+        fires this with ``user != None``, at which point auth has
+        succeeded and the call is safe. Logout fires with
+        ``user is None``; we clear the registered flag so the next
+        login re-registers against the fresh session.
+        """
         with self._lock:
             panels = list(self._open_panels)
+            if user is not None:
+                try:
+                    self._register_tools_locked()
+                except Exception:
+                    # Tool registration is best-effort here: if it
+                    # fails, the login itself still succeeded. The
+                    # error surfaces again the next time the user
+                    # tries to chat, and we don't want to silently
+                    # roll back a successful login.
+                    logger.exception(
+                        "Tool registration in _on_auth_changed failed "
+                        "— chat will likely error until re-login"
+                    )
+            else:
+                # Logout: server-side session is gone, our registration
+                # is invalid against the next session.
+                self._tools_registered = False
         logger.info(
             "Auth changed: user=%s; notifying %d panel(s)",
             user.email if user else None,
