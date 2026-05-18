@@ -191,9 +191,12 @@ jobs:
       - name: Install LibreOffice (macOS)
         if: runner.os == 'macOS'
         run: |
-          # `--cask` ships the .app bundle; `--no-quarantine` skips
-          # Gatekeeper's first-run prompt so we can headless-launch.
-          brew install --cask --no-quarantine libreoffice
+          # `--cask` ships the .app bundle. Homebrew removed the
+          # `--no-quarantine` flag in 2025; `xattr -d` after install
+          # is the replacement for skipping Gatekeeper's first-run
+          # prompt so we can headless-launch from CI.
+          brew install --cask libreoffice
+          xattr -dr com.apple.quarantine /Applications/LibreOffice.app || true
 
       - name: Install LibreOffice (Windows)
         if: runner.os == 'Windows'
