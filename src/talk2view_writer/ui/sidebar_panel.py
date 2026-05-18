@@ -42,7 +42,6 @@ from com.sun.star.awt import (  # type: ignore[import-not-found]
     XWindowListener,
 )
 from com.sun.star.awt.PosSize import POSSIZE  # type: ignore[import-not-found]
-from com.sun.star.awt.WindowClass import SIMPLE  # type: ignore[import-not-found]
 from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
 from com.sun.star.ui import UIElementType, XUIElement  # type: ignore[import-not-found]
 
@@ -247,36 +246,42 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
     def _build_window(self) -> None:
         # The ParentWindow passed in by the sidebar deck is a bare XWindow
-        # — it supports only XWindow / XComponent / XTypeProvider / XWeak.
-        # XWindow has no getToolkit() (that lives on XControl /
-        # XWindow2), so we can't ask the parent for one. The portable
-        # way to obtain a Toolkit is to instantiate the
-        # com.sun.star.awt.Toolkit singleton service from the context
-        # we already hold. It's the same toolkit the parent window is
-        # using, so newly-created peers will share its display, theme,
-        # etc.
+        # — supportedInterfaces logs as exactly {XWeak, XComponent,
+        # XTypeProvider, XWindow}. Two PyUNO gotchas this triggers:
+        #
+        # 1. XWindow has no getToolkit() (that's on XControl / XWindow2).
+        #    Get one from the service manager instead.
+        # 2. XWindow can't be assigned to a struct field typed as
+        #    XWindowPeer — PyUNO's field-assignment path skips
+        #    queryInterface, so descriptor.Parent = self._parent_window
+        #    raises CannotConvertException. Method-arg coercion is
+        #    different: PyUNO DOES call queryInterface there, so
+        #    cc.createPeer(toolkit, self._parent_window) succeeds
+        #    because the underlying vcl::Window does support
+        #    XWindowPeer at the C++ level even though PyUNO didn't
+        #    declare it in supportedInterfaces.
+        #
+        # That's why we skip the WindowDescriptor + toolkit.createWindow
+        # intermediate (which needed descriptor.Parent typed as
+        # XWindowPeer) and bind UnoControlContainer directly to the
+        # sidebar's ParentWindow. The container becomes our dockable
+        # window — getRealInterface() returns it, dispose() tears it
+        # down.
         toolkit = self._create_service("com.sun.star.awt.Toolkit")
 
-        # Container window (docks inside the sidebar panel area).
-        descriptor = uno.createUnoStruct("com.sun.star.awt.WindowDescriptor")
-        descriptor.Type = SIMPLE
-        descriptor.WindowServiceName = "dockingwindow"
-        descriptor.ParentIndex = -1
-        descriptor.Parent = self._parent_window
-        descriptor.Bounds = uno.createUnoStruct("com.sun.star.awt.Rectangle")
-        descriptor.WindowAttributes = 0
-        container_peer = toolkit.createWindow(descriptor)
-        self._container_window = container_peer
-
-        # Control container, sized to fill the deck area.
         cc_model = self._create_service("com.sun.star.awt.UnoControlContainerModel")
         cc = self._create_service("com.sun.star.awt.UnoControlContainer")
         cc.setModel(cc_model)
-        cc.createPeer(toolkit, container_peer)
+        cc.createPeer(toolkit, self._parent_window)
+
         parent_size = self._parent_window.getPosSize()
         cc_window: XWindow = cc  # type: ignore[assignment]
         cc_window.setPosSize(0, 0, parent_size.Width, parent_size.Height, POSSIZE)
+
+        # The control container IS our container window — return it
+        # from getRealInterface(), tear it down on dispose().
         self._control_container = cc
+        self._container_window = cc_window
 
         # Children.
         self._status_label = self._add_label(cc, "Talk2View — not logged in", name="status_label")
