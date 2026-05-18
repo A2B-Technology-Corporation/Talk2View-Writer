@@ -48,6 +48,12 @@ def _build_status_text(sdk: Talk2ViewSDKClient) -> str:
         if user is not None
         else "Logged out — use Talk2View → Login"
     )
+    # Surface the log path so users can copy-paste it into a bug
+    # report or open it in a text editor without hunting through
+    # XDG / AppData / Library directories.
+    from talk2view_writer._logging import log_file_path
+
+    log_path = log_file_path()
     return (
         "Talk2View-Writer\n"
         f"\n"
@@ -57,6 +63,10 @@ def _build_status_text(sdk: Talk2ViewSDKClient) -> str:
         f"{auth_line}\n"
         f"\n"
         f"System prompt: {prompt_status}\n"
+        f"\n"
+        f"Log file: {log_path}\n"
+        f"(Attach this file to bug reports. Set T2V_WRITER_DEBUG=1 in\n"
+        f"the environment before launching LibreOffice for verbose logs.)\n"
         f"\n"
         f"Settings UI is read-only in this build."
     )

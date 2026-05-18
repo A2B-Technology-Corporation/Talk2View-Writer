@@ -27,6 +27,13 @@ import unohelper  # noqa: E402
 from com.sun.star.task import XJobExecutor  # noqa: E402
 from com.sun.star.ui import XUIElementFactory  # noqa: E402
 
+# Bootstrap the persistent rotating log file as early as possible:
+# every other module logged via `getLogger(__name__)` inherits the
+# handlers wired up here. See src/talk2view_writer/_logging.py.
+from talk2view_writer._logging import setup_logging  # noqa: E402
+
+_LOG_PATH = setup_logging()
+
 if TYPE_CHECKING:
     from com.sun.star.awt import XWindow
     from com.sun.star.beans import PropertyValue
@@ -34,14 +41,14 @@ if TYPE_CHECKING:
     from com.sun.star.ui import XUIElement
     from com.sun.star.uno import XComponentContext
 
-logger = logging.getLogger("Talk2ViewWriter")
-if not logger.handlers:
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(name)s %(levelname)s] %(message)s"
-    ))
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+# Logger named after the UNO entry — distinct from "talk2view_writer.*"
+# so log filtering can target host-shim vs package code separately.
+logger = logging.getLogger("talk2view_writer.uno_entry")
+logger.info(
+    "UNO entry module loaded. pythonpath=%s log_file=%s",
+    _PYTHONPATH,
+    _LOG_PATH,
+)
 
 
 # ---------------------------------------------------------------------------
