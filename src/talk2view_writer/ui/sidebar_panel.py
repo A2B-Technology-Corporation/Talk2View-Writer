@@ -44,7 +44,6 @@ from typing import TYPE_CHECKING, Any
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
 from com.sun.star.awt import XActionListener  # type: ignore[import-not-found]
-from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
 from com.sun.star.ui import (  # type: ignore[import-not-found]
     UIElementType,
     XToolPanel,
@@ -126,13 +125,20 @@ class Talk2ViewToolPanel(unohelper.Base, XToolPanel):
 # ---------------------------------------------------------------------------
 
 
-class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
+class Talk2ViewPanel(unohelper.Base, XUIElement):
     """Talk2View chat panel.
 
     XUIElement attributes (``Frame``, ``ResourceURL``, ``Type``) are
     set as direct Python attributes — PyUNO's attribute synthesis
     binds them to the IDL-declared read-only attributes. This is how
     LibreOffice's SDK toolpanel example does it.
+
+    Deliberately does NOT inherit ``XComponent``. The sidebar framework
+    treats panels that implement XComponent as owned, and immediately
+    calls ``dispose()`` after ``getRealInterface()`` — tearing down
+    the panel window 10ms after we create it. The SDK reference doesn't
+    inherit XComponent either; lifecycle cleanup happens lazily when
+    the underlying panel window itself is disposed.
     """
 
     def __init__(
@@ -165,9 +171,6 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         # Auth + chat state.
         self._user: User | None = None
         self._busy = threading.Event()
-
-        # XComponent listeners.
-        self._listeners: list[object] = []
 
     # ----- XUIElement -----------------------------------------------------
 
@@ -224,34 +227,6 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
 
         self._login_button.addActionListener(_ActionForwarder(self._on_login_clicked))
         self._send_button.addActionListener(_ActionForwarder(self._on_send_clicked))
-
-    # ----- XComponent -----------------------------------------------------
-
-    def dispose(self) -> None:
-        """XComponent: tear down listeners and the panel window."""
-        logger.info("Talk2ViewPanel.dispose")
-        from talk2view_writer.extension import get_extension
-
-        get_extension(self.ctx).unregister_panel(self)
-
-        event = uno.createUnoStruct("com.sun.star.lang.EventObject")
-        event.Source = self
-        for listener in list(self._listeners):
-            listener.disposing(event)  # type: ignore[attr-defined]
-
-        if self._panel_window is not None:
-            self._panel_window.dispose()
-            self._panel_window = None
-        self._tool_panel = None
-
-    def addEventListener(self, listener: object) -> None:  # noqa: N802
-        """XComponent: subscribe to disposing notifications."""
-        self._listeners.append(listener)
-
-    def removeEventListener(self, listener: object) -> None:  # noqa: N802
-        """XComponent: unsubscribe a previously-added listener."""
-        if listener in self._listeners:
-            self._listeners.remove(listener)
 
     # ----- Public: auth state callback ------------------------------------
 
