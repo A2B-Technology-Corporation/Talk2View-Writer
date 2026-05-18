@@ -109,6 +109,11 @@ _lang.XComponent = _StubInterface  # type: ignore[attr-defined]
 _ui = _make_module("com.sun.star.ui")
 _ui.XUIElement = _StubInterface  # type: ignore[attr-defined]
 _ui.XUIElementFactory = _StubInterface  # type: ignore[attr-defined]
+_ui.XSidebarPanel = _StubInterface  # type: ignore[attr-defined]
+# LayoutSize is a UNO struct, not an interface; production code
+# constructs it via uno.createUnoStruct so the stub just needs to
+# exist as an attribute for from-import to succeed.
+_ui.LayoutSize = MagicMock(name="LayoutSize")  # type: ignore[attr-defined]
 
 
 class _UIElementType:

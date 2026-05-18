@@ -228,9 +228,15 @@ jobs:
           export DISPLAY=:99
           Xvfb :99 -screen 0 1280x1024x24 &
           sleep 1
-          /usr/bin/soffice \
+          # Pipe stderr/stdout to a file so we can capture GTK plugin
+          # warnings + segfault traces in the test artifacts. These are
+          # invisible to Python try/except but tell us exactly when
+          # native code crashes.
+          T2V_WRITER_DEBUG=1 /usr/bin/soffice \
             --headless --norestore --nologo --nodefault \
-            --accept="socket,host=127.0.0.1,port=2002;urp;" &
+            --accept="socket,host=127.0.0.1,port=2002;urp;" \
+            >soffice.stdout.log 2>soffice.stderr.log &
+          echo $! > soffice.pid
           uv run python scripts/wait_for_soffice.py --timeout 60
 
       - name: Start headless soffice (macOS)
@@ -277,3 +283,39 @@ jobs:
         run: |
           journalctl --user -u libreoffice 2>/dev/null || true
           cat ~/.config/libreoffice/4/user/registrymodifications.xcu 2>/dev/null | head -50 || true
+
+      # Always upload our log + soffice's stderr regardless of pass/fail.
+      # Native crashes (segfaults inside the sidebar dock code) leave
+      # nothing in pytest's output, so the only forensic evidence is
+      # what made it to the rotating log before the process died. The
+      # GTK plugin warnings ("This plugin supports grabbing the mouse
+      # only for popup windows") and any segfault traces land in
+      # soffice.stderr.log — both are needed to diagnose
+      # "createUIElement returned, then silence" failure modes.
+      - name: Collect diagnostic logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p _diag
+          # Our rotating log lives in OS-appropriate user-cache dirs.
+          # Try all known locations and copy any that exist.
+          for p in \
+              "$HOME/.cache/talk2view-writer/talk2view.log" \
+              "$HOME/Library/Logs/talk2view-writer/talk2view.log" \
+              "$LOCALAPPDATA/talk2view-writer/talk2view.log" \
+              "soffice.stdout.log" \
+              "soffice.stderr.log"; do
+            if [ -f "$p" ]; then
+              cp "$p" "_diag/$(echo "$p" | tr '/\\' '__')"
+            fi
+          done
+          ls -la _diag || true
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ matrix.os }}-${{ github.sha }}
+          path: _diag/
+          if-no-files-found: warn
+          retention-days: 30

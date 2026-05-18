@@ -43,7 +43,11 @@ from com.sun.star.awt import (  # type: ignore[import-not-found]
 )
 from com.sun.star.awt.PosSize import POSSIZE  # type: ignore[import-not-found]
 from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
-from com.sun.star.ui import UIElementType, XUIElement  # type: ignore[import-not-found]
+from com.sun.star.ui import (  # type: ignore[import-not-found]
+    UIElementType,
+    XSidebarPanel,
+    XUIElement,
+)
 
 if TYPE_CHECKING:
     from com.sun.star.awt import (
@@ -115,8 +119,22 @@ def build_chat_panel(
 # ---------------------------------------------------------------------------
 
 
-class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
-    """Talk2View chat panel for LibreOffice Writer's sidebar deck."""
+class Talk2ViewPanel(unohelper.Base, XUIElement, XSidebarPanel, XComponent):
+    """Talk2View chat panel for LibreOffice Writer's sidebar deck.
+
+    Implements the **three** UNO interfaces LibreOffice's sidebar
+    framework asks for via queryInterface:
+
+      - ``XUIElement`` — the generic framework UI element (resource URL,
+        type, real-interface accessor).
+      - ``XSidebarPanel`` — sidebar-specific layout queries
+        (``getHeightForWidth`` / ``getWidthForHeight``). This is the
+        one we were missing, and its absence segfaulted soffice after
+        ``createUIElement`` returned: native sidebar code called
+        ``queryInterface(XSidebarPanel)`` on our panel, got null, and
+        dereferenced it.
+      - ``XComponent`` — lifecycle (dispose + listener registration).
+    """
 
     def __init__(
         self,
@@ -179,30 +197,89 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         )
 
     # ----- XUIElement -----------------------------------------------------
+    #
+    # Each interface method is logged at entry. This is the *only* way
+    # to debug native crashes after createUIElement returns: if soffice
+    # exits without a Python exception, the last interface method we
+    # logged is the one that triggered the crash. Keep the entry logs
+    # cheap — DEBUG level + small payload — so production runs aren't
+    # noisy unless T2V_WRITER_DEBUG=1 is set.
 
     def getResourceURL(self) -> str:  # noqa: N802
         """XUIElement: the panel's ``private:resource/toolpanel/...`` URL."""
+        logger.debug("XUIElement.getResourceURL → %s", self._resource_url)
         return self._resource_url
 
     def getType(self) -> int:  # noqa: N802
         """XUIElement: ``UIElementType.TOOLPANEL`` for sidebar panels."""
         # UIElementType.TOOLPANEL is a UNO constant — annotate the cast.
-        return int(UIElementType.TOOLPANEL)
+        value = int(UIElementType.TOOLPANEL)
+        logger.debug("XUIElement.getType → %d", value)
+        return value
 
     def getFrame(self) -> XFrame | None:  # noqa: N802
         """XUIElement: the frame this panel is docked into."""
+        logger.debug("XUIElement.getFrame → %s", "frame" if self._frame else "None")
         return self._frame
 
     def getRealInterface(self) -> XWindow:  # noqa: N802
         """XUIElement: the container window LibreOffice docks in the deck."""
+        logger.debug(
+            "XUIElement.getRealInterface called — returning %s",
+            "container" if self._container_window is not None else "None",
+        )
         assert self._container_window is not None
         return self._container_window
 
+    # ----- XSidebarPanel --------------------------------------------------
+    #
+    # The sidebar framework calls these to figure out our preferred /
+    # minimum / maximum dimensions when computing the deck layout. The
+    # absence of this interface (before commit 8e9e8c4) caused soffice
+    # to segfault after createUIElement: native code queried for
+    # XSidebarPanel via queryInterface, got null, and dereferenced it.
+
+    def _layout_size(self, minimum: int, preferred: int, maximum: int = -1) -> object:
+        """Construct a ``com.sun.star.ui.LayoutSize`` UNO struct.
+
+        ``maximum = -1`` means "no upper bound" per the IDL convention.
+        """
+        layout = uno.createUnoStruct("com.sun.star.ui.LayoutSize")
+        layout.Minimum = minimum
+        layout.Preferred = preferred
+        layout.Maximum = maximum
+        return layout
+
+    def getHeightForWidth(self, width: int) -> object:  # noqa: N802
+        """XSidebarPanel: vertical extent we'd like at this width.
+
+        We're a chat panel; height should be as tall as the deck
+        allows. Preferred = 600 px, minimum = 200 px (enough for the
+        composer + send button to remain usable), no max bound.
+        """
+        layout = self._layout_size(minimum=200, preferred=600, maximum=-1)
+        logger.debug(
+            "XSidebarPanel.getHeightForWidth(width=%d) → min=200 pref=600 max=-1",
+            width,
+        )
+        return layout
+
+    def getWidthForHeight(self, height: int) -> object:  # noqa: N802
+        """XSidebarPanel: horizontal extent we'd like at this height."""
+        layout = self._layout_size(minimum=150, preferred=300, maximum=-1)
+        logger.debug(
+            "XSidebarPanel.getWidthForHeight(height=%d) → min=150 pref=300 max=-1",
+            height,
+        )
+        return layout
+
     def setSettings(self, settings: object) -> None:  # noqa: N802
         """XUIElement: no-op — tool panels do not carry settings."""
+        logger.debug("XUIElement.setSettings called (ignored)")
 
     def getSettings(self, write: bool) -> None:  # noqa: N802
         """XUIElement: no-op — tool panels do not carry settings."""
+        logger.debug("XUIElement.getSettings(write=%s) → None", write)
         return None
 
     # ----- XComponent -----------------------------------------------------
