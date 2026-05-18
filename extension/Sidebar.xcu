@@ -6,22 +6,29 @@
 
     <node oor:name="Content">
 
-        <!-- Deck: container for our panel in the sidebar -->
+        <!-- Deck: the sidebar tab that holds our panel(s). The ContextList
+             entry MUST use one of LibreOffice's known application context
+             tokens. For Writer that is "WriterVariants" — the only token
+             stock LibreOffice's main.xcd uses for Writer-anything. Earlier
+             we listed "WriterDocument, WriterGlobalDocument" which are
+             not recognised at all, so the deck silently never matched the
+             active document and the tab never appeared in the sidebar.
+             That dispatch ".uno:SidebarDeck Sidebar=…" succeeds regardless
+             — the panel just isn't there to switch to. -->
         <node oor:name="DeckList">
             <node oor:name="com.talk2view.writer.Deck" oor:op="replace">
                 <prop oor:name="Title" oor:type="xs:string">
-                    <value xml:lang="en">Talk2View</value>
+                    <value xml:lang="en-US">Talk2View</value>
                 </prop>
                 <prop oor:name="Id" oor:type="xs:string">
                     <value>com.talk2view.writer.Deck</value>
                 </prop>
                 <prop oor:name="IconURL" oor:type="xs:string">
-                    <value>private:graphicrepository/sw/res/sidebar-mode.png</value>
+                    <value>private:graphicrepository/cmd/lc_inspectordeck.png</value>
                 </prop>
                 <prop oor:name="ContextList">
                     <value oor:separator=";">
-                        WriterDocument, any, visible ;
-                        WriterGlobalDocument, any, visible ;
+                        WriterVariants, any, visible ;
                     </value>
                 </prop>
                 <prop oor:name="OrderIndex" oor:type="xs:int">
@@ -30,11 +37,22 @@
             </node>
         </node>
 
-        <!-- Panel: rendered inside the deck -->
+        <!-- Panel: rendered inside the deck. ImplementationURL must
+             match the factory implementation name registered via
+             g_ImplementationHelper.addImplementation in
+             talk2view_writer.py: "com.talk2view.writer.ChatPanelFactory".
+             The URL format is
+             private:resource/toolpanel/<FactoryImpl>/<resourceId>
+             — LibreOffice parses out the FactoryImpl and queries the
+             service manager for that name as a UIElementFactory, then
+             calls createUIElement(resource_url, args). -->
         <node oor:name="PanelList">
             <node oor:name="com.talk2view.writer.ChatPanel" oor:op="replace">
                 <prop oor:name="Title" oor:type="xs:string">
-                    <value xml:lang="en">Chat</value>
+                    <value xml:lang="en-US">Chat</value>
+                </prop>
+                <prop oor:name="TitleBarIsOptional" oor:type="xs:boolean">
+                    <value>true</value>
                 </prop>
                 <prop oor:name="Id" oor:type="xs:string">
                     <value>com.talk2view.writer.ChatPanel</value>
@@ -42,13 +60,9 @@
                 <prop oor:name="DeckId" oor:type="xs:string">
                     <value>com.talk2view.writer.Deck</value>
                 </prop>
-                <prop oor:name="DefaultMenuCommand" oor:type="xs:string">
-                    <value>service:com.talk2view.writer.Talk2ViewJob?showPanel</value>
-                </prop>
                 <prop oor:name="ContextList">
                     <value oor:separator=";">
-                        WriterDocument, any, visible ;
-                        WriterGlobalDocument, any, visible ;
+                        WriterVariants, any, visible ;
                     </value>
                 </prop>
                 <prop oor:name="OrderIndex" oor:type="xs:int">
@@ -56,6 +70,9 @@
                 </prop>
                 <prop oor:name="ImplementationURL" oor:type="xs:string">
                     <value>private:resource/toolpanel/com.talk2view.writer.ChatPanelFactory/Chat</value>
+                </prop>
+                <prop oor:name="WantsAWT" oor:type="xs:boolean">
+                    <value>false</value>
                 </prop>
             </node>
         </node>
