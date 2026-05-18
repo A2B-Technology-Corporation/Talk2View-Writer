@@ -65,7 +65,10 @@ class Talk2ViewJob(unohelper.Base, XJobExecutor):
 
     def __init__(self, ctx: "XComponentContext") -> None:
         self.ctx = ctx
-        logger.info("Talk2ViewJob initialized")
+        logger.info(
+            "Talk2ViewJob constructed (ctx=%r) — menu commands now wired",
+            ctx,
+        )
 
     def trigger(self, args: str) -> None:
         """Dispatch a menu command.
@@ -132,7 +135,11 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
 
     def __init__(self, ctx: "XComponentContext") -> None:
         self.ctx = ctx
-        logger.info("ChatPanelFactory initialized")
+        logger.info(
+            "ChatPanelFactory constructed (ctx=%r) — sidebar deck registered, "
+            "createUIElement will fire when user opens the Talk2View tab",
+            ctx,
+        )
 
     def createUIElement(  # noqa: N802 — UNO interface naming
         self,
@@ -149,21 +156,57 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
         Returns:
             An ``XUIElement`` whose ``getRealInterface()`` is the
             ``Talk2ViewPanel`` UNO panel object.
+
+        Raises:
+            RuntimeError: If ParentWindow PropertyValue is missing or
+                if ``build_chat_panel`` fails to construct the panel.
+                Both paths are logged with full traceback so a
+                broken sidebar leaves diagnostic evidence behind.
         """
-        logger.info("createUIElement: %s", resource_url)
-        parent_window: "XWindow | None" = None
-        frame: "XFrame | None" = None
-        for prop in args:
-            if prop.Name == "ParentWindow":
-                parent_window = prop.Value
-            elif prop.Name == "Frame":
-                frame = prop.Value
-        if parent_window is None:
-            raise RuntimeError("Talk2View sidebar: ParentWindow not supplied")
+        # LibreOffice silently absorbs exceptions thrown out of
+        # createUIElement — the sidebar slot just stays empty with
+        # no UI feedback. Wrap everything in a try/except that logs
+        # the full traceback so "panel doesn't appear" bug reports
+        # are actually diagnosable from the log file.
+        logger.info(
+            "createUIElement called: resource_url=%s arg_count=%d arg_names=%s",
+            resource_url,
+            len(args),
+            [getattr(p, "Name", "?") for p in args],
+        )
+        try:
+            parent_window: "XWindow | None" = None
+            frame: "XFrame | None" = None
+            for prop in args:
+                if prop.Name == "ParentWindow":
+                    parent_window = prop.Value
+                elif prop.Name == "Frame":
+                    frame = prop.Value
+            logger.debug(
+                "createUIElement: parent_window=%r frame=%r",
+                parent_window,
+                frame,
+            )
+            if parent_window is None:
+                raise RuntimeError(
+                    "Talk2View sidebar: ParentWindow PropertyValue not supplied "
+                    "by LibreOffice — cannot build panel"
+                )
 
-        from talk2view_writer.ui.sidebar_panel import build_chat_panel
+            from talk2view_writer.ui.sidebar_panel import build_chat_panel
 
-        return build_chat_panel(self.ctx, parent_window, frame, resource_url)
+            panel = build_chat_panel(self.ctx, parent_window, frame, resource_url)
+            logger.info(
+                "createUIElement returned XUIElement type=%s",
+                type(panel).__name__,
+            )
+            return panel
+        except Exception:
+            logger.exception(
+                "createUIElement FAILED for resource_url=%s — sidebar will be empty",
+                resource_url,
+            )
+            raise
 
 
 # ---------------------------------------------------------------------------

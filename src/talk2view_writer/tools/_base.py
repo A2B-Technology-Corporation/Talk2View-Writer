@@ -57,10 +57,51 @@ def ui_thread_tool(fn: _F) -> _F:
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        import time
+
         from talk2view_writer.extension import get_extension_or_raise
 
         ext = get_extension_or_raise()
-        return ext.ui_thread.run_sync(fn, *args, **kwargs)
+        tool_name = getattr(fn, "__name__", "<unknown>")
+        # Summarise args without dumping potentially-huge payloads:
+        # show types + lengths for strings/lists; full repr otherwise.
+        def _summary(v: Any) -> str:
+            if isinstance(v, str):
+                return f"str(len={len(v)})"
+            if isinstance(v, (list, tuple, dict)):
+                return f"{type(v).__name__}(len={len(v)})"
+            return repr(v)[:60]
+
+        arg_summary = [_summary(a) for a in args]
+        kwarg_summary = {k: _summary(v) for k, v in kwargs.items()}
+        logger.info(
+            "tool %s called: args=%s kwargs=%s",
+            tool_name,
+            arg_summary,
+            kwarg_summary,
+        )
+        start = time.monotonic()
+        try:
+            result = ext.ui_thread.run_sync(fn, *args, **kwargs)
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - start) * 1000
+            logger.exception(
+                "tool %s FAILED after %.1fms: %s: %s",
+                tool_name,
+                elapsed_ms,
+                type(exc).__name__,
+                exc,
+            )
+            raise
+        elapsed_ms = (time.monotonic() - start) * 1000
+        result_summary = _summary(result)
+        logger.info(
+            "tool %s returned in %.1fms: %s",
+            tool_name,
+            elapsed_ms,
+            result_summary,
+        )
+        return result
 
     return wrapper  # type: ignore[return-value]
 

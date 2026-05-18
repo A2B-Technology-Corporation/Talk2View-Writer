@@ -40,6 +40,12 @@ class Talk2ViewWriterExtension:
         self._ui_thread: UIThreadDispatcher | None = None
         self._tools_registered = False
         self._open_panels: list[Talk2ViewPanel] = []
+        logger.info(
+            "Talk2ViewWriterExtension singleton created (ctx=%r). "
+            "Lazy sub-systems (UIThreadDispatcher, SDK client) will "
+            "initialise on first access.",
+            ctx,
+        )
 
     # ------------------------------------------------------------------
     # UI-thread dispatcher (lazy, owned at extension lifetime)
@@ -108,13 +114,18 @@ class Talk2ViewWriterExtension:
     # ------------------------------------------------------------------
 
     def show_sidebar(self) -> None:
-        """Open the Talk2View sidebar deck in the current Writer window."""
-        logger.info("show_sidebar")
+        """Open the Talk2View sidebar deck in the current Writer window.
+
+        Raises:
+            RuntimeError: If no Writer document window is active.
+        """
+        logger.info("show_sidebar invoked (menu command)")
         desktop = self.ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.frame.Desktop", self.ctx
         )
         frame = desktop.getCurrentFrame()
         if frame is None:
+            logger.error("show_sidebar: no active frame; cannot open deck")
             raise RuntimeError("No active Writer window")
 
         dispatcher = self.ctx.ServiceManager.createInstanceWithContext(
@@ -125,28 +136,47 @@ class Talk2ViewWriterExtension:
         prop = PropertyValue()
         prop.Name = "Sidebar"
         prop.Value = "com.talk2view.writer.Deck"
+        logger.debug(
+            "show_sidebar: dispatching .uno:SidebarDeck with Sidebar=%s frame=%r",
+            prop.Value,
+            frame,
+        )
         dispatcher.executeDispatch(frame, ".uno:SidebarDeck", "_self", 0, (prop,))
+        logger.info("show_sidebar: dispatch complete")
 
     def show_login_dialog(self, parent_window: XWindow | None = None) -> None:
         """Prompt for credentials and call ``sdk.login``."""
-        logger.info("show_login_dialog")
+        logger.info(
+            "show_login_dialog invoked (parent_window=%r is_authed_pre=%s)",
+            parent_window,
+            self._sdk.is_authenticated() if self._sdk is not None else "n/a",
+        )
         from talk2view_writer.ui.login_dialog import show_login_dialog
 
         creds = show_login_dialog(self.ctx, parent_window=parent_window)
         if creds is None:
-            logger.info("Login cancelled by user")
+            logger.info("Login dialog cancelled by user")
             return
-        email, password = creds
+        email, _password = creds  # never log password
+        logger.info("Login dialog submitted for email=%s — calling sdk.login()", email)
         # SDK errors propagate to the caller (Talk2ViewJob.trigger), which
         # surfaces them via an ERRORBOX. We deliberately do not catch
         # AuthenticationError / NetworkError here — see ADR-0014.
-        user = self.sdk.login(email, password)
-        logger.info("Login succeeded for %s", user.email)
+        user = self.sdk.login(email, _password)
+        logger.info(
+            "Login succeeded for %s — is_authenticated=%s",
+            user.email,
+            self.sdk.is_authenticated(),
+        )
 
     def logout(self) -> None:
         """Clear local + server-side session."""
-        logger.info("logout")
+        logger.info(
+            "logout invoked (was authed=%s)",
+            self._sdk.is_authenticated() if self._sdk is not None else "n/a",
+        )
         self.sdk.logout()
+        logger.info("logout complete — local tokens cleared")
 
     def show_settings_dialog(self, parent_window: XWindow | None = None) -> None:
         """Open the (read-only) Talk2View settings status panel."""

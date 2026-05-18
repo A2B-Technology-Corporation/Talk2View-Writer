@@ -68,17 +68,35 @@ class Talk2ViewSDKClient:
             if self._client is None:
                 from talk2view import Talk2View
 
+                # Log the storage path so we can diagnose "session
+                # expired" by comparing the path the SDK reads tokens
+                # from against where login() wrote them.
+                storage_path = getattr(self._storage, "path", None) or repr(self._storage)
+                logger.info(
+                    "Instantiating Talk2View SDK: base_url=%s storage=%s",
+                    self._base_url,
+                    storage_path,
+                )
                 self._client = Talk2View(
                     partner_key=self._partner_key,
                     base_url=self._base_url,
                     storage=self._storage,
                 )
-                logger.info("Talk2View SDK instantiated (base_url=%s)", self._base_url)
+                logger.info("Talk2View SDK instantiated successfully")
                 # Restore cached user (no network call) if we have one.
                 cached_user = self._client.auth.get_user()
                 if cached_user is not None:
                     self._user = cached_user
-                    logger.info("Restored cached user: %s", cached_user.email)
+                    logger.info(
+                        "Restored cached user from token storage: %s",
+                        cached_user.email,
+                    )
+                else:
+                    logger.info(
+                        "No cached user in token storage at %s — "
+                        "user will need to log in",
+                        storage_path,
+                    )
             return self._client
 
     # ----- auth --------------------------------------------------------
@@ -91,11 +109,33 @@ class Talk2ViewSDKClient:
             talk2view.errors.NetworkError: cannot reach the engine.
         """
         client = self._ensure_client()
-        user = client.auth.login(email, password)
+        logger.info("login: calling client.auth.login(email=%s)", email)
+        try:
+            user = client.auth.login(email, password)
+        except Exception as exc:
+            logger.exception(
+                "login: client.auth.login raised %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            raise
         with self._lock:
             self._user = user
         self._notify_listeners(user)
-        logger.info("Logged in as %s", user.email)
+        # Verify the token actually landed in storage. Helps diagnose
+        # "session expired on restart" — if storage shows no token
+        # immediately after a successful login(), the writer path is
+        # broken.
+        try:
+            persisted = self._storage.get("access_token") if hasattr(self._storage, "get") else None
+            persisted_str = "present" if persisted else "MISSING"
+        except Exception:
+            persisted_str = "<storage.get raised>"
+        logger.info(
+            "login: success for %s. Access-token persisted to storage: %s",
+            user.email,
+            persisted_str,
+        )
         return user
 
     def logout(self) -> None:
@@ -115,6 +155,7 @@ class Talk2ViewSDKClient:
     def is_authenticated(self) -> bool:
         """``True`` if we hold a valid auth state."""
         if self._user is not None:
+            logger.debug("is_authenticated: in-memory user present (%s)", self._user.email)
             return True
         # Possibly persisted but not yet loaded.
         client = self._ensure_client()
@@ -122,7 +163,12 @@ class Talk2ViewSDKClient:
         if cached is not None:
             with self._lock:
                 self._user = cached
+            logger.info(
+                "is_authenticated: restored user from storage on-demand (%s)",
+                cached.email,
+            )
             return True
+        logger.debug("is_authenticated: no in-memory user, none in storage either")
         return False
 
     @property
@@ -173,9 +219,32 @@ class Talk2ViewSDKClient:
             talk2view.errors.NetworkError: Connection failure.
         """
         if not self.is_authenticated():
+            logger.warning("chat() called before login — raising SdkClientError")
             raise SdkClientError("Not authenticated — call login() first")
         client = self._ensure_client()
-        yield from client.chat(message, system_prompt=system_prompt)
+        logger.info(
+            "chat: sending message len=%d (system_prompt %s)",
+            len(message),
+            "supplied" if system_prompt is not None else "engine default",
+        )
+        event_count = 0
+        try:
+            for event in client.chat(message, system_prompt=system_prompt):
+                event_count += 1
+                # Log a compact summary at DEBUG so we don't spam INFO,
+                # but still get the wire-level event trail when
+                # T2V_WRITER_DEBUG=1.
+                logger.debug("chat event #%d: %s", event_count, type(event).__name__)
+                yield event
+        except Exception as exc:
+            logger.exception(
+                "chat: stream raised after %d events: %s: %s",
+                event_count,
+                type(exc).__name__,
+                exc,
+            )
+            raise
+        logger.info("chat: stream complete after %d events", event_count)
 
     # ----- tools (Phase C entry point) ---------------------------------
 

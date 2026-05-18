@@ -85,15 +85,29 @@ def build_chat_panel(
     Called by ``ChatPanelFactory.createUIElement`` when LibreOffice opens
     the Talk2View deck.
     """
+    logger.info(
+        "build_chat_panel starting: resource_url=%s parent_window=%r frame=%r",
+        resource_url,
+        parent_window,
+        frame,
+    )
     panel = Talk2ViewPanel(ctx, parent_window, frame, resource_url)
+    logger.info("build_chat_panel: Talk2ViewPanel construction returned")
 
     from talk2view_writer.extension import get_extension
 
     try:
         get_extension(ctx).register_panel(panel)
+        logger.info("build_chat_panel: panel registered with extension singleton")
     except Exception:
+        # Don't raise — the panel itself is still usable even if
+        # the singleton registration failed; we just won't get
+        # auth-state broadcast updates.
         logger.exception("Failed to register panel with extension singleton")
 
+    logger.info(
+        "build_chat_panel complete — returning XUIElement to LibreOffice"
+    )
     return panel
 
 
@@ -132,7 +146,30 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         self._user: User | None = None
         self._busy = threading.Event()  # set while a worker thread is running
 
-        self._build_window()
+        logger.info(
+            "Talk2ViewPanel.__init__: about to call _build_window "
+            "(parent_window=%r resource_url=%s)",
+            parent_window,
+            resource_url,
+        )
+        try:
+            self._build_window()
+        except Exception:
+            # A failure here means the sidebar slot will be EMPTY for
+            # the user — log the full traceback so a "panel doesn't
+            # appear" report is debuggable from the log file alone.
+            logger.exception(
+                "_build_window FAILED — sidebar deck will appear empty. "
+                "Common causes: malformed UNO control properties, "
+                "parent_window invalid, com.sun.star.* service missing."
+            )
+            raise
+        logger.info(
+            "Talk2ViewPanel.__init__: _build_window complete — "
+            "container_window=%r send_button=%r",
+            self._container_window,
+            self._send_button,
+        )
 
     # ----- XUIElement -----------------------------------------------------
 
@@ -420,17 +457,30 @@ class Talk2ViewPanel(unohelper.Base, XUIElement, XComponent):
         from talk2view_writer.extension import get_extension
         from talk2view_writer.system_prompt import load_system_prompt
 
+        logger.info(
+            "chat_worker started in thread=%s for message len=%d",
+            threading.current_thread().name,
+            len(message),
+        )
         try:
             sdk = get_extension(self.ctx).sdk
             system_prompt = load_system_prompt()
+            event_count = 0
             for event in sdk.chat(message, system_prompt=system_prompt):
+                event_count += 1
                 self._handle_chat_event(event)
             self._append_history("\n")
+            logger.info(
+                "chat_worker finished cleanly after %d events", event_count
+            )
         except Exception as exc:
-            logger.exception("Chat worker failed")
+            logger.exception(
+                "chat_worker FAILED: %s: %s", type(exc).__name__, exc
+            )
             self._append_history(f"\n[error] {exc}\n")
         finally:
             self._set_busy(False)
+            logger.debug("chat_worker exit — busy flag cleared")
 
     def _handle_chat_event(self, event: Any) -> None:
         """Map a ``ChatEvent`` to UI updates.
