@@ -238,10 +238,13 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
 
     def __init__(self, ctx: "XComponentContext") -> None:
         self.ctx = ctx
+        # See note in extension.py — repr() the UNO proxy at the call
+        # site to avoid Python logging's single-arg Mapping fast path,
+        # which crashes on objects with a synthetic __class__.
         logger.info(
-            "ChatPanelFactory constructed (ctx=%r) — sidebar deck registered, "
+            "ChatPanelFactory constructed (ctx=%s) — sidebar deck registered, "
             "createUIElement will fire when user opens the Talk2View tab",
-            ctx,
+            repr(ctx),
         )
 
     def createUIElement(  # noqa: N802 — UNO interface naming

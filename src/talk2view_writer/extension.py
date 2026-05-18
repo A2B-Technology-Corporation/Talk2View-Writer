@@ -40,11 +40,17 @@ class Talk2ViewWriterExtension:
         self._ui_thread: UIThreadDispatcher | None = None
         self._tools_registered = False
         self._open_panels: list[Talk2ViewPanel] = []
+        # NOTE: render ctx via repr() at the call site rather than passing
+        # the UNO proxy through %r. Python logging's fast path does
+        # `isinstance(args[0], Mapping)` when there's a single positional
+        # arg, which crashes on UNO proxies whose synthetic __class__
+        # isn't a real Python class. Always stringify UNO objects before
+        # logging them.
         logger.info(
-            "Talk2ViewWriterExtension singleton created (ctx=%r). "
+            "Talk2ViewWriterExtension singleton created (ctx=%s). "
             "Lazy sub-systems (UIThreadDispatcher, SDK client) will "
             "initialise on first access.",
-            ctx,
+            repr(ctx),
         )
 
     # ------------------------------------------------------------------
