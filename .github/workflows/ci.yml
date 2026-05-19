@@ -137,46 +137,48 @@ jobs:
     needs: build
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false  # one OS failing shouldn't cancel the others
+      fail-fast: false  # one OS / LO version failing shouldn't cancel the others
       matrix:
         # macos-13 (Intel) DISABLED 2026-05-18 — queues for 9+ hours on
-        # the free tier and blocks the whole run from completing (matrix
-        # only marks "done" when every entry finishes). The wheel matrix
-        # still bundles a macOS Intel pydantic_core, so the .oxt remains
-        # installable for Intel-Mac users; we just don't run CI against
-        # that environment automatically. Revisit when GitHub-hosted
-        # Intel macOS runners are faster, or move to a self-hosted runner.
-        os:
-          - ubuntu-latest    # Linux x86_64
-          - macos-14         # macOS Apple Silicon (PAID; ~$0.12/min)
-          - windows-latest   # Windows x86_64
+        # the free tier and blocks the whole run. The wheel matrix
+        # still bundles a macOS Intel pydantic_core so the .oxt
+        # remains installable for Intel-Mac users; we just don't run
+        # CI against that environment automatically.
+        #
+        # ``include`` -only matrix: each entry is its own job. We
+        # deliberately don't use a base axis (e.g. ``os: [...]``)
+        # because then ``include`` rows whose values match an existing
+        # combination *merge into* that one job instead of creating
+        # a new one — which is exactly what bit us in commit cfc7d58
+        # (four ubuntu-latest includes collapsed into a single job,
+        # only the last entry's ``lo_apt_source`` survived).
         include:
-          # Linux: fan out across LibreOffice 24/25/26 so a panel
-          # regression that's specific to a major LO version surfaces
-          # here instead of in production. ``lo_apt_source`` drives the
-          # apt source the Linux install step uses; ``lo_label`` shows
-          # up in the job name so the failing version is obvious.
+          # ----- Linux x86_64: fan out across LibreOffice versions -----
+          # Catches panel-rendering regressions that only fire on a
+          # specific major LO release (the user reports a silent
+          # soffice crash on 26.x; ``ppa-fresh`` is the entry meant
+          # to reproduce it).
           - os: ubuntu-latest
-            lo_apt_source: ubuntu       # default noble apt = 24.2.x
-            lo_label: "24.2 (noble apt)"
+            lo_apt_source: ubuntu       # noble's bundled LO 24.2.x
+            lo_label: "24.2 noble apt"
             run_gui_smoke: true
             run_live_chat: true
           - os: ubuntu-latest
-            lo_apt_source: ppa-25-2     # TDF PPA ``libreoffice/libreoffice-25-2``
-            lo_label: "25.2 (TDF PPA)"
+            lo_apt_source: ppa-25-2     # TDF ppa:libreoffice/libreoffice-25-2
+            lo_label: "25.2 TDF PPA"
           - os: ubuntu-latest
-            lo_apt_source: ppa-still    # TDF PPA ``libreoffice/libreoffice-still``
-            lo_label: "still (TDF PPA)"
+            lo_apt_source: ppa-still    # TDF ppa:libreoffice/libreoffice-still
+            lo_label: "still TDF PPA"
           - os: ubuntu-latest
-            lo_apt_source: ppa-fresh    # TDF PPA ``libreoffice/ppa`` (latest stable, currently 26.x)
-            lo_label: "fresh (TDF PPA, latest)"
-          # macOS + Windows continue to use the platform's default
-          # package manager (Homebrew cask / Chocolatey latest). Both
-          # currently ship the same major as the TDF "fresh" PPA, so
-          # they double as a sanity check that the latest-version path
-          # is exercised on every OS.
+            lo_apt_source: ppa-fresh    # TDF ppa:libreoffice/ppa (latest, currently 26.x)
+            lo_label: "fresh TDF PPA"
+          # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
+          # Homebrew cask installs the current LibreOffice — same
+          # major as ``ppa-fresh`` typically, so this doubles as a
+          # cross-platform sanity for the latest version.
           - os: macos-14
             run_live_chat: true
+          # ----- Windows x86_64 -----
           - os: windows-latest
             run_live_chat: true
     steps:
@@ -427,7 +429,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs-${{ matrix.os }}-${{ github.sha }}
+          name: integration-logs-${{ matrix.os }}${{ matrix.lo_apt_source && format('-{0}', matrix.lo_apt_source) || '' }}-${{ github.sha }}
           path: _diag/
           if-no-files-found: warn
           retention-days: 30
