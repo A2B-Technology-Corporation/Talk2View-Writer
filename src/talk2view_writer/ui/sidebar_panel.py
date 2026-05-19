@@ -264,12 +264,39 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             "_create_panel_window: calling createContainerWindow (parent_peer %s)",
             _ru(parent_peer),
         )
-        window = provider.createContainerWindow(
-            dialog_url, "", parent_peer, None
-        )
+        try:
+            window = provider.createContainerWindow(
+                dialog_url, "", parent_peer, None
+            )
+        except Exception:
+            # The call into LibreOffice's C++ side can raise (typed as
+            # ``com.sun.star.uno.RuntimeException`` in the IDL, surfaces
+            # as ``uno.RuntimeException`` or plain ``Exception`` in
+            # PyUNO). If we let it propagate the sidebar framework
+            # swallows it and the deck shows an empty grey panel — the
+            # 2026-05-19 user report. Log the full traceback so the
+            # talk2view.log pinpoints the failure cause, then re-raise
+            # so the framework still sees a non-built panel.
+            logger.exception(
+                "_create_panel_window: createContainerWindow raised — "
+                "panel will be empty. dialog_url=%s parent_peer=%s",
+                dialog_url,
+                _ru(parent_peer),
+            )
+            raise
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
         )
+        # ``createContainerWindow`` is documented to return non-null on
+        # success; a None here means soffice quietly substituted an
+        # error placeholder. Log it loudly so the test rig can fail.
+        if window is None:
+            logger.error(
+                "_create_panel_window: createContainerWindow returned None "
+                "(dialog_url=%s parent_peer=%s) — panel will be empty",
+                dialog_url,
+                _ru(parent_peer),
+            )
 
         self._panel_window = window
         return window

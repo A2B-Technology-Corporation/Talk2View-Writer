@@ -819,3 +819,67 @@ Follow-up: re-validate the test_sidebar_dock and test_smoke
 assertions once they're running against real soffice. The pre-existing
 "sidebar panel crashes soffice" investigation work may not actually
 reflect real behaviour — those tests were mocked too.
+
+---
+
+## #29 — Sidebar panel renders as empty grey rectangle on LO 26.2.3.2
+
+**Date:** 2026-05-19
+
+**What:** User reported (with screenshot) that the Talk2View sidebar
+opens to an empty grey rectangle on LibreOffice 26.2.3.2 (Debian apt
+backports). No widgets visible: no status label, no login button, no
+chat history, no composer, no send button. Settings dispatch still
+works — the extension is running, the dock is hosting our panel,
+the panel just has no rendered children.
+
+talk2view.log shows the construction reaching
+``_create_panel_window: calling createContainerWindow (parent_peer ...)``
+and then **NO** subsequent log line — the matching
+``createContainerWindow returned ...`` log statement never fires.
+That means the call either raises an exception the framework swallows,
+returns None silently, or returns a window object whose children
+were never instantiated. Soffice itself stays alive (the user
+clicked Settings 2 seconds later and it worked).
+
+**Where:** ``_create_panel_window`` in ``src/talk2view_writer/ui/sidebar_panel.py``,
+specifically the ``provider.createContainerWindow(dialog_url, "",
+parent_peer, None)`` call. The parent_peer at that point is a bare
+XWindow (the ``_resolve_parent_peer`` fallback fired because
+``queryInterface(XWindowPeer)`` and ``getPeer()`` both returned None
+on the LO 26.x sidebar parent).
+
+**Why it matters:** The whole product is unusable on the user's LO
+build. CI was green on every run that included the integration
+test_sidebar_dock — because the existing assertions only checked that
+``getRealInterface()`` returned a non-None XToolPanel proxy and that
+``.Window``/``.PanelWindow`` was non-None. Both are satisfied even
+when the underlying VCL widget tree is empty. The tests were
+asserting on the wrong layer.
+
+**Next step:**
+
+This PR makes two changes:
+
+1. Wraps ``createContainerWindow`` in try/except with
+   ``logger.exception`` so the next user repro logs the actual
+   error (RuntimeException / DialogProviderError / whatever) into
+   talk2view.log. Also asserts on a None return.
+2. Strengthens ``tests/integration/test_sidebar_dock.py`` to call
+   ``getControl(id)`` for every named XDL control and assert each
+   one (a) exists and (b) has positive PosSize. Adds screenshot
+   capture (panel region + full window + root) via ImageMagick
+   ``import``; screenshots land in ``_diag/`` and are uploaded as
+   CI artifacts so the failure is visually verifiable.
+
+Once CI runs this against the ``fresh TDF PPA`` matrix entry and
+the screenshots + logger.exception output land in the artifact,
+we'll know the real cause and can fix the construction path. The
+likely fix candidates are:
+
+- Replace ``ContainerWindowProvider`` + XDL with programmatic
+  ``Toolkit.createWindow(WindowDescriptor)`` + ``UnoControlContainer``
+  (matches the canonical SDK toolpanel sample).
+- Pass a real XWindowPeer instead of the bare XWindow fallback —
+  possibly by demanding one via ``parent_window.getToolkit().getDesktopWindow()``
+  or similar.

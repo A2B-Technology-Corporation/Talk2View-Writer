@@ -244,7 +244,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libreoffice libreoffice-script-provider-python \
-            python3-uno xvfb at-spi2-core x11-utils
+            python3-uno xvfb at-spi2-core x11-utils \
+            imagemagick
           # Log which version actually got installed so the failing
           # job's banner line tells us the real number not just the
           # PPA label. Also append to $GITHUB_STEP_SUMMARY so the

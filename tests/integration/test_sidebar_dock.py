@@ -1,40 +1,107 @@
 """Integration test — actually constructs the Talk2View panel window.
 
-Earlier revisions of this test dispatched ``.uno:SidebarDeck`` against
-a ``Hidden=True`` frame and called it done when soffice was still
-alive a few seconds later. That was useless: on a hidden frame the
-dock framework defers panel construction indefinitely, so the
-``createUIElement → _create_panel_window → createContainerWindow``
-path never ran. The test was unconditionally green even when the
-real bug — a silent soffice exit during ``createContainerWindow``
-— was active on every visible Writer launch.
+Earlier revisions of this test asserted only that
+``getRealInterface()`` returned a non-None XToolPanel proxy and the
+UNO bridge stayed alive. Both pass when the underlying VCL widget
+tree is empty — that's exactly what happened on the user's
+LibreOffice 26.2.3.2 install on 2026-05-19: the sidebar opened to
+an empty grey rectangle, but CI was green.
 
-This rewrite invokes the panel-construction path **directly**
-through the same UNO service the dock framework calls, with the
-same arguments the dock framework supplies. If panel construction
-crashes soffice, the UNO bridge sees the socket close on the very
-next request and the test fails with a clear "soffice died during
-createUIElement" message.
+This rewrite asserts on the **rendered widget tree**:
 
-Three checks:
+  1. ``ChatPanelFactory.createUIElement(...)`` returns an XUIElement.
+  2. ``getRealInterface()`` returns a non-None XToolPanel.
+  3. The panel window exposes every control id from
+     ``panels/chat_panel.xdl`` via ``getControl(...)`` — empty
+     containers from a failed ``createContainerWindow`` would
+     return ``None`` here.
+  4. Each control has a positive ``PosSize`` (width AND height
+     > 0). A 0x0 control is the same failure mode as a missing
+     one: drawn but invisible.
+  5. The composite panel window itself has positive size.
+  6. A screenshot of the panel region (and a full-window
+     screenshot, for context) is saved to ``_diag/`` so CI uploads
+     it as an artifact. A blank rectangle is the visual signature
+     of the bug.
 
-  1. ``ChatPanelFactory.createUIElement(resource_url, args)``
-     succeeds and returns an XUIElement.
-  2. ``XUIElement.getRealInterface()`` (which triggers
-     ``_create_panel_window`` → ``createContainerWindow``)
-     succeeds and returns a non-null XToolPanel.
-  3. The bridge is still alive afterwards (panel window construction
-     didn't crash soffice). If steps 1 or 2 produce a remote object,
-     the bridge survives by definition.
+The widget-existence assertion is what we should have had since
+day one — see investigation #29 (added in this commit).
 """
 
 from __future__ import annotations
 
 import contextlib
+import os
+import shutil
+import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+# Where the test rig drops talk2view.log copies + panel/window
+# screenshots. The CI workflow's "Upload diagnostic logs" step uploads
+# this directory under ``integration-logs-<os>-<lo_apt_source>-<sha>``,
+# so failures are inspectable post-hoc by downloading the artifact.
+_DIAG_DIR = Path(
+    os.environ.get("T2V_INTEGRATION_DIAG", "_diag")
+).resolve()
+
+
+def _xdotool_or_import_available() -> tuple[str, ...] | None:
+    """Return the screenshot command + args template, or None if unavailable.
+
+    ImageMagick's ``import`` is the most portable headless-X grabber and
+    is already installed on the Linux CI runners alongside soffice's
+    apt deps. Fall back to ``scrot`` if ``import`` is absent. If
+    neither is present (macOS / Windows runners) we skip screenshot
+    capture and leave the widget-existence assertions to carry the
+    test — the failing test artefact is still the talk2view.log copy.
+    """
+    if shutil.which("import") is not None:
+        return ("import", "-window", "root")
+    if shutil.which("scrot") is not None:
+        return ("scrot",)
+    return None
+
+
+def _capture_screenshot(out_path: Path, rect: tuple[int, int, int, int] | None) -> None:
+    """Capture the X11 root window (or a crop) to ``out_path``.
+
+    ``rect`` is ``(x, y, width, height)`` in screen pixels. When None
+    the full screen is captured. Best-effort: a screenshot tool absence
+    or grab failure is logged but does not raise — we never want a
+    diagnostic failure to mask a real test failure.
+    """
+    tool = _xdotool_or_import_available()
+    if tool is None:
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = list(tool)
+    if rect is not None and tool[0] == "import":
+        x, y, w, h = rect
+        cmd += ["-crop", f"{w}x{h}+{x}+{y}"]
+    cmd += [str(out_path)]
+    with contextlib.suppress(
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
+        subprocess.run(cmd, check=True, timeout=10)
+
+
+# Every named control in ``panels/chat_panel.xdl`` that the production
+# code's ``_bind_controls`` looks up. If any of these is missing or
+# zero-sized, the panel is broken in a way the user can SEE
+# (an empty grey rectangle) and the test must fail.
+_EXPECTED_CONTROL_IDS = (
+    "status_label",
+    "login_button",
+    "history_field",
+    "composer_field",
+    "send_button",
+)
 
 
 def _make_visible_writer_doc(uno_context: Any, desktop: Any) -> Any:
@@ -139,6 +206,89 @@ def test_chat_panel_factory_constructs_panel_window(
         assert panel_window is not None, (
             "XToolPanel exposes no Window/PanelWindow attribute — the "
             "dock framework will reject this panel."
+        )
+
+        # Give the dock a moment to lay out the panel widgets on the
+        # main thread. ``getRealInterface`` returns synchronously but
+        # the actual VCL placement happens on the next main-loop tick.
+        time.sleep(1.5)
+
+        # ----- THE assertions this whole test exists for ----------
+        # ``getControl`` is the panel's API for fetching named XDL
+        # widgets. A broken panel (empty grey rectangle reported by
+        # the user on 2026-05-19) returns None for every id even
+        # though ``getRealInterface()`` returned a non-None XToolPanel
+        # — that's the failure mode this assertion catches.
+        missing: list[str] = []
+        zero_sized: list[str] = []
+        controls: dict[str, Any] = {}
+        for control_id in _EXPECTED_CONTROL_IDS:
+            ctrl = panel_window.getControl(control_id)
+            if ctrl is None:
+                missing.append(control_id)
+                continue
+            controls[control_id] = ctrl
+            # Each control must have positive on-screen size. A 0x0
+            # control is rendered but invisible — same UX as missing.
+            ctrl_window = getattr(ctrl, "Peer", None) or ctrl
+            try:
+                pos = ctrl_window.PosSize
+                w, h = pos.Width, pos.Height
+            except Exception:
+                w = h = 0
+            if w <= 0 or h <= 0:
+                zero_sized.append(f"{control_id}({w}x{h})")
+
+        # The panel container itself must have positive size.
+        try:
+            pp = panel_window.PosSize
+            panel_w, panel_h = pp.Width, pp.Height
+        except Exception:
+            panel_w = panel_h = 0
+
+        # Capture screenshots BEFORE the assertion so they're always
+        # present in the diag artifact, even when the test fails.
+        _DIAG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            frame_pos = parent_window.PosSize
+            full_rect = (
+                frame_pos.X,
+                frame_pos.Y,
+                frame_pos.Width,
+                frame_pos.Height,
+            )
+        except Exception:
+            full_rect = None
+        try:
+            panel_pos_abs = panel_window.PosSize
+            panel_rect = (
+                panel_pos_abs.X,
+                panel_pos_abs.Y,
+                panel_pos_abs.Width,
+                panel_pos_abs.Height,
+            )
+        except Exception:
+            panel_rect = None
+        _capture_screenshot(_DIAG_DIR / "panel.png", panel_rect)
+        _capture_screenshot(_DIAG_DIR / "writer_window.png", full_rect)
+        _capture_screenshot(_DIAG_DIR / "root.png", None)
+
+        assert not missing, (
+            f"Panel is missing widgets {missing!r} — "
+            f"getControl(id) returned None. The XDL container loaded "
+            f"but the children weren't instantiated. Check the "
+            f"screenshots in _diag/panel.png and _diag/writer_window.png "
+            f"and the createContainerWindow line in talk2view.log."
+        )
+        assert not zero_sized, (
+            f"Panel widgets present but zero-sized: {zero_sized!r}. "
+            f"They exist in the widget tree but won't render — same "
+            f"UX as missing. See _diag/panel.png."
+        )
+        assert panel_w > 0 and panel_h > 0, (
+            f"Panel container itself is {panel_w}x{panel_h} — the "
+            f"dock allocated no space for our panel. Likely a Sidebar.xcu "
+            f"layout-property issue. See _diag/writer_window.png."
         )
 
         # Tiny delay before doc-close so any pending dispose events
