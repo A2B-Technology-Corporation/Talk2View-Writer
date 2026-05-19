@@ -133,7 +133,7 @@ jobs:
   #    LibreOffice and run the full integration suite.
   # -----------------------------------------------------------------
   integration:
-    name: Integration (${{ matrix.os }})
+    name: Integration (${{ matrix.os }}${{ matrix.lo_label && format(', LO {0}', matrix.lo_label) || '' }})
     needs: build
     runs-on: ${{ matrix.os }}
     strategy:
@@ -151,13 +151,30 @@ jobs:
           - macos-14         # macOS Apple Silicon (PAID; ~$0.12/min)
           - windows-latest   # Windows x86_64
         include:
-          # Which OSes also run dogtail GUI smoke?
+          # Linux: fan out across LibreOffice 24/25/26 so a panel
+          # regression that's specific to a major LO version surfaces
+          # here instead of in production. ``lo_apt_source`` drives the
+          # apt source the Linux install step uses; ``lo_label`` shows
+          # up in the job name so the failing version is obvious.
           - os: ubuntu-latest
+            lo_apt_source: ubuntu       # default noble apt = 24.2.x
+            lo_label: "24.2 (noble apt)"
             run_gui_smoke: true
-          # Which OSes run the live chat E2E? All of them — every
-          # platform validates the SDK round-trip on its own Python ABI.
-          - os: ubuntu-latest
             run_live_chat: true
+          - os: ubuntu-latest
+            lo_apt_source: ppa-25-2     # TDF PPA ``libreoffice/libreoffice-25-2``
+            lo_label: "25.2 (TDF PPA)"
+          - os: ubuntu-latest
+            lo_apt_source: ppa-still    # TDF PPA ``libreoffice/libreoffice-still``
+            lo_label: "still (TDF PPA)"
+          - os: ubuntu-latest
+            lo_apt_source: ppa-fresh    # TDF PPA ``libreoffice/ppa`` (latest stable, currently 26.x)
+            lo_label: "fresh (TDF PPA, latest)"
+          # macOS + Windows continue to use the platform's default
+          # package manager (Homebrew cask / Chocolatey latest). Both
+          # currently ship the same major as the TDF "fresh" PPA, so
+          # they double as a sanity check that the latest-version path
+          # is exercised on every OS.
           - os: macos-14
             run_live_chat: true
           - os: windows-latest
@@ -187,11 +204,52 @@ jobs:
 
       - name: Install LibreOffice (Linux)
         if: runner.os == 'Linux'
+        env:
+          LO_APT_SOURCE: ${{ matrix.lo_apt_source || 'ubuntu' }}
         run: |
+          set -x
+          # Pick the apt source by matrix entry. ``ubuntu`` (default)
+          # uses noble's bundled LO 24.2.x. The ``ppa-*`` variants pull
+          # newer LO branches from TDF's official PPAs so we can detect
+          # major-version regressions (e.g. the 26.x sidebar-panel
+          # crash the user reported on 2026-05-19 that this matrix
+          # exists to catch). ``software-properties-common`` is needed
+          # for ``add-apt-repository``.
+          case "$LO_APT_SOURCE" in
+            ubuntu)
+              echo "Using Ubuntu noble apt (LibreOffice 24.2.x)"
+              ;;
+            ppa-25-2)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends software-properties-common
+              sudo add-apt-repository -y ppa:libreoffice/libreoffice-25-2
+              ;;
+            ppa-still)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends software-properties-common
+              sudo add-apt-repository -y ppa:libreoffice/libreoffice-still
+              ;;
+            ppa-fresh)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends software-properties-common
+              sudo add-apt-repository -y ppa:libreoffice/ppa
+              ;;
+            *)
+              echo "::error::Unknown LO_APT_SOURCE=$LO_APT_SOURCE"
+              exit 1
+              ;;
+          esac
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libreoffice libreoffice-script-provider-python \
             python3-uno xvfb at-spi2-core x11-utils
+          # Log which version actually got installed so the failing
+          # job's banner line tells us the real number not just the
+          # PPA label.
+          echo "::group::Installed LibreOffice version"
+          /usr/bin/soffice --version || true
+          dpkg -l 'libreoffice-core*' 2>/dev/null | tail -5 || true
+          echo "::endgroup::"
           # Start a system AT-SPI bus for dogtail (Linux only).
           sudo systemctl --version >/dev/null 2>&1 || true
 
