@@ -34,6 +34,36 @@ _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 2002
 
 
+# ---------------------------------------------------------------------------
+# Test ordering — fundamentals first, sidebar stress last
+# ---------------------------------------------------------------------------
+#
+# Pytest collects tests in alphabetical filename order by default, which
+# would run ``test_sidebar_dock.py`` (the dock-stress test) BEFORE
+# ``test_smoke.py``. That's the wrong order: the dock test dispatches
+# ``.uno:SidebarDeck`` against a Writer doc and even with paranoid
+# teardown the deck's references can linger, slowing the next doc-load
+# (investigation #27). Reorder so the simple "can soffice open a doc"
+# checks run first — if that fails we already know something is wrong
+# at the install/UNO level, not the panel layer.
+#
+# Sort key: ``test_smoke.py`` → 0, ``test_sidebar_dock.py`` → 1, anything
+# else (live, dogtail, future) → 9. Stable within each bucket.
+
+
+_FILE_ORDER = {
+    "test_smoke.py": 0,
+    "test_sidebar_dock.py": 1,
+}
+
+
+def pytest_collection_modifyitems(items: list[Any]) -> None:
+    """Bucket integration test files so smoke runs before sidebar-dock."""
+    items.sort(
+        key=lambda it: _FILE_ORDER.get(it.path.name, 9)
+    )
+
+
 def _connection_url() -> str:
     """Build the URP connection URL from env or defaults."""
     host = os.environ.get("T2V_SOFFICE_HOST", _DEFAULT_HOST)
@@ -124,11 +154,22 @@ def oxt_installed(uno_context: Any) -> Any:
 
 
 @pytest.fixture
-def blank_document(desktop: Any, oxt_installed: Any) -> Iterator[Any]:
+def blank_document(uno_context: Any, desktop: Any, oxt_installed: Any) -> Iterator[Any]:
     """Yield a freshly-opened, blank Writer document; close it on teardown.
 
     Use this for any test that mutates document state — the fresh
     document ensures isolation between tests.
+
+    Teardown is paranoid because a previous test may have dispatched
+    ``.uno:SidebarDeck`` against this doc's frame and the dock holds a
+    strong reference to the frame's controller. Naive ``doc.close(False)``
+    leaves the dock attached, which deadlocks the next
+    ``loadComponentFromURL`` call (investigation #27). We:
+
+      1. Close the sidebar deck on the doc's frame (no-op if not open).
+      2. Process pending main-loop events via the dispatcher so the
+         deck's dispose finishes before we drop our reference.
+      3. Force ``doc.close(True)`` (True = abandon edits).
     """
     from com.sun.star.beans import PropertyValue  # type: ignore[import-not-found]
 
@@ -141,8 +182,22 @@ def blank_document(desktop: Any, oxt_installed: Any) -> Iterator[Any]:
     try:
         yield doc
     finally:
-        # Best-effort close. If a test left the doc in a bad state,
-        # swallowing the close error avoids masking the real assertion
-        # failure with a teardown exception.
+        # 1. Close any sidebar deck the test left open. We dispatch
+        #    against the doc's frame even if no deck was opened —
+        #    .uno:Sidebar is a no-op when none is showing.
         with contextlib.suppress(Exception):
-            doc.close(False)
+            controller = doc.getCurrentController()
+            if controller is not None:
+                frame = controller.getFrame()
+                if frame is not None:
+                    dispatcher = uno_context.ServiceManager.createInstanceWithContext(
+                        "com.sun.star.frame.DispatchHelper", uno_context
+                    )
+                    dispatcher.executeDispatch(
+                        frame, ".uno:Sidebar", "_self", 0, ()
+                    )
+        # 2. Force-close. ``True`` = abandon any pending changes; a
+        #    hung close on this call surfaces as a pytest-timeout
+        #    failure on the next test instead of a runner shutdown.
+        with contextlib.suppress(Exception):
+            doc.close(True)

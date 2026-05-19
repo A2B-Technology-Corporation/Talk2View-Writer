@@ -682,3 +682,66 @@ modules and confirm there's a preceding validation guard. The
 formatting / structure tools were the last two without one; flag any
 new tool that lands without a `validation guard → recovery message`
 flow in code review.
+
+---
+
+## #27 — Integration tests after sidebar-dock dispatch hang the next doc-load
+
+**What:** Run `pytest -m integration` against a real headless soffice
+where the suite contains `test_sidebar_dock` (which dispatches
+`.uno:SidebarDeck` with our `com.talk2view.writer.Deck` parameter)
+followed by `test_smoke::test_libreoffice_can_open_blank_writer_document`
+(which calls `desktop.loadComponentFromURL("private:factory/swriter",
+"_blank", 0, (Hidden=True,))`).
+
+Observed in PR #1 run 26102114783 / job 76755905627 (ubuntu-latest):
+
+```
+14:01:10 test_sidebar_dock.py::test_sidebar_deck_opens_without_crashing_soffice PASSED [ 25%]
+14:01:10–14:03:41  test_smoke.py::test_libreoffice_can_open_blank_writer_document  (no output for 2½ min)
+14:03:41 The runner has received a shutdown signal.
+```
+
+The second test never produced any pytest output before the GitHub-
+hosted runner sent SIGTERM (likely a job-level inactivity / quota
+mechanism — the workflow itself has no step-level timeout). soffice
+was alive on `127.0.0.1:2002` (we saw it ready 1.2s after launch)
+but the bridge call hung.
+
+Hypothesis: the sidebar dock framework still holds a strong reference
+to the previous doc's frame / controller via the panel singleton
+(`Talk2ViewWriterExtension._open_panels`), so the next
+`loadComponentFromURL` deadlocks on some shared mutex inside
+LibreOffice (likely VCL's solar_mutex held while finalising the old
+deck).
+
+**Where:** `tests/integration/conftest.py::blank_document`,
+`tests/integration/test_sidebar_dock.py`, `src/talk2view_writer/
+ui/sidebar_panel.py`.
+
+**Why it matters:** Every integration job in CI hits this. The runner
+shutdown gives us no diagnostic trail (no pytest stack, no test ID
+reported as "failed", just `##[error]The operation was canceled.`).
+Local repro is straightforward — `pytest -m integration` reproduces
+the hang as long as `test_sidebar_dock` runs before `test_smoke`.
+
+**Next step:**
+
+This PR adds three mitigations:
+
+1. ``pytest-timeout`` + ``--timeout=60`` in ``pyproject.toml`` so a
+   hang surfaces as a pytest traceback (with the actual stuck Python
+   frame) instead of an opaque runner shutdown signal.
+2. Hardened ``blank_document`` teardown in
+   ``tests/integration/conftest.py``: explicit ``.uno:Sidebar``
+   dispatch to close the deck, then ``doc.close(True)`` (force).
+3. ``pytest_collection_modifyitems`` re-orders integration tests
+   so ``test_smoke.py`` runs before ``test_sidebar_dock.py``. With
+   smoke proving the fundamentals first, a dock-test side effect
+   doesn't break unrelated fixtures.
+
+Follow-up: the real fix is to give the panel a clean disposal path
+so the sidebar framework's references to the dying frame don't
+linger. Track the panel's lifecycle and explicitly null out
+``_open_panels`` on doc-close. Probably needs a frame-listener on
+``XFrame.addEventListener(closing=...)``.
