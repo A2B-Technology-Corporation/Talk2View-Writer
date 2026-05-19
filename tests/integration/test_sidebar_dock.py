@@ -234,27 +234,47 @@ def test_chat_panel_factory_constructs_panel_window(
                 missing.append(control_id)
                 continue
             controls[control_id] = ctrl
-            # Each control must have positive on-screen size. A 0x0
-            # control is rendered but invisible — same UX as missing.
-            # Use ``getPosSize()`` (XWindow method) rather than the
-            # ``.PosSize`` attribute — the latter is a property on
-            # some UNO controls but not all, and a silent
-            # ``AttributeError`` would mask the real failure.
-            ctrl_window = getattr(ctrl, "Peer", None) or ctrl
-            pos = ctrl_window.getPosSize()
-            w, h = pos.Width, pos.Height
+            # Assert on the control's MODEL dimensions, not the
+            # realized peer's ``getPosSize()``. We're building the
+            # panel in isolation here (no docking — the sidebar
+            # framework would do that), so the peer is not yet shown
+            # and ``getPosSize()`` returns (0, 0) regardless of
+            # whether the widget actually exists.
+            #
+            # The model is the XDL-parsed widget descriptor; its
+            # ``Width`` / ``Height`` are what the XDL declared. If
+            # the XDL load failed and ``getControl(id)`` returned a
+            # placeholder, the Model would either be None or have
+            # zero dimensions — that's the empty-panel signature.
+            model = getattr(ctrl, "Model", None)
+            if model is None:
+                zero_sized.append(f"{control_id}(no model)")
+                continue
+            w = getattr(model, "Width", 0)
+            h = getattr(model, "Height", 0)
             if w <= 0 or h <= 0:
                 zero_sized.append(f"{control_id}({w}x{h})")
 
-        # The panel container itself must have positive size.
-        panel_pos = panel_window.getPosSize()
-        panel_w, panel_h = panel_pos.Width, panel_pos.Height
+        # The panel container's MODEL dimensions ditto. A successful
+        # XDL load instantiates the dialog model with the dimensions
+        # declared in ``<dlg:window dlg:width=... dlg:height=...>``.
+        panel_model = getattr(panel_window, "Model", None)
+        assert panel_model is not None, (
+            "Panel window has no Model attribute — the XDL didn't "
+            "instantiate. See _diag/panel.png."
+        )
+        panel_w = getattr(panel_model, "Width", 0)
+        panel_h = getattr(panel_model, "Height", 0)
 
         # Capture screenshots BEFORE the assertion so they're always
         # present in the diag artifact, even when the test fails.
-        # ``getPosSize`` again — fail loudly if the UNO call breaks
-        # rather than masking it as "rect = None" and silently
-        # capturing the full root.
+        # ``getPosSize`` returns realized on-screen position+size;
+        # the parent_window (the visible Writer frame) has a peer
+        # and meaningful dimensions. The panel_window's peer is NOT
+        # realized in this construction-in-isolation test, so its
+        # peer-PosSize would be (0, 0) — we capture the full root
+        # for the panel screenshot instead, and let the visual
+        # inspection of the artifact be the panel-content check.
         _DIAG_DIR.mkdir(parents=True, exist_ok=True)
         frame_pos = parent_window.getPosSize()
         full_rect = (
@@ -263,14 +283,6 @@ def test_chat_panel_factory_constructs_panel_window(
             frame_pos.Width,
             frame_pos.Height,
         )
-        panel_pos_abs = panel_window.getPosSize()
-        panel_rect = (
-            panel_pos_abs.X,
-            panel_pos_abs.Y,
-            panel_pos_abs.Width,
-            panel_pos_abs.Height,
-        )
-        _capture_screenshot(_DIAG_DIR / "panel.png", panel_rect)
         _capture_screenshot(_DIAG_DIR / "writer_window.png", full_rect)
         _capture_screenshot(_DIAG_DIR / "root.png", None)
 
@@ -278,18 +290,18 @@ def test_chat_panel_factory_constructs_panel_window(
             f"Panel is missing widgets {missing!r} — "
             f"getControl(id) returned None. The XDL container loaded "
             f"but the children weren't instantiated. Check the "
-            f"screenshots in _diag/panel.png and _diag/writer_window.png "
-            f"and the createContainerWindow line in talk2view.log."
+            f"screenshot in _diag/writer_window.png and the "
+            f"createContainerWindow line in talk2view.log."
         )
         assert not zero_sized, (
-            f"Panel widgets present but zero-sized: {zero_sized!r}. "
-            f"They exist in the widget tree but won't render — same "
-            f"UX as missing. See _diag/panel.png."
+            f"Panel widgets have zero model dimensions: {zero_sized!r}. "
+            f"The XDL parsed but the widget model wasn't populated — "
+            f"same UX as missing. See _diag/writer_window.png."
         )
         assert panel_w > 0 and panel_h > 0, (
-            f"Panel container itself is {panel_w}x{panel_h} — the "
-            f"dock allocated no space for our panel. Likely a Sidebar.xcu "
-            f"layout-property issue. See _diag/writer_window.png."
+            f"Panel container model has zero dimensions ({panel_w}x{panel_h}). "
+            f"The XDL ``<dlg:window>`` didn't parse to a sized dialog "
+            f"model. See _diag/writer_window.png."
         )
 
         # Tiny delay before doc-close so any pending dispose events
