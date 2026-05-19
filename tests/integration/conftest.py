@@ -31,29 +31,32 @@ from typing import Any
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Evict the top-level conftest's UNO module stubs BEFORE pytest collects
-# anything from this directory. The unit-test conftest installs stub
-# modules in ``sys.modules`` for every UNO package the production code
-# imports (``uno``, ``unohelper``, ``com.sun.star.*``) so unit tests
-# can run without a real LibreOffice install. Those stubs persist for
-# the whole pytest session — and ``import uno`` from this file would
-# get the stub, ``uno.getComponentContext()`` returns a MagicMock, and
-# every subsequent UNO call goes against mock objects. The smoke test's
-# ``while enum.hasMoreElements():`` loop hangs forever because a
-# ``MagicMock`` is always truthy. Found via the pytest-timeout stack
-# in PR #1 run 26104536192 — see investigation #28.
-#
-# Walk sys.modules once at import time and drop every entry whose name
-# is in the UNO namespace. The next ``import uno`` resolves through the
-# system python3-uno package (CI installs it via apt) and we get a real
-# bridge.
-for _name in list(sys.modules):
-    if _name in ("uno", "unohelper") or _name.startswith("com.sun.star."):
-        del sys.modules[_name]
-
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 2002
+
+
+def _evict_unit_uno_stubs() -> None:
+    """Drop the top-level conftest's UNO stubs from ``sys.modules``.
+
+    The unit-test conftest installs stub modules in ``sys.modules`` for
+    every UNO package the production code imports (``uno``, ``unohelper``,
+    every ``com.sun.star.*``) so unit tests can run without LibreOffice.
+    Those stubs persist for the whole pytest session — and a naive
+    ``import uno`` from inside this file would return the stub instead
+    of the real PyUNO bridge. ``uno.getComponentContext()`` then
+    returns a ``MagicMock``, ``loadComponentFromURL`` returns a
+    ``MagicMock``, and the smoke test's ``while enum.hasMoreElements():``
+    loop hangs forever because ``MagicMock`` is always truthy.
+    See investigation #28; pytest-timeout stack in PR #1 run
+    26104536192 has the smoking gun.
+
+    Called from the ``uno_context`` fixture (NOT at module import) so
+    the eviction doesn't run when unit / synthetic / mock_chat tests
+    are the only thing being collected — those rely on the stubs.
+    """
+    for name in list(sys.modules):
+        if name in ("uno", "unohelper") or name.startswith("com.sun.star."):
+            del sys.modules[name]
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +111,10 @@ def uno_context() -> Any:
     ``pytest -m integration`` is invoked outside CI without first
     starting headless soffice.
     """
+    # Drop the unit-test conftest's UNO stubs first so ``import uno``
+    # resolves to the real PyUNO package. See ``_evict_unit_uno_stubs``.
+    _evict_unit_uno_stubs()
+
     try:
         import uno  # type: ignore[import-not-found]
     except ImportError as exc:
@@ -116,9 +123,9 @@ def uno_context() -> Any:
     # Sanity: catch the case where ``uno`` is still the unit-test stub
     # rather than the real python3-uno package. The stub is a
     # ``ModuleType`` we constructed by hand; the real one ships with
-    # LibreOffice and lives under ``/usr/lib/python3/dist-packages`` (or
-    # the platform equivalent). If the conftest's stub-eviction at
-    # module import didn't fire, fail loudly — not silently mock.
+    # LibreOffice and lives under ``/usr/lib/python3/dist-packages``
+    # (or the platform equivalent). If the eviction didn't fire, fail
+    # loudly — never silently mock.
     uno_file = getattr(uno, "__file__", None) or ""
     if "python3" not in uno_file and "site-packages" not in uno_file:
         raise RuntimeError(
