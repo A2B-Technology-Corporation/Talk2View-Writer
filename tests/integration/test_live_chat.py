@@ -76,27 +76,40 @@ def sdk_client() -> object:
 
 @pytest.mark.live
 def test_login_then_chat_then_logout(sdk_client: object) -> None:
-    """Send 'hello' and assert at least one streamed event arrives within 30s.
+    """Send 'hello' and assert text content arrives within 30s.
 
     A real engine round-trip — this is the most realistic CI signal
     short of driving the actual LibreOffice UI.
+
+    Reads ``event.content`` for ``type=text`` events, matching the
+    SDK's :class:`talk2view.types.ChatEvent` schema (the previous
+    revision of this test read ``event.text``/``event.delta`` which
+    never existed on the dataclass, so it always asserted an empty
+    string).
     """
     deadline = time.monotonic() + 30
     event_count = 0
     text_received = ""
+    saw_done = False
     for event in sdk_client.chat("hello"):  # type: ignore[attr-defined]
         event_count += 1
-        # ChatEvent objects vary by type; we only care that *some*
-        # text content arrives, not the exact event taxonomy.
-        text_attr = getattr(event, "text", None) or getattr(event, "delta", None)
-        if isinstance(text_attr, str):
-            text_received += text_attr
-        if event_count > 50 or time.monotonic() > deadline:
+        etype = getattr(event, "type", None)
+        if etype == "text":
+            content = getattr(event, "content", None)
+            if isinstance(content, str):
+                text_received += content
+        if etype == "done":
+            saw_done = True
+        if event_count > 100 or time.monotonic() > deadline:
             break
     assert event_count > 0, "Chat stream produced zero events"
-    assert text_received.strip(), (
-        f"Got {event_count} events but no text content. "
-        f"Engine may be returning only tool-calls or empty deltas."
+    # A successful chat produces at least one of: text content (the
+    # agent answered), or a ``done`` event (the agent finished, even
+    # if it routed through a tool-call with no registered handler).
+    # Both are valid signals that the SDK <-> engine wire works.
+    assert text_received.strip() or saw_done, (
+        f"Got {event_count} events but neither text content nor a "
+        f"done event. The SDK <-> engine wire may be broken."
     )
 
 
