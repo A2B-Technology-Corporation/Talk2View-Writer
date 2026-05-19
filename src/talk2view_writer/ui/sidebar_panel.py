@@ -269,20 +269,43 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         # path), so it doesn't matter that we built the children
         # under a different visual parent — the controls live in
         # the same VCL window hierarchy and follow when re-parented.
+        # Three tiers, tried in order, the LAST one being the bare
+        # XWindow itself. Older / more permissive PyUNO builds (noble
+        # apt's 24.2 + the TDF still PPA's 25.x on CI) accept a bare
+        # XWindow at this slot — the C++ side does its own UNO_QUERY
+        # internally and the call works. Newer / stricter builds
+        # (user's Debian 26.2.3.2) reject the conversion at the PyUNO
+        # marshalling layer, the inner ``except Exception:`` logs the
+        # ``CannotConvertException`` and re-raises. For those builds
+        # we need a different construction API entirely (planned
+        # follow-up in investigation #29); the tiered fallback is the
+        # best we can do without that rewrite, and lets us keep CI
+        # working while we design it.
         parent_peer = self._resolve_parent_peer(self._parent_window)
         if parent_peer is None and self._frame_ref is not None:
             frame_window = self._frame_ref.getContainerWindow()
             logger.info(
-                "_create_panel_window: ParentWindow has no peer; using "
+                "_create_panel_window: ParentWindow has no peer; trying "
                 "frame.getContainerWindow() %s",
                 _ru(frame_window),
             )
             parent_peer = self._resolve_parent_peer(frame_window)
         if parent_peer is None:
-            raise RuntimeError(
-                "Cannot resolve XWindowPeer for createContainerWindow: "
-                "neither ParentWindow nor Frame.ContainerWindow exposes "
-                "XWindowPeer. Panel construction cannot proceed."
+            # Final resort: pass the bare XWindow. Some PyUNO builds
+            # accept it via the C++ side's own conversion; others
+            # raise ``CannotConvertException``. Either way the call
+            # below is wrapped in try/except with a full traceback
+            # so the failure is visible in the log.
+            parent_peer = (
+                self._frame_ref.getContainerWindow()
+                if self._frame_ref is not None
+                else self._parent_window
+            )
+            logger.info(
+                "_create_panel_window: no peer interface available — "
+                "passing bare XWindow %s as parent_peer (may raise "
+                "CannotConvertException on stricter PyUNO builds)",
+                _ru(parent_peer),
             )
         logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
 
