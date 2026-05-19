@@ -17,14 +17,14 @@ on:
 # Cancel in-progress runs on the same branch when a newer commit
 # lands. Saves macOS arm64 minutes (the most expensive matrix entry).
 #
-# Group key intentionally combines the head ref (``pull_request``)
-# with ``github.ref`` (``push``) so the push and PR triggers for the
-# same branch share one slot — without this we'd double-spend the
-# matrix every time a branch was pushed AND had an open PR, and on
-# private repos the second copy can preempt the first via runner-quota
-# scheduling (investigation #27).
+# Group key uses ``github.ref_name`` (just the branch name, no
+# ``refs/heads/`` prefix) so the push trigger and pull_request
+# trigger for the same branch share one slot. Without this we'd
+# double-spend the matrix every time a branch was pushed AND had
+# an open PR, and on private repos the second copy can preempt
+# the first via runner-quota scheduling (investigation #27).
 concurrency:
-  group: ci-${{ github.event.pull_request.head.ref || github.ref }}
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 # Minimal permissions per GitHub security guidance. Release workflow
