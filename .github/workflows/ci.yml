@@ -300,13 +300,19 @@ jobs:
             $lo_version = 'soffice.exe not found at expected path'
           }
           Write-Host $lo_version
-          @"
-### LibreOffice version (Windows Chocolatey libreoffice-fresh)
-
-``````
-$lo_version
-``````
-"@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          # Avoid a PowerShell here-string (``@"..."@``) here: its closing
+          # delimiter must sit at column 1 of the line, but that breaks
+          # YAML's block-scalar indentation rule and the whole workflow
+          # fails to parse silently (GitHub does NOT trigger a run when
+          # the file is unparseable — the symptom is "no checks queued",
+          # not a visible error). Build the summary with explicit
+          # Add-Content lines instead.
+          $fence = [char]0x60 + [char]0x60 + [char]0x60
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### LibreOffice version (Windows Chocolatey libreoffice-fresh)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lo_version
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
 
       # ---- Install dev deps (for pytest itself) ----
 
