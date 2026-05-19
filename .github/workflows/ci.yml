@@ -247,11 +247,24 @@ jobs:
             python3-uno xvfb at-spi2-core x11-utils
           # Log which version actually got installed so the failing
           # job's banner line tells us the real number not just the
-          # PPA label.
+          # PPA label. Also append to $GITHUB_STEP_SUMMARY so the
+          # version shows on the workflow run page without having to
+          # expand the install log — important for the matrix where
+          # the PPA name (``fresh``) drifts independently of the real
+          # major version (``fresh`` may still be 25.x on noble until
+          # 26.x is built for it).
           echo "::group::Installed LibreOffice version"
-          /usr/bin/soffice --version || true
+          lo_version="$(/usr/bin/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+          echo "$lo_version"
           dpkg -l 'libreoffice-core*' 2>/dev/null | tail -5 || true
           echo "::endgroup::"
+          {
+            echo "### LibreOffice version (Linux, $LO_APT_SOURCE)"
+            echo ""
+            echo '```'
+            echo "$lo_version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           # Start a system AT-SPI bus for dogtail (Linux only).
           sudo systemctl --version >/dev/null 2>&1 || true
 
@@ -264,10 +277,35 @@ jobs:
           # prompt so we can headless-launch from CI.
           brew install --cask libreoffice
           xattr -dr com.apple.quarantine /Applications/LibreOffice.app || true
+          lo_version="$(/Applications/LibreOffice.app/Contents/MacOS/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+          echo "$lo_version"
+          {
+            echo "### LibreOffice version (macOS Homebrew cask)"
+            echo ""
+            echo '```'
+            echo "$lo_version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install LibreOffice (Windows)
         if: runner.os == 'Windows'
-        run: choco install libreoffice-fresh -y --no-progress
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh -y --no-progress
+          $sofficeExe = 'C:\Program Files\LibreOffice\program\soffice.exe'
+          if (Test-Path $sofficeExe) {
+            $lo_version = (& $sofficeExe --version) 2>&1
+          } else {
+            $lo_version = 'soffice.exe not found at expected path'
+          }
+          Write-Host $lo_version
+          @"
+### LibreOffice version (Windows Chocolatey libreoffice-fresh)
+
+``````
+$lo_version
+``````
+"@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
       # ---- Install dev deps (for pytest itself) ----
 
