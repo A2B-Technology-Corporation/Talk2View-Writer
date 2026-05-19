@@ -745,3 +745,77 @@ so the sidebar framework's references to the dying frame don't
 linger. Track the panel's lifecycle and explicitly null out
 ``_open_panels`` on doc-close. Probably needs a frame-listener on
 ``XFrame.addEventListener(closing=...)``.
+
+---
+
+## #28 — Integration tests have always been silently mocked, never running against real soffice
+
+**What:** Every "passing" integration run in CI history has run against
+the unit-test conftest's UNO stub, not the real PyUNO bridge — and
+every "hung" integration run was a MagicMock infinite loop, not a
+real soffice deadlock.
+
+The smoking-gun stack from PR #1 run 26104536192 (commit b2e18bf,
+ubuntu-latest, with pytest-timeout enabled):
+
+```
+File ".../tests/integration/test_smoke.py", line 27, in test_libreoffice_can_open_blank_writer_document
+    el = enum.nextElement()
+File ".../python3.13/unittest/mock.py", line 730, in __getattr__
+    return result
+```
+
+`enum.nextElement()` is calling into `unittest/mock.py` — which means
+`enum` is a `MagicMock`, which means `desktop.loadComponentFromURL(...)`
+returned a `MagicMock`, which means `uno.getComponentContext()` is a
+`MagicMock`, which means **`uno` itself is the unit-test stub** instead
+of the real python3-uno package.
+
+The smoke test:
+
+```python
+enum = blank_document.getText().createEnumeration()
+while enum.hasMoreElements():
+    el = enum.nextElement()
+```
+
+`MagicMock` objects are unconditionally truthy, so
+`while enum.hasMoreElements():` never exits. The pytest-timeout dump
+finally surfaced this after we added `--timeout=60`.
+
+**Where:** `tests/conftest.py` (top-level) installs stub modules in
+`sys.modules` for `uno`, `unohelper`, every `com.sun.star.*` it knows
+about — so unit tests can `import uno` without LibreOffice. Those stubs
+persist for the whole pytest session. `tests/integration/conftest.py`'s
+`uno_context` fixture does `import uno` and gets the stub back, not
+the real bridge. Comment in the file claimed "per-directory conftest
+precedence means importing uno from this file uses the real module" —
+that was incorrect; conftest precedence does not eject pre-populated
+sys.modules entries.
+
+**Why it matters:** None of the existing integration tests have ever
+actually validated the panel-rendering or sidebar-dock-survival
+behaviour they claim to. They've been MagicMock no-ops. The previous
+commits in this repo that tried to "fix" the sidebar-crash test were
+chasing a symptom (MagicMock infinite loop) of a different root cause
+(stubs leaking into integration), not the real panel-rendering bug
+those commits described.
+
+**Next step:**
+
+This PR fixes the leak with two changes in
+`tests/integration/conftest.py`:
+
+1. At module import time, walk `sys.modules` once and drop every
+   `uno` / `unohelper` / `com.sun.star.*` entry. The subsequent
+   `import uno` inside the `uno_context` fixture then resolves to the
+   real python3-uno package (apt-installed in CI).
+2. After `import uno`, sanity-check `uno.__file__` to confirm we
+   loaded the real module and not a hand-built `ModuleType` stub.
+   Raises a clear `RuntimeError` pointing at this investigation if
+   the stub leaks again.
+
+Follow-up: re-validate the test_sidebar_dock and test_smoke
+assertions once they're running against real soffice. The pre-existing
+"sidebar panel crashes soffice" investigation work may not actually
+reflect real behaviour — those tests were mocked too.

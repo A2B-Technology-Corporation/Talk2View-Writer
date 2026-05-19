@@ -25,10 +25,32 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
+
+# ---------------------------------------------------------------------------
+# Evict the top-level conftest's UNO module stubs BEFORE pytest collects
+# anything from this directory. The unit-test conftest installs stub
+# modules in ``sys.modules`` for every UNO package the production code
+# imports (``uno``, ``unohelper``, ``com.sun.star.*``) so unit tests
+# can run without a real LibreOffice install. Those stubs persist for
+# the whole pytest session — and ``import uno`` from this file would
+# get the stub, ``uno.getComponentContext()`` returns a MagicMock, and
+# every subsequent UNO call goes against mock objects. The smoke test's
+# ``while enum.hasMoreElements():`` loop hangs forever because a
+# ``MagicMock`` is always truthy. Found via the pytest-timeout stack
+# in PR #1 run 26104536192 — see investigation #28.
+#
+# Walk sys.modules once at import time and drop every entry whose name
+# is in the UNO namespace. The next ``import uno`` resolves through the
+# system python3-uno package (CI installs it via apt) and we get a real
+# bridge.
+for _name in list(sys.modules):
+    if _name in ("uno", "unohelper") or _name.startswith("com.sun.star."):
+        del sys.modules[_name]
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 2002
@@ -90,6 +112,20 @@ def uno_context() -> Any:
         import uno  # type: ignore[import-not-found]
     except ImportError as exc:
         pytest.skip(f"PyUNO not importable: {exc}. Is LibreOffice installed?")
+
+    # Sanity: catch the case where ``uno`` is still the unit-test stub
+    # rather than the real python3-uno package. The stub is a
+    # ``ModuleType`` we constructed by hand; the real one ships with
+    # LibreOffice and lives under ``/usr/lib/python3/dist-packages`` (or
+    # the platform equivalent). If the conftest's stub-eviction at
+    # module import didn't fire, fail loudly — not silently mock.
+    uno_file = getattr(uno, "__file__", None) or ""
+    if "python3" not in uno_file and "site-packages" not in uno_file:
+        raise RuntimeError(
+            f"uno module is not the real PyUNO (__file__={uno_file!r}). "
+            "The unit-test conftest's UNO stub leaked into the "
+            "integration session. See investigation #28."
+        )
 
     local_ctx = uno.getComponentContext()
     resolver = local_ctx.ServiceManager.createInstanceWithContext(
