@@ -11,8 +11,10 @@ Talk2View-Writer is the LibreOffice Writer sibling of `Talk2View-Word`. It uses:
   backend Talk2View-Word uses,
 - a **sidebar deck** (UNO `XSidebarPanel`) for the chat UI — registered via
   `extension/Sidebar.xcu`,
-- **26 Python tools** registered via the SDK's `@tool` decorator, each invoking
-  UNO APIs to manipulate the Writer document.
+- **20 Python tools** registered via the SDK's `@tool` decorator, each invoking
+  UNO APIs to manipulate the Writer document. (The Phase A plan said 26;
+  reading + writing + formatting + search + structure + commenting actually
+  sum to 3+6+3+1+4+3 = 20.)
 
 It does **not** depend on Talk2View-Core or RPyC (unlike SpeedWriter-LibreOffice
 and Talk2View-Module). Auth uses a partner key + Supabase login through the SDK.

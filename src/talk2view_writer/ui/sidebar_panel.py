@@ -338,12 +338,82 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             return
 
         self._composer_field.getModel().setPropertyValue("Text", "")
+
+        # Slash commands take priority: they don't hit the engine.
+        # See _handle_slash_command for the supported set.
+        if message.startswith("/"):
+            handled = self._handle_slash_command(message)
+            if handled:
+                return
+            # Not a recognised slash command — fall through and send to engine.
+
         self._append_history(f"You: {message}\n")
         self._append_history("Talk2View: ")
         self._set_busy(True)
 
         thread = threading.Thread(target=self._chat_worker, args=(message,), daemon=True)
         thread.start()
+
+    # ----- Slash commands -------------------------------------------------
+
+    def _handle_slash_command(self, message: str) -> bool:
+        """Try to handle ``message`` as a local slash command.
+
+        Returns True if the command was recognised and consumed; False if
+        the caller should fall through to sending the message to the
+        engine (allowing e.g. `/path/to/file` to reach a tool when no
+        local command matches).
+
+        Recognised commands:
+            /help                 — list available slash commands.
+            /clear                — clear the chat history field.
+            /logout               — sign out of Talk2View.
+            /settings             — show the read-only settings dialog.
+            /tools                — list registered tool names.
+        """
+        parts = message.strip().split(maxsplit=1)
+        cmd = parts[0].lower()
+        if cmd == "/help":
+            self._append_history(
+                "\nSlash commands:\n"
+                "  /help      Show this help.\n"
+                "  /clear     Clear chat history.\n"
+                "  /logout    Sign out of Talk2View.\n"
+                "  /settings  Open settings.\n"
+                "  /tools     List registered Writer tools.\n"
+            )
+            return True
+        if cmd == "/clear":
+            if self._history_field is not None:
+                self._history_field.getModel().setPropertyValue("Text", "")
+            return True
+        if cmd == "/logout":
+            from talk2view_writer.extension import get_extension
+
+            get_extension(self.ctx).logout()
+            self._append_history("\nLogged out.\n")
+            return True
+        if cmd == "/settings":
+            from talk2view_writer.extension import get_extension
+
+            parent = (
+                self._frame_ref.getContainerWindow()
+                if self._frame_ref is not None
+                else None
+            )
+            get_extension(self.ctx).show_settings_dialog(parent_window=parent)
+            return True
+        if cmd == "/tools":
+            from talk2view_writer.tools import all_tools
+
+            names = sorted(t.__name__ for t in all_tools())
+            self._append_history(
+                f"\nRegistered tools ({len(names)}):\n  "
+                + "\n  ".join(names)
+                + "\n"
+            )
+            return True
+        return False
 
     # ----- Chat worker (background thread) --------------------------------
 
@@ -377,20 +447,66 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             self._set_busy(False)
 
     def _handle_chat_event(self, event: Any) -> None:
+        """Render a single :class:`talk2view.types.ChatEvent` into the panel.
+
+        Six event types are emitted by the SDK (see ``talk2view/types.py``
+        ChatEvent docstring): ``text``, ``status``, ``todos``, ``tool_call``,
+        ``error``, ``done``. Each maps to one or two widget updates; the
+        unhandled fallback logs at DEBUG so any SDK additions surface
+        before tests catch them.
+        """
         etype = getattr(event, "type", None)
-        if etype == "text" and event.content:
-            self._append_history(event.content)
+        if etype == "text":
+            if event.content:
+                self._append_history(event.content)
         elif etype == "status":
-            self._set_status(event.message or "")
+            self._set_status(event.message or event.status or "")
+        elif etype == "todos":
+            self._render_todos(event.todos or "")
+        elif etype == "tool_call":
+            self._render_tool_call(
+                getattr(event, "tool_name", None) or "?",
+                getattr(event, "arguments", None) or {},
+            )
         elif etype == "error":
             self._append_history(f"\n[error] {event.message}\n")
         elif etype == "done":
             return
-        elif etype == "tool_call":
-            tool_name = getattr(event, "tool_name", "?")
-            self._append_history(f"\n[tool: {tool_name}] (Phase C)\n")
         else:
             logger.debug("Unhandled ChatEvent type: %s", etype)
+
+    def _render_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> None:
+        """Render a tool_call event as a one-line bullet in the history.
+
+        The SDK auto-executes the tool on the worker thread; this is
+        purely a visual breadcrumb so the user can see what the agent
+        decided to do. The matching tool result lands in subsequent
+        ``text`` events from the engine's resume response.
+
+        ``arguments`` is summarised to keep the line short — strings
+        get truncated, lists / dicts get a count. Full args live in
+        ``talk2view.log`` at INFO via ``ui_thread_tool``.
+        """
+        def _short(v: Any) -> str:
+            if isinstance(v, str):
+                return v if len(v) <= 40 else f"{v[:37]}..."
+            if isinstance(v, (list, tuple, dict)):
+                return f"{type(v).__name__}({len(v)})"
+            return repr(v)
+        arg_str = ", ".join(f"{k}={_short(v)}" for k, v in arguments.items())
+        suffix = f" {arg_str}" if arg_str else ""
+        self._append_history(f"\n  → {tool_name}({suffix})\n")
+
+    def _render_todos(self, todos_text: str) -> None:
+        """Render a todos plan from the agent into the history field.
+
+        ``todos`` is a freeform string (the agent renders its own
+        checklist). Prefix each line with a blank line + a label so it
+        visually separates from text content above.
+        """
+        if not todos_text:
+            return
+        self._append_history(f"\nPlan:\n{todos_text}\n")
 
     # ----- Cross-thread widget writers ------------------------------------
 

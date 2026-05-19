@@ -45,6 +45,7 @@ applied.
 | [0021](0021-json-string-tool-returns.md)     | Tools return JSON-encoded strings, not Python dicts   | D | Accepted |
 | [0022](0022-system-prompt-bundled-and-overridable.md) | Bundle SYSTEM_PROMPT.md in the .oxt, pass per-session | E | Accepted |
 | [0023](0023-vendor-pydantic-core-wheels.md) | Bundle pre-built pydantic_core wheels for the cross-platform matrix | F | Accepted |
+| [0024](0024-synthetic-uno-and-mock-chat-test-rig.md) | Synthetic-UNO + mock-engine test rig alongside the real-soffice integration suite | F | Accepted |
 
 ## Writing a new ADR
 

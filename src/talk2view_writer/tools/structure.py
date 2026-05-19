@@ -565,6 +565,13 @@ def set_page_setup(
                 "recovery": f"Include at least one of: {', '.join(_PAGE_SETUP_KEYS)}.",
             }
         )
+    if orientation is not None and orientation not in ("portrait", "landscape"):
+        return json.dumps(
+            {
+                "error": f'Unknown orientation "{orientation}".',
+                "recovery": "Use 'portrait' or 'landscape'.",
+            }
+        )
     for key in _MARGIN_KEYS:
         val = args[key]
         if isinstance(val, (int, float)) and val < 0:

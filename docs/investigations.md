@@ -599,3 +599,86 @@ real — every drift is a paper-cut.
 3. Consider an opt-in "fetch missing wheel from PyPI on first launch"
    path as a fallback. Would need network access at first chat —
    acceptable as a fallback when the bundled matrix doesn't match.
+
+---
+
+## #25 — soffice's URP TCP acceptor hangs on first start in some sandbox containers
+
+**What:** Running `soffice --headless --accept="socket,host=127.0.0.1,port=2002;urp;"`
+inside the Anthropic Code Web execution sandbox (Ubuntu 24.04, no
+display, no D-Bus session bus, container-isolated network namespace)
+leaves the `URP Acceptor` thread stuck on `__futex_wait` indefinitely.
+The process stays alive (PipeIPC thread accepts on the SingleOffice
+Unix pipe), uses ~90 MB resident, but never binds the TCP listening
+socket. A `connect()` against `127.0.0.1:2002` gets `ECONNREFUSED`
+forever. `soffice --convert-to txt` exhibits the same hang.
+
+Repro:
+```
+sudo -u testrunner soffice --writer --headless --norestore --nologo --nodefault \
+  --accept="socket,host=127.0.0.1,port=2002;urp;StarOffice.ServiceManager" \
+  -env:UserInstallation=file:///home/testrunner/.config/libreoffice/4
+```
+The `URP Acceptor` thread's stack:
+```
+[<0>] __futex_wait+0x14a/0x180
+[<0>] futex_wait+0x5f/0x110
+[<0>] do_futex+0x13e/0x1d0
+[<0>] __x64_sys_futex+0x72/0x1d0
+```
+Neither `xvfb-run` nor `dbus-run-session` unblocks it. `--safe-mode`
+and a pre-initialised profile (`--terminate_after_init` first) don't
+help either. The conversion path (which doesn't need URP) also hangs,
+so the bug is upstream of the listener — likely a startup-sync
+deadlock specific to this container's seccomp / cgroup / namespace
+posture.
+
+**Where:** `Talk2View-Writer/tests/integration/conftest.py` — fixture
+`uno_context` skips with the canonical "start soffice on :2002"
+message when the connection refuses, which is the symptom in this
+sandbox. CI on GitHub-hosted runners doesn't hit this (different
+container baseline).
+
+**Why it matters:** Local end-to-end testing on the Anthropic Code Web
+sandbox can't drive a real soffice. The new `tests/synthetic/` and
+`tests/mock_chat/` suites cover the same ground using an in-process
+synthetic UNO model and an httpx MockTransport-style mock, so the
+sandbox limitation no longer blocks development — but the integration
+suite (`tests/integration/`) genuinely requires a working soffice and
+must run in CI.
+
+**Next step:**
+1. File an upstream LibreOffice bug if a minimal repro outside this
+   container reproduces the URP-acceptor hang.
+2. Move the integration suite to a self-hosted runner (or a clean
+   GitHub Actions ubuntu-latest job, which already works) for any
+   contributor who can't run soffice locally.
+3. Document the symptom + workaround (synthetic suite) in the
+   integration tests README so newcomers don't burn a day on it.
+
+---
+
+## #26 — `format_paragraph` silently dropped unknown alignment values
+
+**What:** Before this PR, `format_paragraph(alignment="diagonal")`
+raised `KeyError` from inside `_ALIGNMENT_MAP` instead of returning a
+structured error. `set_page_setup(orientation="rotated")` ignored the
+value entirely and returned `success: True, applied: {}` — leaving
+the agent unable to know that its formatting attempt was a no-op.
+
+**Where:** `src/talk2view_writer/tools/formatting.py::format_paragraph`,
+`src/talk2view_writer/tools/structure.py::set_page_setup`. Fixed in
+this PR by adding explicit allow-list checks for both fields, mirroring
+the validation pattern of every other enum-shaped argument
+(`break_type`, `paper_size`, etc.).
+
+**Why it matters:** Silent failures here defeat the agent's
+"on tool error, read recovery and adjust" rule (see CLAUDE.md).
+An unrecognised alignment looked like a successful no-op while
+actually doing nothing.
+
+**Next step:** Audit every `_*_MAP[arg]` lookup across the tool
+modules and confirm there's a preceding validation guard. The
+formatting / structure tools were the last two without one; flag any
+new tool that lands without a `validation guard → recovery message`
+flow in code review.

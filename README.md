@@ -33,8 +33,23 @@ automatically at first launch (see [ADR-0023](docs/adrs/0023-vendor-pydantic-cor
 
 ## Status
 
-Phase A scaffold — see [`plan`](../../.claude/plans/i-want-to-make-rustling-eich.md)
-for the full roadmap.
+Phase F — packaging + comprehensive test rig complete. See
+[`plan`](../../.claude/plans/i-want-to-make-rustling-eich.md) for the
+full roadmap. The current branch covers:
+
+- Sidebar deck renders reliably (ADR-0003, ADR-0007); chat panel
+  handles every SDK event type (`text`, `status`, `todos`, `tool_call`,
+  `error`, `done`) and ships with slash commands `/help`, `/clear`,
+  `/logout`, `/settings`, `/tools`.
+- All 20 tools registered with the SDK; tool-call interrupts
+  auto-execute on the worker thread and marshal UNO calls back to the
+  UI thread (ADRs 0008, 0009, 0018, 0020).
+- Cross-platform universal `.oxt` (Linux, macOS x86_64 + arm64,
+  Windows) with a bundled `pydantic_core` wheel matrix (ADR-0023).
+- Five test layers — 180 unit + 61 synthetic-UNO tool + 4 mock-engine
+  SDK round-trip + 3 real-soffice integration + 1 live-engine chat —
+  proving the panel ↔ SDK ↔ tool ↔ document loop without the engine or
+  soffice when those are unavailable. See ADR-0024 for the split.
 
 ## Documentation
 
