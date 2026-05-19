@@ -158,20 +158,25 @@ jobs:
           # specific major LO release (the user reports a silent
           # soffice crash on 26.x; ``ppa-fresh`` is the entry meant
           # to reproduce it).
+          #
+          # We don't have a dedicated 25.2 entry: TDF stopped
+          # publishing version-pinned Launchpad PPAs after the 7.5.x
+          # series — there's no ``libreoffice/libreoffice-25-2`` (a
+          # previous revision of this matrix had that entry and the
+          # job failed in 22s on ``add-apt-repository``). The Still
+          # PPA currently tracks 25.2.x, so the ``ppa-still`` job
+          # is the 25 coverage.
           - os: ubuntu-latest
             lo_apt_source: ubuntu       # noble's bundled LO 24.2.x
             lo_label: "24.2 noble apt"
             run_gui_smoke: true
             run_live_chat: true
           - os: ubuntu-latest
-            lo_apt_source: ppa-25-2     # TDF ppa:libreoffice/libreoffice-25-2
-            lo_label: "25.2 TDF PPA"
-          - os: ubuntu-latest
-            lo_apt_source: ppa-still    # TDF ppa:libreoffice/libreoffice-still
-            lo_label: "still TDF PPA"
+            lo_apt_source: ppa-still    # TDF ppa:libreoffice/libreoffice-still (currently 25.2.x)
+            lo_label: "still TDF PPA (25.x)"
           - os: ubuntu-latest
             lo_apt_source: ppa-fresh    # TDF ppa:libreoffice/ppa (latest, currently 26.x)
-            lo_label: "fresh TDF PPA"
+            lo_label: "fresh TDF PPA (26.x)"
           # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
           # Homebrew cask installs the current LibreOffice — same
           # major as ``ppa-fresh`` typically, so this doubles as a
@@ -220,11 +225,6 @@ jobs:
           case "$LO_APT_SOURCE" in
             ubuntu)
               echo "Using Ubuntu noble apt (LibreOffice 24.2.x)"
-              ;;
-            ppa-25-2)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends software-properties-common
-              sudo add-apt-repository -y ppa:libreoffice/libreoffice-25-2
               ;;
             ppa-still)
               sudo apt-get update
