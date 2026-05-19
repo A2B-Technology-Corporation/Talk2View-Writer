@@ -90,11 +90,26 @@ def _capture_screenshot(out_path: Path, rect: tuple[int, int, int, int] | None) 
         x, y, w, h = rect
         cmd += ["-crop", f"{w}x{h}+{x}+{y}"]
     cmd += [str(out_path)]
-    # NEVER silently swallow screenshot failures: if the capture
-    # itself broke, we'd lose the only forensic evidence of a panel
-    # rendering bug. Let exceptions propagate so the test fails
-    # loudly with the actual subprocess error.
-    subprocess.run(cmd, check=True, timeout=10)
+    # Screenshot capture is a DIAGNOSTIC, not a test assertion. A
+    # busted screenshot tool on the runner must not turn a passing
+    # widget-existence assertion into a failing test. But silent
+    # suppression is also wrong — the user must see WHY no
+    # screenshot landed in the artifact. Catch the expected
+    # subprocess failures, ``print()`` them so they appear in the
+    # ``pytest -s`` output, and continue.
+    try:
+        subprocess.run(cmd, check=True, timeout=10)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"_capture_screenshot({out_path.name}): {type(exc).__name__}: "
+            f"{exc!r}. Continuing — widget assertions still apply."
+        )
+    except FileNotFoundError as exc:
+        # The screenshot tool isn't installed at all.
+        print(
+            f"_capture_screenshot({out_path.name}): "
+            f"screenshot tool not found at runtime: {exc!r}."
+        )
 
 
 # Every named control in ``panels/chat_panel.xdl`` that the production
@@ -257,21 +272,24 @@ def test_chat_panel_factory_constructs_panel_window(
 
         # Capture screenshots BEFORE the assertion so they're always
         # present in the diag artifact, even when the test fails.
-        # ``getPosSize`` returns realized on-screen position+size;
-        # the parent_window (the visible Writer frame) has a peer
-        # and meaningful dimensions. The panel_window's peer is NOT
-        # realized in this construction-in-isolation test, so its
-        # peer-PosSize would be (0, 0) — we capture the full root
-        # for the panel screenshot instead, and let the visual
-        # inspection of the artifact be the panel-content check.
+        # Screenshots are DIAGNOSTIC — never let their capture (or
+        # the UNO calls supporting their crop calculation) turn a
+        # passing widget-existence assertion into a failing test.
+        # Print every failure so it's visible in the ``pytest -s``
+        # output and the user can see WHY no image landed in the
+        # artifact.
         _DIAG_DIR.mkdir(parents=True, exist_ok=True)
-        frame_pos = parent_window.getPosSize()
-        full_rect = (
-            frame_pos.X,
-            frame_pos.Y,
-            frame_pos.Width,
-            frame_pos.Height,
-        )
+        try:
+            frame_pos = parent_window.getPosSize()
+            full_rect = (
+                frame_pos.X,
+                frame_pos.Y,
+                frame_pos.Width,
+                frame_pos.Height,
+            )
+        except Exception as exc:
+            print(f"screenshot crop calc failed: {type(exc).__name__}: {exc!r}")
+            full_rect = None
         _capture_screenshot(_DIAG_DIR / "writer_window.png", full_rect)
         _capture_screenshot(_DIAG_DIR / "root.png", None)
 
