@@ -16,8 +16,15 @@ on:
 
 # Cancel in-progress runs on the same branch when a newer commit
 # lands. Saves macOS arm64 minutes (the most expensive matrix entry).
+#
+# Group key intentionally combines the head ref (``pull_request``)
+# with ``github.ref`` (``push``) so the push and PR triggers for the
+# same branch share one slot — without this we'd double-spend the
+# matrix every time a branch was pushed AND had an open PR, and on
+# private repos the second copy can preempt the first via runner-quota
+# scheduling (investigation #27).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 # Minimal permissions per GitHub security guidance. Release workflow
@@ -261,7 +268,18 @@ jobs:
       # ---- Run the test suites ----
 
       - name: Integration tests (UNO socket, all platforms)
-        run: uv run pytest -m integration --tb=short
+        # Step-level timeout-minutes is the hard kill — if pytest hangs
+        # beyond 5 min (the longest legitimate integration run on macOS
+        # arm64 cold-boot has been ~3:30), the step fails with a useful
+        # message rather than waiting for the runner-level idle preempt
+        # that has been killing this matrix entry with no diagnostic.
+        # See investigation #27.
+        #
+        # ``-s`` disables pytest's stdout capture so output streams to
+        # the runner log as each test progresses — without it a hanging
+        # fixture produces no log line for the whole step.
+        timeout-minutes: 5
+        run: uv run pytest -m integration -s --tb=short
 
       - name: GUI smoke test (Linux only)
         if: matrix.run_gui_smoke == true

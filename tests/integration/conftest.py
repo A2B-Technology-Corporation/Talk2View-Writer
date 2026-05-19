@@ -154,22 +154,14 @@ def oxt_installed(uno_context: Any) -> Any:
 
 
 @pytest.fixture
-def blank_document(uno_context: Any, desktop: Any, oxt_installed: Any) -> Iterator[Any]:
+def blank_document(desktop: Any, oxt_installed: Any) -> Iterator[Any]:
     """Yield a freshly-opened, blank Writer document; close it on teardown.
 
     Use this for any test that mutates document state — the fresh
     document ensures isolation between tests.
 
-    Teardown is paranoid because a previous test may have dispatched
-    ``.uno:SidebarDeck`` against this doc's frame and the dock holds a
-    strong reference to the frame's controller. Naive ``doc.close(False)``
-    leaves the dock attached, which deadlocks the next
-    ``loadComponentFromURL`` call (investigation #27). We:
-
-      1. Close the sidebar deck on the doc's frame (no-op if not open).
-      2. Process pending main-loop events via the dispatcher so the
-         deck's dispose finishes before we drop our reference.
-      3. Force ``doc.close(True)`` (True = abandon edits).
+    Teardown calls ``doc.close(False)`` and swallows any exception so
+    a teardown failure doesn't mask the real test assertion.
     """
     from com.sun.star.beans import PropertyValue  # type: ignore[import-not-found]
 
@@ -182,22 +174,12 @@ def blank_document(uno_context: Any, desktop: Any, oxt_installed: Any) -> Iterat
     try:
         yield doc
     finally:
-        # 1. Close any sidebar deck the test left open. We dispatch
-        #    against the doc's frame even if no deck was opened —
-        #    .uno:Sidebar is a no-op when none is showing.
+        # Best-effort close. Earlier attempts to be cleverer here
+        # (explicit ``.uno:Sidebar`` dispatch, ``doc.close(True)``)
+        # introduced hangs on hidden frames in CI — both calls can
+        # block indefinitely and ``contextlib.suppress`` only catches
+        # exceptions, not hangs. Keep teardown minimal; integration
+        # failures from sidebar lifecycle issues should be diagnosed
+        # via the per-test pytest-timeout traceback in pyproject.
         with contextlib.suppress(Exception):
-            controller = doc.getCurrentController()
-            if controller is not None:
-                frame = controller.getFrame()
-                if frame is not None:
-                    dispatcher = uno_context.ServiceManager.createInstanceWithContext(
-                        "com.sun.star.frame.DispatchHelper", uno_context
-                    )
-                    dispatcher.executeDispatch(
-                        frame, ".uno:Sidebar", "_self", 0, ()
-                    )
-        # 2. Force-close. ``True`` = abandon any pending changes; a
-        #    hung close on this call surfaces as a pytest-timeout
-        #    failure on the next test instead of a runner shutdown.
-        with contextlib.suppress(Exception):
-            doc.close(True)
+            doc.close(False)
