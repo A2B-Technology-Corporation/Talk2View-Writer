@@ -248,12 +248,24 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         )
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
+        # Resolve an ``XWindowPeer`` for the third arg of
+        # ``createContainerWindow``. The sidebar framework hands us an
+        # ``XWindow`` that does NOT implement ``XWindowPeer`` directly
+        # (seen in production log dumps — interface list is just
+        # ``XWeak``, ``XComponent``, ``XTypeProvider``, ``XWindow``).
+        # Passing a bare ``XWindow`` to an ``[in] XWindowPeer`` slot
+        # causes the C++ side to dereference a null peer pointer and
+        # crash soffice silently. Query for the peer interface and fall
+        # back to ``getPeer()`` if the queryInterface fails.
+        parent_peer = self._resolve_parent_peer(self._parent_window)
+        logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
+
         logger.info(
-            "_create_panel_window: calling createContainerWindow (parent %s)",
-            _ru(self._parent_window),
+            "_create_panel_window: calling createContainerWindow (parent_peer %s)",
+            _ru(parent_peer),
         )
         window = provider.createContainerWindow(
-            dialog_url, "", self._parent_window, None
+            dialog_url, "", parent_peer, None
         )
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
@@ -261,6 +273,55 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
 
         self._panel_window = window
         return window
+
+    @staticmethod
+    def _resolve_parent_peer(parent_window: Any) -> Any:
+        """Return an ``XWindowPeer`` for ``parent_window``.
+
+        Three sources, tried in order:
+
+        1. ``parent_window.queryInterface(XWindowPeer)`` — pyuno's
+           cross-interface cast. Works when the object implements both
+           ``XWindow`` and ``XWindowPeer`` even if its service-list
+           dump only mentions one.
+        2. ``parent_window.getPeer()`` — present on ``XControl`` and on
+           some ``XWindow`` implementations as a convenience accessor.
+        3. ``parent_window`` itself — last resort; matches the old
+           behaviour so we still surface the existing failure if the
+           bridge can't supply a real peer.
+
+        Logging at each step pinpoints which source was needed (or, if
+        none of them work, which call is the one that finally crashes
+        soffice).
+        """
+        try:
+            peer_type = uno.getTypeByName("com.sun.star.awt.XWindowPeer")
+            peer = parent_window.queryInterface(peer_type)
+            if peer is not None:
+                logger.info("_resolve_parent_peer: got peer via queryInterface")
+                return peer
+        except Exception:
+            logger.debug(
+                "_resolve_parent_peer: queryInterface(XWindowPeer) failed",
+                exc_info=True,
+            )
+
+        get_peer = getattr(parent_window, "getPeer", None)
+        if callable(get_peer):
+            try:
+                peer = get_peer()
+                if peer is not None:
+                    logger.info("_resolve_parent_peer: got peer via getPeer()")
+                    return peer
+            except Exception:
+                logger.debug("_resolve_parent_peer: getPeer() failed", exc_info=True)
+
+        logger.warning(
+            "_resolve_parent_peer: no XWindowPeer available; falling back "
+            "to bare XWindow. createContainerWindow may crash soffice."
+        )
+        return parent_window
+
 
     def _bind_controls(self, window: Any) -> None:
         """Resolve XDL control ids to control references + wire actions."""
