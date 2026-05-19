@@ -76,6 +76,13 @@ def _capture_screenshot(out_path: Path, rect: tuple[int, int, int, int] | None) 
     """
     tool = _xdotool_or_import_available()
     if tool is None:
+        # Platform without a screenshot tool installed (macOS/Windows
+        # runners). The widget-existence + PosSize assertions still
+        # carry the test on those platforms; the missing screenshot
+        # is noted on stdout so a failure post-hoc isn't ambiguous.
+        print(
+            f"_capture_screenshot: no screenshot tool on PATH; skipping {out_path.name}"
+        )
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = list(tool)
@@ -83,12 +90,11 @@ def _capture_screenshot(out_path: Path, rect: tuple[int, int, int, int] | None) 
         x, y, w, h = rect
         cmd += ["-crop", f"{w}x{h}+{x}+{y}"]
     cmd += [str(out_path)]
-    with contextlib.suppress(
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        FileNotFoundError,
-    ):
-        subprocess.run(cmd, check=True, timeout=10)
+    # NEVER silently swallow screenshot failures: if the capture
+    # itself broke, we'd lose the only forensic evidence of a panel
+    # rendering bug. Let exceptions propagate so the test fails
+    # loudly with the actual subprocess error.
+    subprocess.run(cmd, check=True, timeout=10)
 
 
 # Every named control in ``panels/chat_panel.xdl`` that the production
@@ -230,45 +236,40 @@ def test_chat_panel_factory_constructs_panel_window(
             controls[control_id] = ctrl
             # Each control must have positive on-screen size. A 0x0
             # control is rendered but invisible — same UX as missing.
+            # Use ``getPosSize()`` (XWindow method) rather than the
+            # ``.PosSize`` attribute — the latter is a property on
+            # some UNO controls but not all, and a silent
+            # ``AttributeError`` would mask the real failure.
             ctrl_window = getattr(ctrl, "Peer", None) or ctrl
-            try:
-                pos = ctrl_window.PosSize
-                w, h = pos.Width, pos.Height
-            except Exception:
-                w = h = 0
+            pos = ctrl_window.getPosSize()
+            w, h = pos.Width, pos.Height
             if w <= 0 or h <= 0:
                 zero_sized.append(f"{control_id}({w}x{h})")
 
         # The panel container itself must have positive size.
-        try:
-            pp = panel_window.PosSize
-            panel_w, panel_h = pp.Width, pp.Height
-        except Exception:
-            panel_w = panel_h = 0
+        panel_pos = panel_window.getPosSize()
+        panel_w, panel_h = panel_pos.Width, panel_pos.Height
 
         # Capture screenshots BEFORE the assertion so they're always
         # present in the diag artifact, even when the test fails.
+        # ``getPosSize`` again — fail loudly if the UNO call breaks
+        # rather than masking it as "rect = None" and silently
+        # capturing the full root.
         _DIAG_DIR.mkdir(parents=True, exist_ok=True)
-        try:
-            frame_pos = parent_window.PosSize
-            full_rect = (
-                frame_pos.X,
-                frame_pos.Y,
-                frame_pos.Width,
-                frame_pos.Height,
-            )
-        except Exception:
-            full_rect = None
-        try:
-            panel_pos_abs = panel_window.PosSize
-            panel_rect = (
-                panel_pos_abs.X,
-                panel_pos_abs.Y,
-                panel_pos_abs.Width,
-                panel_pos_abs.Height,
-            )
-        except Exception:
-            panel_rect = None
+        frame_pos = parent_window.getPosSize()
+        full_rect = (
+            frame_pos.X,
+            frame_pos.Y,
+            frame_pos.Width,
+            frame_pos.Height,
+        )
+        panel_pos_abs = panel_window.getPosSize()
+        panel_rect = (
+            panel_pos_abs.X,
+            panel_pos_abs.Y,
+            panel_pos_abs.Width,
+            panel_pos_abs.Height,
+        )
         _capture_screenshot(_DIAG_DIR / "panel.png", panel_rect)
         _capture_screenshot(_DIAG_DIR / "writer_window.png", full_rect)
         _capture_screenshot(_DIAG_DIR / "root.png", None)

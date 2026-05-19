@@ -248,16 +248,42 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         )
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
-        # Resolve an ``XWindowPeer`` for the third arg of
-        # ``createContainerWindow``. The sidebar framework hands us an
-        # ``XWindow`` that does NOT implement ``XWindowPeer`` directly
-        # (seen in production log dumps — interface list is just
-        # ``XWeak``, ``XComponent``, ``XTypeProvider``, ``XWindow``).
-        # Passing a bare ``XWindow`` to an ``[in] XWindowPeer`` slot
-        # causes the C++ side to dereference a null peer pointer and
-        # crash soffice silently. Query for the peer interface and fall
-        # back to ``getPeer()`` if the queryInterface fails.
+        # ``createContainerWindow``'s third arg is declared
+        # ``[in] com.sun.star.awt.XWindowPeer Peer``. The sidebar
+        # framework's ``ParentWindow`` is an ``XWindow`` whose
+        # supportedInterfaces list contains only XWeak / XComponent /
+        # XTypeProvider / XWindow — no XWindowPeer — at the time
+        # ``getRealInterface()`` is called, because the deck doesn't
+        # attach a peer until the panel is about to be shown. PyUNO
+        # rejects the conversion with
+        # ``CannotConvertException: value does not implement
+        # com.sun.star.awt.XWindowPeer`` and the call never reaches
+        # the C++ side. Result: createContainerWindow raises, the
+        # sidebar framework swallows the exception, and the user sees
+        # an empty grey rectangle. See investigation #29.
+        #
+        # The Frame's container window IS a top-level VCL window with
+        # a peer attached, so we use that as the parent peer. The
+        # sidebar framework re-parents our returned panel into the
+        # deck's allocated region later (via the toolpanel docking
+        # path), so it doesn't matter that we built the children
+        # under a different visual parent — the controls live in
+        # the same VCL window hierarchy and follow when re-parented.
         parent_peer = self._resolve_parent_peer(self._parent_window)
+        if parent_peer is None and self._frame_ref is not None:
+            frame_window = self._frame_ref.getContainerWindow()
+            logger.info(
+                "_create_panel_window: ParentWindow has no peer; using "
+                "frame.getContainerWindow() %s",
+                _ru(frame_window),
+            )
+            parent_peer = self._resolve_parent_peer(frame_window)
+        if parent_peer is None:
+            raise RuntimeError(
+                "Cannot resolve XWindowPeer for createContainerWindow: "
+                "neither ParentWindow nor Frame.ContainerWindow exposes "
+                "XWindowPeer. Panel construction cannot proceed."
+            )
         logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
 
         logger.info(
@@ -343,11 +369,16 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             except Exception:
                 logger.debug("_resolve_parent_peer: getPeer() failed", exc_info=True)
 
-        logger.warning(
-            "_resolve_parent_peer: no XWindowPeer available; falling back "
-            "to bare XWindow. createContainerWindow may crash soffice."
+        # Return None — the caller MUST handle the no-peer case
+        # (try a different parent, or raise). Previous behaviour was
+        # to return the bare XWindow as a "fallback", but that just
+        # made createContainerWindow raise ``CannotConvertException``
+        # later, with no actionable log. Investigation #29.
+        logger.info(
+            "_resolve_parent_peer: no XWindowPeer available; caller "
+            "must supply an alternative parent."
         )
-        return parent_window
+        return None
 
 
     def _bind_controls(self, window: Any) -> None:
