@@ -70,7 +70,13 @@ def test_chat_panel_factory_constructs_panel_window(
     process — the call that has been silently exiting soffice on
     every real launch.
     """
-    from com.sun.star.beans import NamedValue  # type: ignore[import-not-found]
+    from com.sun.star.beans import PropertyValue  # type: ignore[import-not-found]
+
+    def _prop(name: str, value: Any) -> Any:
+        p = PropertyValue()
+        p.Name = name
+        p.Value = value
+        return p
 
     doc = _make_visible_writer_doc(uno_context, desktop)
     try:
@@ -92,14 +98,16 @@ def test_chat_panel_factory_constructs_panel_window(
         )
         assert factory is not None, "ChatPanelFactory service did not instantiate"
 
-        # Mimic the args dock framework passes to createUIElement.
-        # ``ParentWindow`` and ``Frame`` are the two the panel build
-        # path actually reads; the rest are present-but-unused.
+        # ``XUIElementFactory.createUIElement`` declares
+        # ``sequence<com.sun.star.beans.PropertyValue>`` for its second
+        # arg — not ``NamedValue``. PyUNO is strict about this:
+        # passing the wrong struct type raises CannotConvertException
+        # before any of our extension code runs.
         args = (
-            NamedValue("ParentWindow", parent_window),
-            NamedValue("Frame", frame),
-            NamedValue("Controller", controller),
-            NamedValue("Module", "com.sun.star.text.TextDocument"),
+            _prop("ParentWindow", parent_window),
+            _prop("Frame", frame),
+            _prop("Controller", controller),
+            _prop("Module", "com.sun.star.text.TextDocument"),
         )
         resource_url = (
             "private:resource/toolpanel/com.talk2view.writer.ChatPanelFactory/Chat"
