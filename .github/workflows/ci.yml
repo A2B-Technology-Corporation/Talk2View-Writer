@@ -473,16 +473,37 @@ jobs:
           export DISPLAY=:99
           Xvfb :99 -screen 0 1280x1024x24 &
           sleep 1
+          # soffice needs a session dbus to initialise. The native
+          # GHA Ubuntu runner has a session bus already; Debian
+          # containers (where dbus-daemon installed via apt but no
+          # session was ever started — ``policy-rc.d denied`` in the
+          # install log) don't. Wrap with ``dbus-run-session`` to
+          # create a per-process session bus that lives as long as
+          # soffice runs. Without this, soffice prints
+          # ``Failed to connect to session bus`` (visible only on
+          # failure via the cat-soffice.stderr.log diagnostic) and
+          # never starts its UNO listener, so ``wait_for_soffice``
+          # times out at 60s. ``dbus-run-session`` is in the ``dbus``
+          # package (already installed for both Ubuntu and Debian).
+          # On runners where a session bus already exists, this
+          # creates a fresh one for soffice anyway — harmless.
+          if command -v dbus-run-session >/dev/null 2>&1; then
+            DBUS_WRAP=(dbus-run-session --)
+          else
+            DBUS_WRAP=()
+            echo "::warning::dbus-run-session not found; soffice may fail to start without a session bus"
+          fi
           # Pipe stderr/stdout to a file so we can capture GTK plugin
           # warnings + segfault traces in the test artifacts. These are
           # invisible to Python try/except but tell us exactly when
           # native code crashes.
-          T2V_WRITER_DEBUG=1 /usr/bin/soffice \
+          T2V_WRITER_DEBUG=1 "${DBUS_WRAP[@]}" /usr/bin/soffice \
             --headless --norestore --nologo --nodefault \
             --accept="socket,host=127.0.0.1,port=2002;urp;" \
             >soffice.stdout.log 2>soffice.stderr.log &
           echo $! > soffice.pid
           uv run python scripts/wait_for_soffice.py --timeout 60
+        shell: bash
 
       - name: Start headless soffice (macOS)
         if: runner.os == 'macOS'
@@ -558,8 +579,18 @@ jobs:
       - name: Dump LibreOffice log on failure (Linux)
         if: failure() && runner.os == 'Linux'
         run: |
+          echo "::group::soffice.stderr.log"
+          cat soffice.stderr.log 2>/dev/null || echo "(no soffice.stderr.log)"
+          echo "::endgroup::"
+          echo "::group::soffice.stdout.log"
+          cat soffice.stdout.log 2>/dev/null || echo "(no soffice.stdout.log)"
+          echo "::endgroup::"
+          echo "::group::journalctl libreoffice"
           journalctl --user -u libreoffice 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::registrymodifications.xcu"
           cat ~/.config/libreoffice/4/user/registrymodifications.xcu 2>/dev/null | head -50 || true
+          echo "::endgroup::"
 
       # Always upload our log + soffice's stderr regardless of pass/fail.
       # Native crashes (segfaults inside the sidebar dock code) leave
