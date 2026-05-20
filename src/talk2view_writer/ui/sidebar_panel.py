@@ -248,16 +248,46 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         )
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
-        # Resolve an ``XWindowPeer`` for the third arg of
-        # ``createContainerWindow``. The sidebar framework hands us an
-        # ``XWindow`` that does NOT implement ``XWindowPeer`` directly
-        # (seen in production log dumps — interface list is just
-        # ``XWeak``, ``XComponent``, ``XTypeProvider``, ``XWindow``).
-        # Passing a bare ``XWindow`` to an ``[in] XWindowPeer`` slot
-        # causes the C++ side to dereference a null peer pointer and
-        # crash soffice silently. Query for the peer interface and fall
-        # back to ``getPeer()`` if the queryInterface fails.
+        # ``createContainerWindow``'s third arg is declared
+        # ``[in] com.sun.star.awt.XWindowPeer Peer``. The C++
+        # implementation (verified against
+        # ``scripting/source/dlgprov/dlgprov.cxx`` createContainerWindow
+        # + createDialogControl) rejects null and stores the peer
+        # only to forward to ``XControl.createPeer(toolkit, peer)``;
+        # no other ``XWindowPeer`` methods are called on it.
+        #
+        # The sidebar framework supplies a ``ParentWindow`` that on
+        # the stricter PyUNO builds shipped with Debian's
+        # LibreOffice 26.2.x reports its interfaces as just
+        # (XWeak, XComponent, XTypeProvider, XWindow) — no
+        # XWindowPeer. PyUNO's marshaller raises
+        # ``com.sun.star.script.CannotConvertException: value does
+        # not implement com.sun.star.awt.XWindowPeer`` BEFORE the
+        # call reaches C++. The C++ code's own UNO_QUERY would have
+        # succeeded since the underlying VCL window IS an
+        # XWindowPeer at the C++ level, but PyUNO's strict check
+        # gates it off. The official LibreOffice
+        # ``odk/examples/python/toolpanel/toolpanel.py`` example
+        # has the same problem on these builds.
+        #
+        # Resolution: ``XToolkit.getDesktopWindow()`` (verified per
+        # offapi/com/sun/star/awt/XToolkit.idl) returns
+        # ``XWindowPeer`` — a real peered top-level window. Use it
+        # as the construction-time parent. The dialog framework
+        # only uses the parent peer for ``createPeer(toolkit,
+        # parent_peer)`` (verified in createDialogControl); the
+        # subsequent sidebar deck docking re-parents our returned
+        # ``XToolPanel.Window`` into the deck region regardless of
+        # the construction-time parent. See ADR-0025 and
+        # investigation #29.
         parent_peer = self._resolve_parent_peer(self._parent_window)
+        if parent_peer is None:
+            parent_peer = self._desktop_window_peer()
+            logger.info(
+                "_create_panel_window: ParentWindow exposes no XWindowPeer; "
+                "using Toolkit.getDesktopWindow() %s as construction parent",
+                _ru(parent_peer),
+            )
         logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
 
         logger.info(
@@ -301,25 +331,58 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         self._panel_window = window
         return window
 
+    def _desktop_window_peer(self) -> Any:
+        """Return the system desktop ``XWindowPeer`` via the Toolkit.
+
+        Per ``offapi/com/sun/star/awt/XToolkit.idl``,
+        ``getDesktopWindow()`` returns an ``XWindowPeer``. PyUNO marshals
+        this without conversion friction because the declared return type
+        IS already ``XWindowPeer``.
+
+        We use this only when ``_resolve_parent_peer`` couldn't extract a
+        peer from the framework-supplied ``ParentWindow``. The resulting
+        peer is the system desktop, not the sidebar deck region — that's
+        fine because the deck re-parents our returned ``XToolPanel.Window``
+        via the docking path; the construction-time visual parent doesn't
+        determine where the panel ends up.
+
+        Raises:
+            uno.RuntimeException: if the Toolkit service can't be
+                instantiated or ``getDesktopWindow()`` returns null. The
+                caller should not catch this — the panel cannot proceed
+                without a peer.
+        """
+        toolkit = self.ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", self.ctx
+        )
+        peer = toolkit.getDesktopWindow()
+        if peer is None:
+            raise RuntimeError(
+                "Toolkit.getDesktopWindow() returned null; cannot supply "
+                "an XWindowPeer to createContainerWindow"
+            )
+        return peer
+
     @staticmethod
     def _resolve_parent_peer(parent_window: Any) -> Any:
-        """Return an ``XWindowPeer`` for ``parent_window``.
+        """Return an ``XWindowPeer`` for ``parent_window``, or ``None``.
 
-        Three sources, tried in order:
+        Two sources, tried in order:
 
         1. ``parent_window.queryInterface(XWindowPeer)`` — pyuno's
            cross-interface cast. Works when the object implements both
-           ``XWindow`` and ``XWindowPeer`` even if its service-list
-           dump only mentions one.
+           ``XWindow`` and ``XWindowPeer``.
         2. ``parent_window.getPeer()`` — present on ``XControl`` and on
            some ``XWindow`` implementations as a convenience accessor.
-        3. ``parent_window`` itself — last resort; matches the old
-           behaviour so we still surface the existing failure if the
-           bridge can't supply a real peer.
 
-        Logging at each step pinpoints which source was needed (or, if
-        none of them work, which call is the one that finally crashes
-        soffice).
+        Returns ``None`` if neither source yields a peer; the caller is
+        expected to fall back to ``_desktop_window_peer()``. The previous
+        behaviour of returning the bare ``XWindow`` was removed because
+        PyUNO rejects bare ``XWindow`` at marshalling time with
+        ``CannotConvertException: value does not implement
+        com.sun.star.awt.XWindowPeer`` (see investigation #29).
+
+        Logging at each step pinpoints which source was needed.
         """
         try:
             peer_type = uno.getTypeByName("com.sun.star.awt.XWindowPeer")
@@ -343,11 +406,11 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             except Exception:
                 logger.debug("_resolve_parent_peer: getPeer() failed", exc_info=True)
 
-        logger.warning(
-            "_resolve_parent_peer: no XWindowPeer available; falling back "
-            "to bare XWindow. createContainerWindow may crash soffice."
+        logger.info(
+            "_resolve_parent_peer: no XWindowPeer available via "
+            "queryInterface or getPeer(); caller must obtain one another way."
         )
-        return parent_window
+        return None
 
 
     def _bind_controls(self, window: Any) -> None:
