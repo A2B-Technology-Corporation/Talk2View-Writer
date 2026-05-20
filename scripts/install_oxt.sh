@@ -51,5 +51,16 @@ case "${OSTYPE:-$(uname -s)}" in
 esac
 
 echo "Installing $OXT via $UNOPKG"
-"$UNOPKG" add --force --suppress-license "$OXT"
+
+# unopkg refuses to do a per-user install when invoked by uid 0:
+#   "ERROR: Cannot run unopkg as root without --shared or --bundled option."
+# CI containers (Debian, etc.) run as root, so detect that and use
+# ``--shared`` which installs the extension system-wide. Local dev
+# stays per-user.
+UNOPKG_FLAGS=(--force --suppress-license)
+if [[ "$(id -u 2>/dev/null || echo 0)" == "0" ]]; then
+    echo "Running as root; using --shared to install system-wide"
+    UNOPKG_FLAGS+=(--shared)
+fi
+"$UNOPKG" add "${UNOPKG_FLAGS[@]}" "$OXT"
 echo "Installed."
