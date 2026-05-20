@@ -501,8 +501,40 @@ jobs:
             --headless --norestore --nologo --nodefault \
             --accept="socket,host=127.0.0.1,port=2002;urp;" \
             >soffice.stdout.log 2>soffice.stderr.log &
-          echo $! > soffice.pid
-          uv run python scripts/wait_for_soffice.py --timeout 60
+          SOFFICE_BG_PID=$!
+          echo "$SOFFICE_BG_PID" > soffice.pid
+
+          # Give soffice a moment to fork its real binary, then
+          # check the backgrounded wrapper is still alive. The 60s
+          # wait_for_soffice timeout used to give zero signal when
+          # soffice died silently — log showed only the empty
+          # javaldx warning + a generic "timed out" message and we
+          # had to guess. Now the diagnostic block tells us within
+          # 5s if the process died, and ``ps``/``ss`` show the live
+          # state right before polling starts.
+          sleep 5
+          echo "::group::Post-launch process state"
+          if kill -0 "$SOFFICE_BG_PID" 2>/dev/null; then
+            echo "soffice wrapper (pid $SOFFICE_BG_PID) is alive"
+          else
+            echo "::error::soffice wrapper (pid $SOFFICE_BG_PID) is NOT alive after 5s"
+          fi
+          if command -v ps >/dev/null 2>&1; then
+            ps auxf | grep -E 'soffice|dbus' | grep -v grep || echo "no soffice/dbus processes"
+          fi
+          if command -v ss >/dev/null 2>&1; then
+            ss -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
+          elif command -v netstat >/dev/null 2>&1; then
+            netstat -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
+          fi
+          echo "::endgroup::"
+
+          # Bumped from 60s to 120s. Debian containers do
+          # first-run profile initialisation under root which takes
+          # noticeably longer than the prewarmed Ubuntu runner.
+          # Worst-case: the integration job spends an extra minute
+          # before declaring soffice unreachable.
+          uv run python scripts/wait_for_soffice.py --timeout 120
         shell: bash
 
       - name: Start headless soffice (macOS)
