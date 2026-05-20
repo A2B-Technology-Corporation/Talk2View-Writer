@@ -292,7 +292,30 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install libreoffice-fresh -y --no-progress
+          # documentfoundation.org's CDN intermittently times out on
+          # the Windows install — observed 2026-05-20 with a 60s
+          # ``GetResponse`` timeout from chocolatey on the
+          # ``LibreOffice_26.2.3_Win_x86-64.msi`` URL. Retry up to
+          # 3 times with exponential backoff so a transient CDN
+          # outage doesn't block the PR.
+          $maxAttempts = 3
+          $sleepSeconds = 30
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "choco install libreoffice-fresh attempt $attempt of $maxAttempts"
+            choco install libreoffice-fresh -y --no-progress
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Install succeeded on attempt $attempt"
+              break
+            }
+            if ($attempt -lt $maxAttempts) {
+              Write-Host "Install failed (exit $LASTEXITCODE); sleeping ${sleepSeconds}s before retry"
+              Start-Sleep -Seconds $sleepSeconds
+              $sleepSeconds = $sleepSeconds * 2
+            } else {
+              Write-Error "All $maxAttempts attempts failed"
+              exit 1
+            }
+          }
           $sofficeExe = 'C:\Program Files\LibreOffice\program\soffice.exe'
           if (Test-Path $sofficeExe) {
             $lo_version = (& $sofficeExe --version) 2>&1
