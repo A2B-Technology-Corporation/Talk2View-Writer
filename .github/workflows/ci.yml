@@ -185,6 +185,7 @@ jobs:
           - os: ubuntu-latest
             lo_apt_source: ppa-fresh    # TDF ppa:libreoffice/ppa (latest, currently 26.x)
             lo_label: "fresh TDF PPA (26.x)"
+            run_gui_smoke: true
           # ----- Debian containers -----
           # GHA doesn't have Debian-native runners, but we need this
           # coverage: the user's actual deployment environment is
@@ -210,6 +211,11 @@ jobs:
             container: buildpack-deps:bookworm
             lo_apt_source: debian-backports
             lo_label: "Debian bookworm backports (LO 26.x)"
+            # Visual verification on the user's actual deployment
+            # environment — the strict-PyUNO LO 26.x build that
+            # surfaced ADR-0026's empty-panel bug. Without this,
+            # CI can pass while the panel renders empty.
+            run_gui_smoke: true
           # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
           # Homebrew cask installs the current LibreOffice — same
           # major as ``ppa-fresh`` typically, so this doubles as a
@@ -527,6 +533,27 @@ jobs:
         run: uv run pytest -m live --tb=short
 
       # ---- Diagnostics on failure ----
+
+      - name: Screenshot Xvfb on failure (Linux)
+        # Capture whatever the X display looks like at the moment of
+        # failure. For soffice startup races, deck-not-clicking,
+        # or panel-rendered-empty bugs, this is the only visual
+        # evidence we get. Uploaded to ``_diag/`` via the
+        # ``Collect diagnostic logs`` step below.
+        if: failure() && runner.os == 'Linux'
+        run: |
+          mkdir -p _diag
+          if command -v import >/dev/null 2>&1; then
+            DISPLAY=:99 import -window root _diag/screenshot_on_failure.png 2>/dev/null \
+              && echo "Screenshot saved to _diag/screenshot_on_failure.png" \
+              || echo "import command failed (Xvfb not running?)"
+          elif command -v scrot >/dev/null 2>&1; then
+            DISPLAY=:99 scrot _diag/screenshot_on_failure.png \
+              && echo "Screenshot saved" \
+              || echo "scrot failed"
+          else
+            echo "No screenshot tool available"
+          fi
 
       - name: Dump LibreOffice log on failure (Linux)
         if: failure() && runner.os == 'Linux'
