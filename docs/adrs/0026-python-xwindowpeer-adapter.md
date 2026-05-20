@@ -1,10 +1,10 @@
 # ADR-0026: Python XWindowPeer adapter for strict-PyUNO sidebar panel construction
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0027
 **Date:** 2026-05-20
 **Phase:** F
 **Supersedes:** ADR-0025
-**Superseded by:** —
+**Superseded by:** ADR-0027
 
 ## Context
 
