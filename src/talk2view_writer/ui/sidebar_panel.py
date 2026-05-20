@@ -567,6 +567,27 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             "_create_panel_window: calling createContainerWindow (parent_peer %s)",
             _ru(parent_peer),
         )
+        # Diagnostic: log the adapter's declared interface set right
+        # before the call. unohelper.Base.getTypes() is what the
+        # PyUNO bridge uses to populate the C++ Adapter's vtable.
+        # If XView isn't in this list, the C++ side will reject the
+        # peer with ``unsatisfied query for interface``. Bug
+        # observed 2026-05-21 on Debian's LO 26.2.x: the adapter
+        # declares XView in its __bases__ but the C++ side still
+        # gets null on queryInterface(XView) — this log will reveal
+        # whether the issue is unohelper-side (missing from list)
+        # or C++-side (list correct, bridge misses XView).
+        try:
+            adapter_types = parent_peer.getTypes()
+            adapter_type_names = [
+                getattr(t, "typeName", repr(t)) for t in adapter_types
+            ]
+            logger.info(
+                "_create_panel_window: adapter.getTypes() => %s",
+                adapter_type_names,
+            )
+        except Exception:
+            logger.exception("_create_panel_window: getTypes() failed")
         try:
             window = provider.createContainerWindow(
                 dialog_url, "", parent_peer, None
