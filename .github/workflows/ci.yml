@@ -195,12 +195,19 @@ jobs:
           # ADR-0026). The user's 2026-05-19 silent-panel-crash bug
           # reproduces only against this combination. Running these
           # in Docker containers reaches it from CI.
+          # ``buildpack-deps:bookworm`` is debian:bookworm with git,
+          # curl, ca-certificates, gnupg, lsb-release pre-installed
+          # — needed BEFORE actions/checkout@v4 runs (we can't run
+          # apt-get install in a step before checkout when using
+          # ``container:``). The userspace is identical to
+          # ``debian:bookworm`` so the coverage is the same; we just
+          # skip the bootstrap step that bare debian would need.
           - os: ubuntu-latest
-            container: debian:bookworm
+            container: buildpack-deps:bookworm
             lo_apt_source: debian-stable
             lo_label: "Debian bookworm stable"
           - os: ubuntu-latest
-            container: debian:bookworm
+            container: buildpack-deps:bookworm
             lo_apt_source: debian-backports
             lo_label: "Debian bookworm backports (LO 26.x)"
           # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
