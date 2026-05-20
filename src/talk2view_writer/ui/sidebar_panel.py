@@ -280,44 +280,34 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         # ``XToolPanel.Window`` into the deck region regardless of
         # the construction-time parent. See ADR-0025 and
         # investigation #29.
+        # Preferred parent_peer: the result of _resolve_parent_peer
+        # (XWindowPeer via queryInterface or getPeer). When that
+        # yields None we use the bare XWindow — the C++ side does its
+        # own UNO_QUERY on the underlying VCL window and the call
+        # succeeds on permissive PyUNO builds (Ubuntu 24.2 noble, TDF
+        # Fresh PPA 26.x, macOS Homebrew, Windows Chocolatey,
+        # consistent with the official LibreOffice
+        # ``odk/examples/python/toolpanel/toolpanel.py`` which passes
+        # the bare XWindow directly).
+        #
+        # On strict builds (Debian 26.2.3.2 backports — see
+        # investigation #29) the bare XWindow is rejected at PyUNO
+        # marshalling with ``CannotConvertException: value does not
+        # implement com.sun.star.awt.XWindowPeer``. In that case we
+        # ESCALATE inside the except handler below to a peer
+        # obtained from ``Toolkit.getDesktopWindow()``. That works on
+        # builds where Toolkit.getDesktopWindow is implemented; where
+        # it isn't (as on user's Debian 26.2.x where it also returns
+        # null), the panel renders empty with a full traceback in
+        # talk2view.log — we never crash soffice.
         parent_peer = self._resolve_parent_peer(self._parent_window)
         if parent_peer is None:
-            # Try ``Toolkit.getDesktopWindow()`` / ``createWindow(TOP)``.
-            # On permissive PyUNO builds these succeed and we get a
-            # clean XWindowPeer. On Debian's stricter LO 26.2.x build
-            # ``getDesktopWindow`` returns null and ``createWindow``
-            # crashes soffice (user log 2026-05-20). If
-            # ``_desktop_window_peer`` raises a Python exception we
-            # fall through to the bare-XWindow tier below. If it
-            # crashes soffice hard there's nothing we can catch.
-            try:
-                parent_peer = self._desktop_window_peer()
-                logger.info(
-                    "_create_panel_window: ParentWindow has no peer; "
-                    "using Toolkit-supplied peer %s",
-                    _ru(parent_peer),
-                )
-            except Exception:
-                logger.exception(
-                    "_create_panel_window: _desktop_window_peer raised; "
-                    "falling back to bare XWindow"
-                )
-                parent_peer = None
-        if parent_peer is None:
-            # Last-resort tier: pass the bare ``XWindow``. Permissive
-            # PyUNO builds (Ubuntu noble 24.2.x, TDF Fresh PPA's 26.x,
-            # macOS Homebrew, Windows Chocolatey) accept it because the
-            # C++ side does its own ``UNO_QUERY``. Strict builds
-            # (Debian 26.2.x) reject with ``CannotConvertException``
-            # at the marshalling layer; the exception is logged and
-            # re-raised below — the panel renders empty, matching the
-            # known unfixed bug documented in investigation #29.
             parent_peer = self._parent_window
             logger.info(
-                "_create_panel_window: passing bare XWindow %s as "
-                "last-resort parent_peer; will surface "
-                "CannotConvertException on strict PyUNO builds",
-                _ru(parent_peer),
+                "_create_panel_window: no XWindowPeer via "
+                "queryInterface/getPeer; using bare XWindow as "
+                "parent_peer (works on permissive PyUNO; escalates "
+                "on strict)"
             )
         logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
 
@@ -329,22 +319,53 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             window = provider.createContainerWindow(
                 dialog_url, "", parent_peer, None
             )
-        except Exception:
-            # The call into LibreOffice's C++ side can raise (typed as
-            # ``com.sun.star.uno.RuntimeException`` in the IDL, surfaces
-            # as ``uno.RuntimeException`` or plain ``Exception`` in
-            # PyUNO). If we let it propagate the sidebar framework
-            # swallows it and the deck shows an empty grey panel — the
-            # 2026-05-19 user report. Log the full traceback so the
-            # talk2view.log pinpoints the failure cause, then re-raise
-            # so the framework still sees a non-built panel.
+        except Exception as primary_exc:
+            primary_name = type(primary_exc).__name__
             logger.exception(
-                "_create_panel_window: createContainerWindow raised — "
-                "panel will be empty. dialog_url=%s parent_peer=%s",
-                dialog_url,
+                "_create_panel_window: createContainerWindow raised %s "
+                "with parent_peer=%s; escalating to "
+                "Toolkit.getDesktopWindow()",
+                primary_name,
                 _ru(parent_peer),
             )
-            raise
+            # Strict-PyUNO escalation path. The peer we passed wasn't
+            # accepted; try a real ``XWindowPeer`` from the Toolkit
+            # service. On builds where that also fails (Debian 26.2.x:
+            # getDesktopWindow returns null → RuntimeError) we let the
+            # ORIGINAL exception propagate so the user sees the real
+            # CannotConvertException from the first attempt rather
+            # than a misleading "getDesktopWindow returned null".
+            try:
+                escalated_peer = self._desktop_window_peer()
+            except Exception:
+                logger.exception(
+                    "_create_panel_window: _desktop_window_peer "
+                    "escalation also failed; re-raising the original "
+                    "createContainerWindow exception"
+                )
+                raise primary_exc from None
+            logger.info(
+                "_create_panel_window: retrying createContainerWindow "
+                "with Toolkit-supplied peer %s",
+                _ru(escalated_peer),
+            )
+            try:
+                window = provider.createContainerWindow(
+                    dialog_url, "", escalated_peer, None
+                )
+            except Exception:
+                # Both attempts failed. Log the full traceback so the
+                # talk2view.log pinpoints the failure cause, then
+                # re-raise so the sidebar framework sees a non-built
+                # panel (renders as empty grey rectangle, but doesn't
+                # crash soffice).
+                logger.exception(
+                    "_create_panel_window: escalation attempt also "
+                    "failed. dialog_url=%s escalated_peer=%s",
+                    dialog_url,
+                    _ru(escalated_peer),
+                )
+                raise
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
         )
