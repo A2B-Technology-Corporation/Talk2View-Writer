@@ -464,54 +464,65 @@ jobs:
 
       # ---- Start headless soffice with a UNO socket ----
 
-      - name: Start headless soffice (Linux, under xvfb)
+      - name: Start soffice (Linux, under xvfb)
         if: runner.os == 'Linux'
         run: |
-          # `xvfb-run --auto-servernum` allocates a free display +
-          # tears it down after the wrapped command exits. We use it
-          # via `&` so soffice keeps running for the test step.
           export DISPLAY=:99
           Xvfb :99 -screen 0 1280x1024x24 &
           sleep 1
           # soffice needs a session dbus to initialise. The native
           # GHA Ubuntu runner has a session bus already; Debian
-          # containers (where dbus-daemon installed via apt but no
-          # session was ever started — ``policy-rc.d denied`` in the
-          # install log) don't. Wrap with ``dbus-run-session`` to
-          # create a per-process session bus that lives as long as
-          # soffice runs. Without this, soffice prints
-          # ``Failed to connect to session bus`` (visible only on
-          # failure via the cat-soffice.stderr.log diagnostic) and
-          # never starts its UNO listener, so ``wait_for_soffice``
-          # times out at 60s. ``dbus-run-session`` is in the ``dbus``
-          # package (already installed for both Ubuntu and Debian).
-          # On runners where a session bus already exists, this
-          # creates a fresh one for soffice anyway — harmless.
+          # containers don't. ``dbus-run-session`` creates a
+          # per-process session bus for soffice — required in
+          # containers, harmless elsewhere.
           if command -v dbus-run-session >/dev/null 2>&1; then
             DBUS_WRAP=(dbus-run-session --)
           else
             DBUS_WRAP=()
             echo "::warning::dbus-run-session not found; soffice may fail to start without a session bus"
           fi
-          # Pipe stderr/stdout to a file so we can capture GTK plugin
-          # warnings + segfault traces in the test artifacts. These are
-          # invisible to Python try/except but tell us exactly when
-          # native code crashes.
+          # Launch soffice with ``--writer`` so it opens an actual
+          # Writer window on Xvfb. With ``--headless`` (used before),
+          # soffice never paints anything to Xvfb, so screenshots
+          # are useless black rectangles. The integration tests
+          # connect via the UNO socket and AT-SPI; both work with a
+          # GUI soffice, and the GUI lets us screenshot what's
+          # actually on screen — splash, recovery dialog, frozen
+          # blank window, etc. — every 15s during the wait so we
+          # have visual forensics if the UNO listener doesn't come
+          # up.
           T2V_WRITER_DEBUG=1 "${DBUS_WRAP[@]}" /usr/bin/soffice \
-            --headless --norestore --nologo --nodefault \
+            --writer --norestore --nologo --nodefault \
             --accept="socket,host=127.0.0.1,port=2002;urp;" \
             >soffice.stdout.log 2>soffice.stderr.log &
           SOFFICE_BG_PID=$!
           echo "$SOFFICE_BG_PID" > soffice.pid
 
-          # Give soffice a moment to fork its real binary, then
-          # check the backgrounded wrapper is still alive. The 60s
-          # wait_for_soffice timeout used to give zero signal when
-          # soffice died silently — log showed only the empty
-          # javaldx warning + a generic "timed out" message and we
-          # had to guess. Now the diagnostic block tells us within
-          # 5s if the process died, and ``ps``/``ss`` show the live
-          # state right before polling starts.
+          # Periodic screenshot loop running in background.
+          # Captures Xvfb every 15s up to 120s so we can SEE what
+          # soffice is showing at each stage. Saved into ``_diag/``
+          # which the upload-artifact step grabs regardless of
+          # pass/fail.
+          mkdir -p _diag
+          (
+            for t in 5 15 30 45 60 90 120; do
+              sleep_for=$((t - ${last_t:-0}))
+              sleep "$sleep_for"
+              last_t=$t
+              if command -v import >/dev/null 2>&1; then
+                DISPLAY=:99 import -window root \
+                  "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              elif command -v scrot >/dev/null 2>&1; then
+                DISPLAY=:99 scrot \
+                  "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              fi
+            done
+          ) &
+          SCREENSHOT_PID=$!
+
+          # Diagnostic snapshot at 5s — process state right after
+          # soffice fork settles. Caught the "sleeping in Sl state
+          # forever" pattern that headless mode was hiding.
           sleep 5
           echo "::group::Post-launch process state"
           if kill -0 "$SOFFICE_BG_PID" 2>/dev/null; then
@@ -520,21 +531,22 @@ jobs:
             echo "::error::soffice wrapper (pid $SOFFICE_BG_PID) is NOT alive after 5s"
           fi
           if command -v ps >/dev/null 2>&1; then
-            ps auxf | grep -E 'soffice|dbus' | grep -v grep || echo "no soffice/dbus processes"
+            ps auxf | grep -E 'soffice|dbus|Xvfb' | grep -v grep || echo "no soffice/dbus/Xvfb processes"
           fi
           if command -v ss >/dev/null 2>&1; then
             ss -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
           elif command -v netstat >/dev/null 2>&1; then
             netstat -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
+          else
+            echo "(neither ss nor netstat available — install iproute2 or net-tools to see listening ports)"
           fi
           echo "::endgroup::"
 
-          # Bumped from 60s to 120s. Debian containers do
-          # first-run profile initialisation under root which takes
-          # noticeably longer than the prewarmed Ubuntu runner.
-          # Worst-case: the integration job spends an extra minute
-          # before declaring soffice unreachable.
-          uv run python scripts/wait_for_soffice.py --timeout 120
+          # 120s timeout matches the screenshot schedule above —
+          # if soffice opens the listener earlier we proceed; if
+          # not, we have screenshots at 5/15/30/45/60/90/120s.
+          uv run python scripts/wait_for_soffice.py --timeout 120 \
+            && kill "$SCREENSHOT_PID" 2>/dev/null || true
         shell: bash
 
       - name: Start headless soffice (macOS)
