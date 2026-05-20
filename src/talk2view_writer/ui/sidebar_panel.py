@@ -49,7 +49,6 @@ from com.sun.star.awt import (
     XWindow,  # type: ignore[import-not-found]
     XWindowPeer,  # type: ignore[import-not-found]
 )
-from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
 from com.sun.star.ui import (  # type: ignore[import-not-found]
     UIElementType,
     XToolPanel,
@@ -108,10 +107,24 @@ _XDL_PATH = "panels/chat_panel.xdl"
 class _PythonXWindowPeerAdapter(
     unohelper.Base,
     XWindowPeer,
-    XComponent,
     XView,
     XWindow,
 ):
+    # XComponent is intentionally NOT in this base list, even though
+    # the adapter implements dispose/addEventListener/
+    # removeEventListener. XComponent is the parent of XWindowPeer
+    # AND of XWindow in the real UNO IDL hierarchy, so listing it
+    # explicitly creates three paths to XComponent in the MRO graph
+    # (via XWindowPeer, via XWindow, and via the explicit base).
+    # Python's C3 linearisation can't resolve that and raises
+    # ``TypeError: Cannot create a consistent method resolution
+    # order`` at module-import time on real PyUNO builds — the
+    # extension fails to load before any test can run.
+    # Verified by user-reported failure on commit 880d19d
+    # (2026-05-20): every Linux integration job failed because
+    # soffice couldn't import the extension. The flat stubs in
+    # tests/conftest.py don't reproduce the real inheritance and
+    # masked the bug during local pytest.
     """Wrap any XInterface as something that satisfies ``XWindowPeer``.
 
     Background
