@@ -84,10 +84,20 @@ class _StubInterface:
 
 
 # Each UNO module we import production-side gets the symbols it exposes.
+def _stub_interface(name: str) -> type:
+    """Build a distinct stub class for each UNO interface.
+
+    Multiple interface bases can't share a single class because
+    Python forbids duplicate bases in a class definition.
+    """
+    return type(name, (), {})
+
+
 _awt = _make_module("com.sun.star.awt")
-_awt.XCallback = _StubInterface  # type: ignore[attr-defined]
-_awt.XActionListener = _StubInterface  # type: ignore[attr-defined]
-_awt.XWindowListener = _StubInterface  # type: ignore[attr-defined]
+_awt.XCallback = _stub_interface("XCallback")  # type: ignore[attr-defined]
+_awt.XActionListener = _stub_interface("XActionListener")  # type: ignore[attr-defined]
+_awt.XWindowListener = _stub_interface("XWindowListener")  # type: ignore[attr-defined]
+_awt.XWindowPeer = _stub_interface("XWindowPeer")  # type: ignore[attr-defined]
 
 _awt_possize = _make_module("com.sun.star.awt.PosSize")
 _awt_possize.POSSIZE = 15  # type: ignore[attr-defined]
@@ -96,20 +106,20 @@ _awt_windowclass = _make_module("com.sun.star.awt.WindowClass")
 _awt_windowclass.SIMPLE = 0  # type: ignore[attr-defined]
 
 _task = _make_module("com.sun.star.task")
-_task.XJobExecutor = _StubInterface  # type: ignore[attr-defined]
+_task.XJobExecutor = _stub_interface("XJobExecutor")  # type: ignore[attr-defined]
 
 # ProtocolHandler interfaces used by extension/talk2view_writer.py.
 _frame = _make_module("com.sun.star.frame")
-_frame.XDispatch = _StubInterface  # type: ignore[attr-defined]
-_frame.XDispatchProvider = _StubInterface  # type: ignore[attr-defined]
+_frame.XDispatch = _stub_interface("XDispatch")  # type: ignore[attr-defined]
+_frame.XDispatchProvider = _stub_interface("XDispatchProvider")  # type: ignore[attr-defined]
 
 _lang = _make_module("com.sun.star.lang")
-_lang.XComponent = _StubInterface  # type: ignore[attr-defined]
+_lang.XComponent = _stub_interface("XComponent")  # type: ignore[attr-defined]
 
 _ui = _make_module("com.sun.star.ui")
-_ui.XUIElement = _StubInterface  # type: ignore[attr-defined]
-_ui.XUIElementFactory = _StubInterface  # type: ignore[attr-defined]
-_ui.XToolPanel = _StubInterface  # type: ignore[attr-defined]
+_ui.XUIElement = _stub_interface("XUIElement")  # type: ignore[attr-defined]
+_ui.XUIElementFactory = _stub_interface("XUIElementFactory")  # type: ignore[attr-defined]
+_ui.XToolPanel = _stub_interface("XToolPanel")  # type: ignore[attr-defined]
 
 
 class _UIElementType:

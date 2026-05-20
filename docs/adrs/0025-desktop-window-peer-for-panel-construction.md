@@ -1,10 +1,10 @@
 # ADR-0025: Use Toolkit.getDesktopWindow() as XWindowPeer for sidebar panel construction
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0026
 **Date:** 2026-05-20
 **Phase:** F
 **Supersedes:** —
-**Superseded by:** —
+**Superseded by:** ADR-0026
 
 ## Context
 

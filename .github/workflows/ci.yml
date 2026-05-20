@@ -136,6 +136,14 @@ jobs:
     name: Integration (${{ matrix.os }}${{ matrix.lo_label && format(', LO {0}', matrix.lo_label) || '' }})
     needs: build
     runs-on: ${{ matrix.os }}
+    # When a matrix entry sets ``container``, the whole job runs inside
+    # that Docker image. This lets us cover Debian (stable + backports)
+    # — the user's actual deployment environment — without needing a
+    # Debian-native runner (GHA only offers Ubuntu / macOS / Windows).
+    # Matrix entries without a container value run natively on the
+    # ${{ matrix.os }} runner; GHA evaluates ``container:`` to an empty
+    # string and skips the containerization.
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false  # one OS / LO version failing shouldn't cancel the others
       matrix:
@@ -177,6 +185,24 @@ jobs:
           - os: ubuntu-latest
             lo_apt_source: ppa-fresh    # TDF ppa:libreoffice/ppa (latest, currently 26.x)
             lo_label: "fresh TDF PPA (26.x)"
+          # ----- Debian containers -----
+          # GHA doesn't have Debian-native runners, but we need this
+          # coverage: the user's actual deployment environment is
+          # Debian + LibreOffice from backports, which ships a build
+          # of LO 26.2.x with a stricter PyUNO bridge than Ubuntu's
+          # 26.x builds — the proxy for ``XWindow`` arguments omits
+          # ``XWindowPeer`` from its declared interface set (see
+          # ADR-0026). The user's 2026-05-19 silent-panel-crash bug
+          # reproduces only against this combination. Running these
+          # in Docker containers reaches it from CI.
+          - os: ubuntu-latest
+            container: debian:bookworm
+            lo_apt_source: debian-stable
+            lo_label: "Debian bookworm stable"
+          - os: ubuntu-latest
+            container: debian:bookworm
+            lo_apt_source: debian-backports
+            lo_label: "Debian bookworm backports (LO 26.x)"
           # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
           # Homebrew cask installs the current LibreOffice — same
           # major as ``ppa-fresh`` typically, so this doubles as a
@@ -215,34 +241,69 @@ jobs:
           LO_APT_SOURCE: ${{ matrix.lo_apt_source || 'ubuntu' }}
         run: |
           set -x
+          # Inside a Debian container we're root and sudo isn't
+          # installed; on the native Ubuntu runner sudo is needed.
+          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+          # Containers from ``debian:bookworm`` are minimal — git,
+          # curl, ca-certificates, gnupg, and lsb-release aren't
+          # installed. Without them ``actions/checkout``,
+          # ``setup-uv``, and ``add-apt-repository`` can't run. Bring
+          # them in before doing anything else.
+          if [ -f /etc/debian_version ] && ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              git curl ca-certificates gnupg lsb-release \
+              software-properties-common
+          fi
+
           # Pick the apt source by matrix entry. ``ubuntu`` (default)
           # uses noble's bundled LO 24.2.x. The ``ppa-*`` variants pull
           # newer LO branches from TDF's official PPAs so we can detect
-          # major-version regressions (e.g. the 26.x sidebar-panel
-          # crash the user reported on 2026-05-19 that this matrix
-          # exists to catch). ``software-properties-common`` is needed
-          # for ``add-apt-repository``.
+          # major-version regressions. ``debian-stable`` and
+          # ``debian-backports`` enable Debian-specific paths inside
+          # a ``debian:bookworm`` container so we cover the user's
+          # actual deployment environment (see ADR-0026).
           case "$LO_APT_SOURCE" in
             ubuntu)
               echo "Using Ubuntu noble apt (LibreOffice 24.2.x)"
               ;;
             ppa-still)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends software-properties-common
-              sudo add-apt-repository -y ppa:libreoffice/libreoffice-still
+              $SUDO apt-get update
+              $SUDO apt-get install -y --no-install-recommends software-properties-common
+              $SUDO add-apt-repository -y ppa:libreoffice/libreoffice-still
               ;;
             ppa-fresh)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends software-properties-common
-              sudo add-apt-repository -y ppa:libreoffice/ppa
+              $SUDO apt-get update
+              $SUDO apt-get install -y --no-install-recommends software-properties-common
+              $SUDO add-apt-repository -y ppa:libreoffice/ppa
+              ;;
+            debian-stable)
+              echo "Using Debian bookworm stable apt (LibreOffice 7.x)"
+              ;;
+            debian-backports)
+              echo "Enabling Debian bookworm-backports for LibreOffice 26.x"
+              echo "deb http://deb.debian.org/debian bookworm-backports main" \
+                | $SUDO tee /etc/apt/sources.list.d/backports.list
+              $SUDO apt-get update
+              # Pin LibreOffice packages to backports — without this
+              # apt picks the stable LO 7.x even when backports is
+              # enabled, defeating the point of the matrix entry.
+              # Built via printf to avoid a HEREDOC whose closing
+              # delimiter would break YAML block-scalar indentation.
+              printf '%s\n' \
+                'Package: libreoffice* libobasis* python3-uno' \
+                'Pin: release a=bookworm-backports' \
+                'Pin-Priority: 990' \
+                | $SUDO tee /etc/apt/preferences.d/99-libreoffice-backports
               ;;
             *)
               echo "::error::Unknown LO_APT_SOURCE=$LO_APT_SOURCE"
               exit 1
               ;;
           esac
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
             libreoffice libreoffice-script-provider-python \
             python3-uno xvfb at-spi2-core x11-utils \
             imagemagick
@@ -267,7 +328,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # Start a system AT-SPI bus for dogtail (Linux only).
-          sudo systemctl --version >/dev/null 2>&1 || true
+          $SUDO systemctl --version >/dev/null 2>&1 || true
 
       - name: Install LibreOffice (macOS)
         if: runner.os == 'macOS'

@@ -43,7 +43,11 @@ from typing import TYPE_CHECKING, Any
 
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
-from com.sun.star.awt import XActionListener  # type: ignore[import-not-found]
+from com.sun.star.awt import (
+    XActionListener,  # type: ignore[import-not-found]
+    XWindowPeer,  # type: ignore[import-not-found]
+)
+from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
 from com.sun.star.ui import (  # type: ignore[import-not-found]
     UIElementType,
     XToolPanel,
@@ -92,6 +96,117 @@ def _ru(obj: Any) -> str:
 # install path on disk.
 _EXTENSION_ID = "com.talk2view.writer"
 _XDL_PATH = "panels/chat_panel.xdl"
+
+
+# ---------------------------------------------------------------------------
+# XWindowPeer adapter (workaround for strict-PyUNO builds — see ADR-0026)
+# ---------------------------------------------------------------------------
+
+
+class _PythonXWindowPeerAdapter(unohelper.Base, XWindowPeer, XComponent):
+    """Wrap any XInterface as something that satisfies ``XWindowPeer``.
+
+    Background
+    ----------
+
+    On the stricter PyUNO builds shipped with Debian's LibreOffice
+    26.2.x backports, the sidebar framework's ``ParentWindow`` argument
+    is a C++ proxy whose ``getTypes()`` (and therefore
+    ``queryInterface``) omits ``XWindowPeer`` — the proxy declares only
+    ``XWeak``, ``XComponent``, ``XTypeProvider``, ``XWindow``.
+
+    ``ContainerWindowProvider.createContainerWindow`` requires a
+    non-null ``XWindowPeer`` for its third arg. The C++ type converter
+    in ``stoc/source/typeconv/convert.cxx`` does:
+
+        aRet = (*ifc)->queryInterface(aDestType);
+        if (! aRet.hasValue())
+            throw CannotConvertException(
+                "value does not implement " + aDestType.getTypeName(), ...);
+
+    On Debian 26.2.x this throws because the C++ proxy's
+    ``queryInterface(XWindowPeer)`` returns null at the C++ level
+    (not a PyUNO marshalling artefact — a real interface absence
+    in the proxy). Neither ``Toolkit.getDesktopWindow()`` nor
+    ``Toolkit.createWindow(WindowDescriptor)`` works as an alternate
+    peer source on that build (the former returns null, the latter
+    crashes soffice).
+
+    The adapter
+    -----------
+
+    A Python class deriving from ``unohelper.Base`` + the declared
+    interfaces has its ``queryInterface`` implemented by the PyUNO
+    bridge to check the declared interface set. By including
+    ``XWindowPeer`` in the bases, ``queryInterface(XWindowPeer)``
+    returns the adapter itself. The C++ converter then succeeds and
+    passes the adapter forward.
+
+    The adapter is then handed to ``XControl.createPeer(toolkit,
+    parent_peer)``, which constructs a ``WindowDescriptor`` with
+    ``Parent = parent_peer = our adapter`` and calls
+    ``toolkit.createWindow(descriptor)``. The VCL toolkit's
+    implementation
+    (``toolkit/source/awt/vclxtoolkit.cxx::VCLXToolkit::createWindow``)
+    does:
+
+        VCLXWindow* pParentComponent = dynamic_cast<VCLXWindow*>(
+            rDescriptor.Parent.get());
+        if (pParentComponent)
+            pParent = pParentComponent->GetWindow();
+
+    For our Python adapter the ``dynamic_cast`` returns null. The
+    source comments: "Don't throw assertion, may be it's a system
+    dependent window." The toolkit gracefully proceeds with
+    ``pParent == nullptr``, creating the dialog peer as a top-level
+    window. The sidebar deck's docking path then re-parents our
+    returned ``XToolPanel.Window`` into the deck region at the VCL
+    level, just as it would for any other returned panel.
+
+    No-op delegation
+    ----------------
+
+    The adapter's methods are no-ops — the VCL toolkit only calls
+    ``dynamic_cast`` on the peer, never invoking any
+    ``XWindowPeer``/``XComponent`` methods on it. If a different
+    code path ever does call them, the no-ops are safe (background
+    paints don't apply to an adapter that has no window, invalidate
+    is a hint, etc.). ``getToolkit`` returns a real Toolkit so
+    callers can at least chain.
+    """
+
+    def __init__(self, ctx: XComponentContext) -> None:
+        self._ctx = ctx
+
+    # XWindowPeer -----------------------------------------------------------
+
+    def getToolkit(self) -> Any:  # noqa: N802
+        return self._ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.awt.Toolkit", self._ctx
+        )
+
+    def setPointer(self, pointer: Any) -> None:  # noqa: N802
+        return None
+
+    def setBackground(self, color: int) -> None:  # noqa: N802
+        return None
+
+    def invalidate(self, flags: int) -> None:
+        return None
+
+    def invalidateRect(self, rect: Any, flags: int) -> None:  # noqa: N802
+        return None
+
+    # XComponent ------------------------------------------------------------
+
+    def dispose(self) -> None:
+        return None
+
+    def addEventListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeEventListener(self, listener: Any) -> None:  # noqa: N802
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +303,11 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         # Lazy-built on first getRealInterface() call.
         self._tool_panel: Talk2ViewToolPanel | None = None
         self._panel_window: Any | None = None  # ContainerWindowProvider result
+        # On strict-PyUNO builds we substitute a Python XWindowPeer
+        # adapter for the framework-supplied ParentWindow; the C++
+        # side holds a weak reference, so we must keep a strong one
+        # here for the lifetime of the panel (ADR-0026).
+        self._parent_peer_adapter: _PythonXWindowPeerAdapter | None = None
 
         # Widget refs — bound after panel_window is created.
         self._status_label: Any | None = None
@@ -249,65 +369,57 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
         # ``createContainerWindow``'s third arg is declared
-        # ``[in] com.sun.star.awt.XWindowPeer Peer``. The C++
-        # implementation (verified against
-        # ``scripting/source/dlgprov/dlgprov.cxx`` createContainerWindow
-        # + createDialogControl) rejects null and stores the peer
-        # only to forward to ``XControl.createPeer(toolkit, peer)``;
-        # no other ``XWindowPeer`` methods are called on it.
+        # ``[in] com.sun.star.awt.XWindowPeer Peer``. The full path of
+        # how that peer is consumed is verified against LibreOffice
+        # source in ADR-0026; in short:
         #
-        # The sidebar framework supplies a ``ParentWindow`` that on
-        # the stricter PyUNO builds shipped with Debian's
-        # LibreOffice 26.2.x reports its interfaces as just
-        # (XWeak, XComponent, XTypeProvider, XWindow) — no
-        # XWindowPeer. PyUNO's marshaller raises
-        # ``com.sun.star.script.CannotConvertException: value does
-        # not implement com.sun.star.awt.XWindowPeer`` BEFORE the
-        # call reaches C++. The C++ code's own UNO_QUERY would have
-        # succeeded since the underlying VCL window IS an
-        # XWindowPeer at the C++ level, but PyUNO's strict check
-        # gates it off. The official LibreOffice
-        # ``odk/examples/python/toolpanel/toolpanel.py`` example
-        # has the same problem on these builds.
+        # - ``scripting/source/dlgprov/dlgprov.cxx`` rejects null
+        #   ``xParent`` with IllegalArgumentException.
+        # - The peer is forwarded into
+        #   ``XControl.createPeer(toolkit, peer)`` and nowhere else.
+        # - ``toolkit/source/awt/vclxtoolkit.cxx::createWindow`` does
+        #   ``dynamic_cast<VCLXWindow*>(parent.get())`` on the peer,
+        #   and gracefully proceeds with ``pParent = nullptr`` when
+        #   the cast fails ("may be it's a system dependent window").
+        # - ``stoc/source/typeconv/convert.cxx::convertTo`` resolves
+        #   the Any to ``XWindowPeer`` via ``queryInterface``, and
+        #   raises ``CannotConvertException("value does not implement
+        #   " + typeName)`` if the result is null.
         #
-        # Resolution: ``XToolkit.getDesktopWindow()`` (verified per
-        # offapi/com/sun/star/awt/XToolkit.idl) returns
-        # ``XWindowPeer`` — a real peered top-level window. Use it
-        # as the construction-time parent. The dialog framework
-        # only uses the parent peer for ``createPeer(toolkit,
-        # parent_peer)`` (verified in createDialogControl); the
-        # subsequent sidebar deck docking re-parents our returned
-        # ``XToolPanel.Window`` into the deck region regardless of
-        # the construction-time parent. See ADR-0025 and
-        # investigation #29.
-        # Preferred parent_peer: the result of _resolve_parent_peer
-        # (XWindowPeer via queryInterface or getPeer). When that
-        # yields None we use the bare XWindow — the C++ side does its
-        # own UNO_QUERY on the underlying VCL window and the call
-        # succeeds on permissive PyUNO builds (Ubuntu 24.2 noble, TDF
-        # Fresh PPA 26.x, macOS Homebrew, Windows Chocolatey,
-        # consistent with the official LibreOffice
-        # ``odk/examples/python/toolpanel/toolpanel.py`` which passes
-        # the bare XWindow directly).
+        # On permissive builds (Ubuntu 24.2 noble apt, TDF PPAs,
+        # macOS Homebrew, Windows Chocolatey) the framework-supplied
+        # ``ParentWindow``'s ``queryInterface(XWindowPeer)`` returns
+        # the real VCLXWindow's XWindowPeer interface and everything
+        # just works. On Debian's LO 26.2.x backports the same proxy
+        # has ``getTypes()`` reporting only XWeak / XComponent /
+        # XTypeProvider / XWindow, so the C++ queryInterface fails
+        # and createContainerWindow raises CannotConvertException.
         #
-        # On strict builds (Debian 26.2.3.2 backports — see
-        # investigation #29) the bare XWindow is rejected at PyUNO
-        # marshalling with ``CannotConvertException: value does not
-        # implement com.sun.star.awt.XWindowPeer``. In that case we
-        # ESCALATE inside the except handler below to a peer
-        # obtained from ``Toolkit.getDesktopWindow()``. That works on
-        # builds where Toolkit.getDesktopWindow is implemented; where
-        # it isn't (as on user's Debian 26.2.x where it also returns
-        # null), the panel renders empty with a full traceback in
-        # talk2view.log — we never crash soffice.
+        # Workaround: when ``_resolve_parent_peer`` can't extract a
+        # peer, we substitute a Python ``XWindowPeer`` adapter
+        # (:class:`_PythonXWindowPeerAdapter`). PyUNO implements
+        # queryInterface for Python objects by walking the declared
+        # interface set, so the adapter satisfies the convert.cxx
+        # check. The toolkit's ``dynamic_cast<VCLXWindow*>`` returns
+        # null for the adapter, so the dialog peer is created as a
+        # top-level window (no VCL parent). The sidebar deck's
+        # docking path then re-parents our returned
+        # ``XToolPanel.Window`` into the deck region at the VCL
+        # level, just as it does for any other returned panel.
         parent_peer = self._resolve_parent_peer(self._parent_window)
         if parent_peer is None:
-            parent_peer = self._parent_window
+            parent_peer = _PythonXWindowPeerAdapter(self.ctx)
+            # Keep a strong reference so the adapter outlives the
+            # createContainerWindow call. C++ holds a weak reference
+            # to it; if Python GC's it before VCL is done, the C++
+            # side derefs a dangling pointer.
+            self._parent_peer_adapter = parent_peer
             logger.info(
-                "_create_panel_window: no XWindowPeer via "
-                "queryInterface/getPeer; using bare XWindow as "
-                "parent_peer (works on permissive PyUNO; escalates "
-                "on strict)"
+                "_create_panel_window: ParentWindow exposes no "
+                "XWindowPeer via queryInterface/getPeer; using "
+                "Python XWindowPeer adapter %s as construction "
+                "parent (ADR-0026)",
+                _ru(parent_peer),
             )
         logger.info("_create_panel_window: parent_peer %s", _ru(parent_peer))
 
@@ -319,53 +431,15 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
             window = provider.createContainerWindow(
                 dialog_url, "", parent_peer, None
             )
-        except Exception as primary_exc:
-            primary_name = type(primary_exc).__name__
+        except Exception:
             logger.exception(
-                "_create_panel_window: createContainerWindow raised %s "
-                "with parent_peer=%s; escalating to "
-                "Toolkit.getDesktopWindow()",
-                primary_name,
+                "_create_panel_window: createContainerWindow "
+                "raised — panel will be empty. dialog_url=%s "
+                "parent_peer=%s",
+                dialog_url,
                 _ru(parent_peer),
             )
-            # Strict-PyUNO escalation path. The peer we passed wasn't
-            # accepted; try a real ``XWindowPeer`` from the Toolkit
-            # service. On builds where that also fails (Debian 26.2.x:
-            # getDesktopWindow returns null → RuntimeError) we let the
-            # ORIGINAL exception propagate so the user sees the real
-            # CannotConvertException from the first attempt rather
-            # than a misleading "getDesktopWindow returned null".
-            try:
-                escalated_peer = self._desktop_window_peer()
-            except Exception:
-                logger.exception(
-                    "_create_panel_window: _desktop_window_peer "
-                    "escalation also failed; re-raising the original "
-                    "createContainerWindow exception"
-                )
-                raise primary_exc from None
-            logger.info(
-                "_create_panel_window: retrying createContainerWindow "
-                "with Toolkit-supplied peer %s",
-                _ru(escalated_peer),
-            )
-            try:
-                window = provider.createContainerWindow(
-                    dialog_url, "", escalated_peer, None
-                )
-            except Exception:
-                # Both attempts failed. Log the full traceback so the
-                # talk2view.log pinpoints the failure cause, then
-                # re-raise so the sidebar framework sees a non-built
-                # panel (renders as empty grey rectangle, but doesn't
-                # crash soffice).
-                logger.exception(
-                    "_create_panel_window: escalation attempt also "
-                    "failed. dialog_url=%s escalated_peer=%s",
-                    dialog_url,
-                    _ru(escalated_peer),
-                )
-                raise
+            raise
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
         )
@@ -382,58 +456,6 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
 
         self._panel_window = window
         return window
-
-    def _desktop_window_peer(self) -> Any:
-        """Return an ``XWindowPeer`` via ``Toolkit.getDesktopWindow()``.
-
-        Per ``offapi/com/sun/star/awt/XToolkit.idl`` this returns an
-        ``XWindowPeer`` directly. PyUNO accepts the marshalling because
-        the declared return type IS ``XWindowPeer``. Works on Ubuntu
-        noble's LO 24.2.x, TDF Fresh PPA's LO 26.x in CI, macOS,
-        Windows.
-
-        Does NOT work on Debian's LO 26.2.3.2 — the call returns null
-        on that build (user log 2026-05-20). Investigation #29.
-
-        Previous revisions attempted a ``Toolkit.createWindow(TOP)``
-        fallback when ``getDesktopWindow`` returned null; that call
-        crashed soffice on Debian (no Python exception, full process
-        exit). The fallback has been removed because "fail gracefully
-        with a CannotConvertException one tier down" is better than
-        "crash soffice".
-
-        Raises:
-            RuntimeError: ``getDesktopWindow()`` returned null. The
-                caller (``_create_panel_window``) catches this and
-                falls back to passing the bare ``XWindow`` as the
-                construction parent; the dialog provider then raises
-                ``CannotConvertException`` on strict PyUNO builds,
-                which we log + re-raise so the panel renders empty
-                without taking soffice down.
-        """
-        logger.info(
-            "_desktop_window_peer: instantiating com.sun.star.awt.Toolkit"
-        )
-        toolkit = self.ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.awt.Toolkit", self.ctx
-        )
-        logger.info("_desktop_window_peer: toolkit %s", _ru(toolkit))
-
-        logger.info(
-            "_desktop_window_peer: calling toolkit.getDesktopWindow()"
-        )
-        peer = toolkit.getDesktopWindow()
-        logger.info(
-            "_desktop_window_peer: getDesktopWindow returned %s",
-            _ru(peer),
-        )
-        if peer is None:
-            raise RuntimeError(
-                "Toolkit.getDesktopWindow() returned null on this "
-                "LibreOffice build. Caller must fall back to a "
-                "different parent_peer source."
-            )
-        return peer
 
     @staticmethod
     def _resolve_parent_peer(parent_window: Any) -> Any:

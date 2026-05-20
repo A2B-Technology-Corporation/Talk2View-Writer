@@ -46,7 +46,8 @@ applied.
 | [0022](0022-system-prompt-bundled-and-overridable.md) | Bundle SYSTEM_PROMPT.md in the .oxt, pass per-session | E | Accepted |
 | [0023](0023-vendor-pydantic-core-wheels.md) | Bundle pre-built pydantic_core wheels for the cross-platform matrix | F | Accepted |
 | [0024](0024-synthetic-uno-and-mock-chat-test-rig.md) | Synthetic-UNO + mock-engine test rig alongside the real-soffice integration suite | F | Accepted |
-| [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Accepted |
+| [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Superseded by 0026 |
+| [0026](0026-python-xwindowpeer-adapter.md) | Python XWindowPeer adapter for strict-PyUNO sidebar panel construction | F | Accepted |
 
 ## Writing a new ADR
 
