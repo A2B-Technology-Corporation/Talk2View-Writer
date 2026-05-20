@@ -150,10 +150,39 @@ Debian).
 - **Pass `None` for the parent peer** — rejected. C++ throws
   `IllegalArgumentException` on null before any fallback.
 
+### Interface surface
+
+User testing on Debian 26.2.x (2026-05-21) revealed the adapter
+must declare **all four** of:
+
+  - ``XWindowPeer`` — for the initial ``convert.cxx`` queryInterface
+    on the createContainerWindow Peer parameter
+  - ``XComponent`` — base interface of XWindowPeer; required by the
+    Python adapter machinery
+  - ``XView`` — ``UnoControl::createPeer`` in
+    ``toolkit/source/controls/unocontrol.cxx`` does
+    ``Reference<XView>(rParentPeer, UNO_QUERY_THROW)`` followed by
+    ``xView->getGraphics()``. UNO_QUERY_THROW means the throw fires
+    if the parent peer doesn't implement XView, regardless of
+    whether ``getGraphics()`` is ever called.
+  - ``XWindow`` — needed for bounds queries during dialog layout
+    (callers use ``getPosSize()`` to size the new control against
+    the parent).
+
+The adapter delegates ``getSize()`` / ``getPosSize()`` to the
+underlying framework-supplied ``ParentWindow`` so the dialog
+control sizes against the real sidebar region. Mutating methods
+(setPosSize, setVisible, listener add/remove, draw, setZoom) are
+no-ops — the adapter is a query shim, not an actual VCL window.
+The sidebar deck's docking path overrides any sizing the adapter
+returns when it re-parents our ``XToolPanel.Window`` into the
+deck region.
+
 ## Consequences
 
 - **Pros:**
-  - Adapter is ~30 lines, every line backed by a verified
+  - Adapter is ~150 lines (was ~30 before the XView/XWindow
+    surface expansion), every line backed by a verified
     LibreOffice source reference.
   - Works on every CI matrix entry (permissive PyUNO builds use the
     real ParentWindow peer via `queryInterface`; the adapter only

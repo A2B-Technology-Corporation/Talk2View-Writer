@@ -98,6 +98,8 @@ _awt.XCallback = _stub_interface("XCallback")  # type: ignore[attr-defined]
 _awt.XActionListener = _stub_interface("XActionListener")  # type: ignore[attr-defined]
 _awt.XWindowListener = _stub_interface("XWindowListener")  # type: ignore[attr-defined]
 _awt.XWindowPeer = _stub_interface("XWindowPeer")  # type: ignore[attr-defined]
+_awt.XView = _stub_interface("XView")  # type: ignore[attr-defined]
+_awt.XWindow = _stub_interface("XWindow")  # type: ignore[attr-defined]
 
 _awt_possize = _make_module("com.sun.star.awt.PosSize")
 _awt_possize.POSSIZE = 15  # type: ignore[attr-defined]

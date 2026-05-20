@@ -45,6 +45,8 @@ import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
 from com.sun.star.awt import (
     XActionListener,  # type: ignore[import-not-found]
+    XView,  # type: ignore[import-not-found]
+    XWindow,  # type: ignore[import-not-found]
     XWindowPeer,  # type: ignore[import-not-found]
 )
 from com.sun.star.lang import XComponent  # type: ignore[import-not-found]
@@ -55,7 +57,7 @@ from com.sun.star.ui import (  # type: ignore[import-not-found]
 )
 
 if TYPE_CHECKING:
-    from com.sun.star.awt import ActionEvent, XWindow
+    from com.sun.star.awt import ActionEvent
     from com.sun.star.frame import XFrame
     from com.sun.star.lang import EventObject
     from com.sun.star.uno import XComponentContext
@@ -103,7 +105,13 @@ _XDL_PATH = "panels/chat_panel.xdl"
 # ---------------------------------------------------------------------------
 
 
-class _PythonXWindowPeerAdapter(unohelper.Base, XWindowPeer, XComponent):
+class _PythonXWindowPeerAdapter(
+    unohelper.Base,
+    XWindowPeer,
+    XComponent,
+    XView,
+    XWindow,
+):
     """Wrap any XInterface as something that satisfies ``XWindowPeer``.
 
     Background
@@ -175,8 +183,17 @@ class _PythonXWindowPeerAdapter(unohelper.Base, XWindowPeer, XComponent):
     callers can at least chain.
     """
 
-    def __init__(self, ctx: XComponentContext) -> None:
+    def __init__(self, ctx: XComponentContext, parent_window: Any) -> None:
         self._ctx = ctx
+        # Keep a reference to the framework-supplied XWindow so we
+        # can delegate size queries to it. The C++ side asks the
+        # parent peer for ``getSize()`` (via XView) and
+        # ``getPosSize()`` (via XWindow) during dialog peer
+        # construction; returning the real parent's bounds gives
+        # the dialog something sensible to lay against. Zero-size
+        # would also satisfy the type contract but produces a
+        # collapsed widget.
+        self._parent_window = parent_window
 
     # XWindowPeer -----------------------------------------------------------
 
@@ -206,6 +223,114 @@ class _PythonXWindowPeerAdapter(unohelper.Base, XWindowPeer, XComponent):
         return None
 
     def removeEventListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    # XView -----------------------------------------------------------------
+    #
+    # ``UnoControl::createPeer`` does
+    # ``Reference<XView>(rParentPeer, UNO_QUERY_THROW)`` followed by
+    # ``xView->getGraphics()`` to obtain the parent's graphics device.
+    # We don't have a real graphics device — return None and let the
+    # callee fall through to its own default. Verified against
+    # ``toolkit/source/controls/unocontrol.cxx`` in master.
+    #
+    # ``getSize()`` delegates to the underlying ParentWindow's
+    # ``getPosSize()`` Rectangle. The C++ side uses this to size the
+    # new dialog control. If we returned 0x0 the panel widget would
+    # collapse before the sidebar deck's reparenting could resize it.
+
+    def setGraphics(self, device: Any) -> bool:  # noqa: N802
+        return False
+
+    def getGraphics(self) -> Any:  # noqa: N802
+        return None
+
+    def getSize(self) -> Any:  # noqa: N802
+        size = uno.createUnoStruct("com.sun.star.awt.Size")
+        try:
+            rect = self._parent_window.getPosSize()
+        except Exception:
+            size.Width = 0
+            size.Height = 0
+            return size
+        size.Width = rect.Width
+        size.Height = rect.Height
+        return size
+
+    def draw(self, x: int, y: int) -> None:
+        return None
+
+    def setZoom(self, zoom_x: float, zoom_y: float) -> None:  # noqa: N802
+        return None
+
+    # XWindow ---------------------------------------------------------------
+    #
+    # We delegate ``getPosSize()`` to the real parent_window so any
+    # caller that queries the parent peer's bounds (via XWindow's
+    # interface rather than XView's getSize) gets the same answer.
+    # The mutating methods (setPosSize, setVisible, setEnable,
+    # setFocus, listener add/remove) are no-ops — our adapter is a
+    # shim, not an actual VCL window.
+
+    def setPosSize(  # noqa: N802
+        self, x: int, y: int, width: int, height: int, flags: int
+    ) -> None:
+        return None
+
+    def getPosSize(self) -> Any:  # noqa: N802
+        try:
+            return self._parent_window.getPosSize()
+        except Exception:
+            rect = uno.createUnoStruct("com.sun.star.awt.Rectangle")
+            rect.X = 0
+            rect.Y = 0
+            rect.Width = 0
+            rect.Height = 0
+            return rect
+
+    def setVisible(self, visible: bool) -> None:  # noqa: N802
+        return None
+
+    def setEnable(self, enable: bool) -> None:  # noqa: N802
+        return None
+
+    def setFocus(self) -> None:  # noqa: N802
+        return None
+
+    def addWindowListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeWindowListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def addFocusListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeFocusListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def addKeyListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeKeyListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def addMouseListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeMouseListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def addMouseMotionListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removeMouseMotionListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def addPaintListener(self, listener: Any) -> None:  # noqa: N802
+        return None
+
+    def removePaintListener(self, listener: Any) -> None:  # noqa: N802
         return None
 
 
@@ -408,7 +533,9 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         # level, just as it does for any other returned panel.
         parent_peer = self._resolve_parent_peer(self._parent_window)
         if parent_peer is None:
-            parent_peer = _PythonXWindowPeerAdapter(self.ctx)
+            parent_peer = _PythonXWindowPeerAdapter(
+                self.ctx, self._parent_window
+            )
             # Keep a strong reference so the adapter outlives the
             # createContainerWindow call. C++ holds a weak reference
             # to it; if Python GC's it before VCL is done, the C++
