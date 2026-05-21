@@ -600,6 +600,27 @@ class TestStrictPyUNOFailureDetection:
 
         assert _is_strict_pyuno_xwindowpeer_failure(ValueError("XWindowPeer")) is False
 
+    def test_dotted_class_name_matches(self) -> None:
+        """PyUNO 26.2 names the exception class with full dotted path.
+
+        Real production trace from LO 26.2.3.2 Debian apt:
+            com.sun.star.script.CannotConvertException:
+                value does not implement com.sun.star.awt.XWindowPeer
+
+        The detector must match by the leaf of the class name so the
+        friendly "unsupported build" error fires regardless of how
+        PyUNO chose to name the class.
+        """
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        exc = self._exc(
+            "com.sun.star.script.CannotConvertException",
+            "value does not implement com.sun.star.awt.XWindowPeer",
+        )
+        assert _is_strict_pyuno_xwindowpeer_failure(exc) is True
+
 
 @pytest.mark.unit
 class TestCreatePanelWindowErrorPath:
@@ -714,6 +735,92 @@ class TestCreatePanelWindowErrorPath:
 
         with pytest.raises(FileNotFoundError, match=r"chat_panel\.xdl"):
             panel._create_panel_window()
+        provider.createContainerWindow.assert_not_called()
+
+    def test_queryinterface_xwindowpeer_called_and_result_passed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """ADR-0028: the canonical path queries XWindowPeer first.
+
+        PyUNO's argument marshaller on strict builds (Debian apt
+        LO 26.2.x) rejects the bare XWindow at the createContainerWindow
+        XWindowPeer slot. Calling ``parent.queryInterface(XWindowPeer)``
+        first gets a peer reference whose runtime type info now says
+        XWindowPeer, which the next marshal step accepts.
+        """
+        pkg_root = tmp_path / "extension"
+        (pkg_root / "panels").mkdir(parents=True, exist_ok=True)
+        (pkg_root / "panels" / "chat_panel.xdl").write_text("<stub/>\n")
+
+        panel = _make_panel(monkeypatch, auth=False)
+
+        peer_sentinel = MagicMock(name="xwindowpeer")
+        parent_window = MagicMock(name="parent_window")
+        parent_window.queryInterface.return_value = peer_sentinel
+        panel._parent_window = parent_window
+
+        pip = MagicMock()
+        pip.getPackageLocation.return_value = pkg_root.as_uri()
+        provider = MagicMock()
+        result_window = MagicMock(name="container_window")
+        provider.createContainerWindow.return_value = result_window
+
+        panel.ctx = MagicMock()
+        panel.ctx.getValueByName.return_value = pip
+        panel.ctx.ServiceManager.createInstanceWithContext.return_value = provider
+
+        returned = panel._create_panel_window()
+
+        # queryInterface was called with the XWindowPeer type.
+        parent_window.queryInterface.assert_called_once()
+        # The peer (not the bare parent window) was passed to
+        # createContainerWindow at the XWindowPeer slot.
+        args, _kwargs = provider.createContainerWindow.call_args
+        assert args[2] is peer_sentinel, (
+            "createContainerWindow received the queried peer "
+            "(not the bare parent_window) at the XWindowPeer slot"
+        )
+        assert returned is result_window
+
+    def test_queryinterface_returns_none_raises_unsupported_build_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Null queryInterface result means no peer — surface UnsupportedBuild.
+
+        If queryInterface(XWindowPeer) returns None the C++ object
+        truly has no peer; there is no workaround from Python. Raise
+        ``UnsupportedLibreOfficeBuildError`` with the same actionable
+        message ADR-0027 defined, and do NOT call createContainerWindow.
+        """
+        from talk2view_writer.ui.sidebar_panel import (
+            UnsupportedLibreOfficeBuildError,
+        )
+
+        pkg_root = tmp_path / "extension"
+        (pkg_root / "panels").mkdir(parents=True, exist_ok=True)
+        (pkg_root / "panels" / "chat_panel.xdl").write_text("<stub/>\n")
+
+        panel = _make_panel(monkeypatch, auth=False)
+        parent_window = MagicMock(name="parent_window")
+        parent_window.queryInterface.return_value = None
+        panel._parent_window = parent_window
+
+        pip = MagicMock()
+        pip.getPackageLocation.return_value = pkg_root.as_uri()
+        provider = MagicMock()
+
+        panel.ctx = MagicMock()
+        panel.ctx.getValueByName.return_value = pip
+        panel.ctx.ServiceManager.createInstanceWithContext.return_value = provider
+
+        with pytest.raises(UnsupportedLibreOfficeBuildError) as info:
+            panel._create_panel_window()
+        assert "queryInterface" in str(info.value)
+        assert "documentfoundation.org" in str(info.value)
         provider.createContainerWindow.assert_not_called()
 
 

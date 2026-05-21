@@ -1,10 +1,10 @@
 # ADR-0027: Follow LibreOffice's canonical Python toolpanel pattern verbatim
 
-**Status:** Accepted
+**Status:** Accepted (the "unsupported build" follow-up clause is superseded by ADR-0028)
 **Date:** 2026-05-21
 **Phase:** F
 **Supersedes:** ADR-0025, ADR-0026
-**Superseded by:** —
+**Superseded by:** ADR-0028 (only the "tell users to install a different build" response to strict-PyUNO failures; the canonical-pattern decision itself stands)
 
 ## Context
 

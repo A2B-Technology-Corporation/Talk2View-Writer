@@ -824,15 +824,21 @@ reflect real behaviour — those tests were mocked too.
 
 ## #29 — Sidebar panel renders as empty grey rectangle on LO 26.2.3.2
 
-**Status:** Closed — root cause identified, response documented in
-[ADR-0027](adrs/0027-canonical-toolpanel-pattern.md). The panel
-implementation now follows LibreOffice's canonical Python toolpanel
-pattern verbatim; downstream builds whose PyUNO bridge rejects that
-pattern are treated as unsupported environments and surface a
-clear user-facing message instead of an empty deck. See
-``UnsupportedLibreOfficeBuildError`` in
-``src/talk2view_writer/ui/sidebar_panel.py`` and the
-"Supported LibreOffice builds" section of ``README.md``.
+**Status:** Closed — root cause identified, response now documented
+in [ADR-0028](adrs/0028-queryinterface-xwindowpeer.md). Adding one
+`parent_window.queryInterface(XWindowPeer)` call before
+`createContainerWindow` produces a properly-typed peer reference
+that PyUNO's argument marshaller accepts on strict-PyUNO builds
+(Debian apt LO 26.2.x) as well as on non-strict builds (TDF,
+Flathub, Snap). One canonical code path, no fallbacks.
+
+The earlier [ADR-0027](adrs/0027-canonical-toolpanel-pattern.md)
+"this build is unsupported; install TDF" follow-up clause is
+superseded by ADR-0028 — that response was based on the assumption
+that strict-PyUNO failures were unworkaroundable from Python. The
+2026-05-21 Debian repro (with full diagnostic logging from the
+companion logging pass) showed `queryInterface` is the documented
+way out.
 
 **Date:** 2026-05-19
 

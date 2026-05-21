@@ -358,9 +358,15 @@ def _is_strict_pyuno_xwindowpeer_failure(exc: BaseException) -> bool:
     fingerprint by class name (avoids importing the UNO exception
     types at module load — they aren't available in stub-only test
     environments) and a tolerant substring check on the message.
+
+    PyUNO names the exception class either by leaf
+    (``CannotConvertException``) or by full dotted path
+    (``com.sun.star.script.CannotConvertException``) depending on the
+    build. Match the leaf either way.
     """
     cls = type(exc).__name__
-    if cls not in {"CannotConvertException", "IllegalArgumentException"}:
+    leaf = cls.rsplit(".", 1)[-1]
+    if leaf not in {"CannotConvertException", "IllegalArgumentException"}:
         return False
     msg = (str(exc) or "").lower()
     return "xwindowpeer" in msg or "windowpeer" in msg
@@ -601,10 +607,55 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
 
         _log_window_state("parent_window", self._parent_window)
 
+        # Obtain an explicit XWindowPeer reference via queryInterface.
+        #
+        # On strict-PyUNO builds (Debian's libreoffice apt package for
+        # LO 26.2.x is the motivating case — investigation #29 and
+        # ADR-0028), PyUNO's argument marshaller checks the value's
+        # ``XTypeProvider.getTypes()`` cache before passing to the C++
+        # method. The sidebar-supplied ParentWindow is a restricted
+        # wrapper whose ``getTypes()`` advertises only XWindow + a few
+        # housekeeping interfaces — NOT XWindowPeer — so passing it
+        # straight to createContainerWindow's XWindowPeer slot raises
+        # ``CannotConvertException: value does not implement
+        # com.sun.star.awt.XWindowPeer``.
+        #
+        # ``queryInterface(XWindowPeer)`` bypasses that cache and does
+        # a real C++-side RTTI lookup. The underlying VCLXWindow does
+        # implement XWindowPeer, so the query returns a proxy whose
+        # runtime type info now says XWindowPeer — and PyUNO's next
+        # marshal step accepts it cleanly.
+        #
+        # On non-strict builds (TDF .deb, Flathub, Snap, AppImage),
+        # the same call works the same way — the parent already
+        # exposed XWindowPeer in getTypes(), queryInterface returns
+        # self (or an equivalent proxy), and we proceed. One code path
+        # for every supported LibreOffice build.
+        logger.info(
+            "_create_panel_window: querying XWindowPeer on parent_window"
+        )
+        xwp_type = uno.getTypeByName("com.sun.star.awt.XWindowPeer")
+        parent_peer = self._parent_window.queryInterface(xwp_type)
+        logger.info(
+            "_create_panel_window: queryInterface(XWindowPeer) returned %s",
+            _ru(parent_peer),
+        )
+        if parent_peer is None:
+            raise UnsupportedLibreOfficeBuildError(
+                "Talk2View cannot construct its sidebar panel on this "
+                "LibreOffice build: the framework-supplied ParentWindow "
+                "does not expose XWindowPeer even via queryInterface. "
+                "The canonical Python sidebar pattern requires the "
+                "parent to be a peered VCL window. Please install "
+                "LibreOffice from documentfoundation.org, Flathub, or "
+                "the Snap Store — those builds ship a stock PyUNO "
+                "bridge with the expected VCLXWindow parent."
+            )
+
         # Flush before the native call — soffice has crashed inside
         # createContainerWindow on Debian without leaving the most
         # recent log lines on disk. We want every diagnostic above to
-        # survive the segfault.
+        # survive a segfault.
         logger.info(
             "_create_panel_window: flushing logs before createContainerWindow"
         )
@@ -612,7 +663,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         logger.info("_create_panel_window: calling createContainerWindow")
         try:
             window = provider.createContainerWindow(
-                dialog_url, "", self._parent_window, None
+                dialog_url, "", parent_peer, None
             )
         except Exception as exc:
             logger.exception(
@@ -620,14 +671,19 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
                 type(exc).__name__,
             )
             if _is_strict_pyuno_xwindowpeer_failure(exc):
+                # queryInterface returned a non-null reference but the
+                # C++ side still rejected it. This is a deeper PyUNO
+                # bug we cannot work around from Python — surface it
+                # with the same actionable message.
                 raise UnsupportedLibreOfficeBuildError(
-                    "This LibreOffice build has a known incompatibility with "
-                    "the canonical Python sidebar pattern (the PyUNO bridge "
-                    "rejects the sidebar's ParentWindow at the XWindowPeer "
-                    "slot of ContainerWindowProvider.createContainerWindow). "
-                    "Please install LibreOffice from documentfoundation.org, "
-                    "Flathub, or the Snap Store — those builds ship a stock "
-                    "PyUNO bridge that works."
+                    "This LibreOffice build's PyUNO bridge rejects the "
+                    "sidebar's ParentWindow at the XWindowPeer slot of "
+                    "ContainerWindowProvider.createContainerWindow even "
+                    "after an explicit queryInterface(XWindowPeer) — "
+                    "this is a documented downstream-packaging bug. "
+                    "Please install LibreOffice from "
+                    "documentfoundation.org, Flathub, or the Snap "
+                    "Store — those builds ship a stock PyUNO bridge."
                 ) from exc
             raise
         logger.info(

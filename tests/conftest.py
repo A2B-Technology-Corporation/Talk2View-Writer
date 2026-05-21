@@ -40,6 +40,11 @@ _uno = _make_module("uno")
 _uno.createUnoStruct = MagicMock(name="createUnoStruct")  # type: ignore[attr-defined]
 _uno.Enum = MagicMock(name="Enum")  # type: ignore[attr-defined]
 _uno.getComponentContext = MagicMock(name="getComponentContext")  # type: ignore[attr-defined]
+# getTypeByName + invoke are used by sidebar_panel._create_panel_window
+# (ADR-0028 queryInterface workaround). Stub them so unit tests don't
+# pull in real PyUNO.
+_uno.getTypeByName = MagicMock(name="getTypeByName")  # type: ignore[attr-defined]
+_uno.invoke = MagicMock(name="invoke")  # type: ignore[attr-defined]
 
 
 _unohelper = _make_module("unohelper")

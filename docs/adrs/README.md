@@ -48,7 +48,8 @@ applied.
 | [0024](0024-synthetic-uno-and-mock-chat-test-rig.md) | Synthetic-UNO + mock-engine test rig alongside the real-soffice integration suite | F | Accepted |
 | [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Superseded by 0027 |
 | [0026](0026-python-xwindowpeer-adapter.md) | Python XWindowPeer adapter for strict-PyUNO sidebar panel construction | F | Superseded by 0027 |
-| [0027](0027-canonical-toolpanel-pattern.md) | Follow LibreOffice's canonical Python toolpanel pattern verbatim | F | Accepted |
+| [0027](0027-canonical-toolpanel-pattern.md) | Follow LibreOffice's canonical Python toolpanel pattern verbatim | F | Accepted (supersession of unsupported-build clause in 0028) |
+| [0028](0028-queryinterface-xwindowpeer.md) | Obtain XWindowPeer via queryInterface before createContainerWindow | F | Accepted |
 
 ## Writing a new ADR
 
