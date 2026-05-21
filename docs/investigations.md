@@ -893,3 +893,34 @@ likely fix candidates are:
 - Pass a real XWindowPeer instead of the bare XWindow fallback —
   possibly by demanding one via ``parent_window.getToolkit().getDesktopWindow()``
   or similar.
+
+
+## #30 — `make test` evicts the unit-test UNO stubs before skipping integration tests
+
+**Date:** 2026-05-21
+
+**What:** Running the full pytest target (``make test`` → ``uv run pytest``)
+with no soffice listening fails ~57 unit + ui_thread tests with
+``ModuleNotFoundError: No module named 'uno'``. The same tests pass
+under ``make test-unit`` (``pytest -m "unit or synthetic or mock_chat"``)
+and under any single-file run.
+
+**Where:** ``tests/integration/conftest.py`` —
+``uno_context()`` calls ``_evict_unit_uno_stubs()`` as its **first**
+action, then tries ``import uno`` and calls ``pytest.skip(...)`` if
+PyUNO isn't available. The session-scoped fixture activates on the
+first collected integration test even though that test is then
+skipped; the eviction persists for the rest of the pytest session
+and every subsequent unit test that imports the production code
+(which does ``import uno`` at module load) fails.
+
+**Why it matters:** Anyone running ``make test`` outside CI sees a
+sea of red that has nothing to do with their changes. CI only ever
+runs ``make test-unit`` (no integration tests collected → fixture
+never activates), so this is invisible upstream.
+
+**Next step:** Move ``_evict_unit_uno_stubs()`` to **after** the
+``import uno`` succeeds, so failed PyUNO imports skip cleanly
+without trashing the unit-test stubs. Or convert the integration
+session fixture to a per-test conftest path that only runs when
+``-m integration`` is active.

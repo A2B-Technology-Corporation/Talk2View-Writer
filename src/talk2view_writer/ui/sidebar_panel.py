@@ -37,9 +37,12 @@ marshalled to the UI thread via :class:`UIThreadDispatcher`
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import unquote, urlparse
 
 import uno  # type: ignore[import-not-found]
 import unohelper  # type: ignore[import-not-found]
@@ -49,6 +52,8 @@ from com.sun.star.ui import (  # type: ignore[import-not-found]
     XToolPanel,
     XUIElement,
 )
+
+from talk2view_writer._logging import flush_logs
 
 if TYPE_CHECKING:
     from com.sun.star.awt import ActionEvent, XWindow
@@ -85,6 +90,244 @@ def _ru(obj: Any) -> str:
         # If repr itself raises (some UNO proxies don't implement it
         # cleanly), fall back to a type-name string.
         return f"<repr failed: {type(exc).__name__}>"
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic helpers
+#
+# These walk UNO objects (XWindow, XControl, ConfigurationProvider) and
+# log their state. They are used both for pre-flight diagnostics
+# (before risky native calls) and post-call diagnostics (after
+# createContainerWindow returns) so we can tell whether a returned
+# window is sized / visible / has children.
+#
+# **The single intentional non-rethrow pattern in this codebase lives
+# here.** A diagnostic walk touches many UNO properties; some of them
+# legitimately aren't supported by every impl (e.g. ``isVisible`` is
+# only on XWindow2). To keep walking past those, ``_safe_call`` catches
+# the per-attribute exception and routes the **full traceback** into
+# the log via ``logger.exception(...)``, then continues. This is NOT
+# silent failure — the trace IS in the log. See the approved plan
+# ``~/.claude/plans/add-complete-logging-so-steady-finch.md`` for the
+# rationale. All application-level code paths re-raise after
+# ``logger.exception``; only these diagnostic walkers continue.
+# ---------------------------------------------------------------------------
+
+
+def _safe_call(label: str, fn: Callable[[], Any]) -> Any | None:
+    """Run a diagnostic attribute lookup; on failure log + return ``None``.
+
+    Diagnostic-only helper. The exception's **full traceback** is
+    captured via ``logger.exception(...)``. See the module-level note
+    above for the rationale.
+    """
+    try:
+        return fn()
+    except Exception:
+        logger.exception("diag %s: lookup raised — continuing", label)
+        return None
+
+
+def _log_window_state(label: str, window: Any) -> None:
+    """Walk an XWindow and log size / peer / visibility / children.
+
+    Best-effort: any single attribute that fails is logged with full
+    traceback (via :func:`_safe_call`) and we continue to the next.
+
+    Method accesses are wrapped in lambdas so that a missing-method
+    ``AttributeError`` is caught inside ``_safe_call`` (and the full
+    traceback ends up in the log) instead of escaping uncaught from
+    the bound-method lookup.
+    """
+    if window is None:
+        logger.info("diag %s: window is None", label)
+        return
+    logger.info("diag %s: window=%s", label, _ru(window))
+
+    rect = _safe_call(f"{label}.getPosSize", lambda: window.getPosSize())
+    if rect is not None:
+        logger.info(
+            "diag %s.getPosSize: X=%s Y=%s Width=%s Height=%s",
+            label,
+            getattr(rect, "X", "?"),
+            getattr(rect, "Y", "?"),
+            getattr(rect, "Width", "?"),
+            getattr(rect, "Height", "?"),
+        )
+
+    out = _safe_call(f"{label}.getOutputSize", lambda: window.getOutputSize())
+    if out is not None:
+        logger.info(
+            "diag %s.getOutputSize: Width=%s Height=%s",
+            label,
+            getattr(out, "Width", "?"),
+            getattr(out, "Height", "?"),
+        )
+
+    visible = _safe_call(f"{label}.isVisible", lambda: window.isVisible())
+    logger.info("diag %s.isVisible=%s", label, visible)
+
+    peer = _safe_call(f"{label}.getPeer", lambda: window.getPeer())
+    if peer is not None:
+        logger.info("diag %s.peer=%s", label, _ru(peer))
+        peer_rect = _safe_call(
+            f"{label}.peer.getPosSize", lambda: peer.getPosSize()
+        )
+        if peer_rect is not None:
+            logger.info(
+                "diag %s.peer.getPosSize: X=%s Y=%s Width=%s Height=%s",
+                label,
+                getattr(peer_rect, "X", "?"),
+                getattr(peer_rect, "Y", "?"),
+                getattr(peer_rect, "Width", "?"),
+                getattr(peer_rect, "Height", "?"),
+            )
+
+    for service in (
+        "com.sun.star.awt.UnoControlContainer",
+        "com.sun.star.awt.UnoControlDialog",
+    ):
+        supported = _safe_call(
+            f"{label}.supportsService({service})",
+            lambda s=service: window.supportsService(s),
+        )
+        logger.info("diag %s.supportsService(%s)=%s", label, service, supported)
+
+    controls = _safe_call(f"{label}.getControls", lambda: window.getControls())
+    if controls is not None:
+        count = _safe_call(f"{label}.getControls.len", lambda c=controls: len(c))
+        logger.info("diag %s.getControls count=%s", label, count)
+        try:
+            for i, child in enumerate(controls):
+                child_name = _safe_call(
+                    f"{label}.child[{i}].getModel.Name",
+                    lambda c=child: c.getModel().getPropertyValue("Name"),
+                )
+                child_rect = _safe_call(
+                    f"{label}.child[{i}].getPosSize",
+                    lambda c=child: c.getPosSize(),
+                )
+                if child_rect is not None:
+                    logger.info(
+                        "diag %s.child[%d] name=%s X=%s Y=%s W=%s H=%s",
+                        label,
+                        i,
+                        child_name,
+                        getattr(child_rect, "X", "?"),
+                        getattr(child_rect, "Y", "?"),
+                        getattr(child_rect, "Width", "?"),
+                        getattr(child_rect, "Height", "?"),
+                    )
+                else:
+                    logger.info(
+                        "diag %s.child[%d] name=%s (no rect)", label, i, child_name
+                    )
+        except Exception:
+            logger.exception("diag %s: iterating children raised — continuing", label)
+
+
+def _log_control(group: str, name: str, control: Any) -> None:
+    """Walk a control + its model and log diagnostic state.
+
+    Best-effort, same pattern as :func:`_log_window_state`.
+    """
+    if control is None:
+        logger.info("diag %s/%s: control is None", group, name)
+        return
+    logger.info("diag %s/%s: control=%s", group, name, _ru(control))
+
+    model = _safe_call(f"{group}/{name}.getModel", lambda: control.getModel())
+    if model is not None:
+        logger.info("diag %s/%s: model=%s", group, name, _ru(model))
+        for prop in ("Name", "Label", "Text", "Enabled", "EnableVisible", "Hidden"):
+            value = _safe_call(
+                f"{group}/{name}.model.{prop}",
+                lambda p=prop: model.getPropertyValue(p),
+            )
+            logger.info("diag %s/%s.model.%s=%r", group, name, prop, value)
+
+    rect = _safe_call(f"{group}/{name}.getPosSize", lambda: control.getPosSize())
+    if rect is not None:
+        logger.info(
+            "diag %s/%s.getPosSize: X=%s Y=%s Width=%s Height=%s",
+            group,
+            name,
+            getattr(rect, "X", "?"),
+            getattr(rect, "Y", "?"),
+            getattr(rect, "Width", "?"),
+            getattr(rect, "Height", "?"),
+        )
+
+
+_PLATFORM_INFO_LOGGED = False
+
+
+def _log_platform_info(ctx: Any) -> None:
+    """One-shot dump of LibreOffice product info at panel-build time.
+
+    Reads ``/org.openoffice.Setup/Product`` via the configuration
+    provider. Best-effort: a single try-except covers the whole walk —
+    if any step fails (no UNO ctx in tests, missing config node, etc.)
+    we log the full traceback and continue. See the module-level note
+    on diagnostic helpers.
+    """
+    global _PLATFORM_INFO_LOGGED
+    if _PLATFORM_INFO_LOGGED:
+        return
+    _PLATFORM_INFO_LOGGED = True
+
+    try:
+        from com.sun.star.beans import PropertyValue
+
+        nodepath = PropertyValue()
+        nodepath.Name = "nodepath"
+        nodepath.Value = "/org.openoffice.Setup/Product"
+
+        cfg_provider = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.configuration.ConfigurationProvider", ctx
+        )
+        access = cfg_provider.createInstanceWithArguments(
+            "com.sun.star.configuration.ConfigurationAccess",
+            (nodepath,),
+        )
+        for prop in ("ooName", "ooSetupVersion", "ooSetupVersionAboutBox"):
+            value = access.getByName(prop)
+            logger.info("diag LibreOffice.Setup.Product.%s=%s", prop, _ru(value))
+    except Exception:
+        logger.exception(
+            "diag _log_platform_info: failed reading LibreOffice product info "
+            "(best-effort diagnostic — continuing)"
+        )
+
+
+def _assert_dialog_file_exists(dialog_url: str) -> None:
+    """Verify ``dialog_url`` resolves to a real file on disk.
+
+    The URL is of the form ``file:///path/to/file``. If the file is
+    missing we raise :class:`FileNotFoundError` — the caller will log
+    the full traceback via ``logger.exception`` before re-raising,
+    surfacing the actionable root cause instead of letting the C++
+    XML parser crash on an empty input deep inside
+    ``createContainerWindow``.
+    """
+    parsed = urlparse(dialog_url)
+    if parsed.scheme != "file":
+        logger.info(
+            "diag dialog_url has non-file scheme %r — skipping existence check",
+            parsed.scheme,
+        )
+        return
+    local_path = Path(unquote(parsed.path))
+    if not local_path.exists():
+        raise FileNotFoundError(
+            f"Talk2View dialog file missing: {local_path} "
+            f"(resolved from {dialog_url})"
+        )
+    logger.info(
+        "diag dialog_url file exists: path=%s size=%d bytes",
+        local_path,
+        local_path.stat().st_size,
+    )
 
 
 # Must match the identifier in extension/description.xml — looked up
@@ -142,15 +385,18 @@ def build_chat_panel(
     it with the extension singleton.
     """
     logger.info(
-        "build_chat_panel: resource_url=%s frame=%s",
+        "build_chat_panel: enter resource_url=%s frame=%s parent_window=%s",
         resource_url,
         "present" if frame is not None else "None",
+        _ru(parent_window),
     )
+    _log_platform_info(ctx)
     panel = Talk2ViewPanel(ctx, frame, parent_window, resource_url)
 
     from talk2view_writer.extension import get_extension
 
     get_extension(ctx).register_panel(panel)
+    logger.info("build_chat_panel: returning XUIElement %s", _ru(panel))
     return panel
 
 
@@ -171,9 +417,13 @@ class Talk2ViewToolPanel(unohelper.Base, XToolPanel):
         self.ctx = ctx
         self.PanelWindow = panel_window
         self.Window = panel_window
+        logger.info(
+            "Talk2ViewToolPanel constructed panel_window=%s", _ru(panel_window)
+        )
 
     def createAccessible(self, parent_accessible: object) -> Any:  # noqa: N802
         """XToolPanel: return our panel window as its own accessible root."""
+        logger.info("Talk2ViewToolPanel.createAccessible: returning PanelWindow")
         return self.PanelWindow
 
 
@@ -233,16 +483,55 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
 
     def getRealInterface(self) -> Any:  # noqa: N802
         """Lazily build the panel window + return an XToolPanel wrapping it."""
-        if self._tool_panel is None:
-            try:
-                window = self._create_panel_window()
-            except UnsupportedLibreOfficeBuildError as exc:
-                self._show_message("Talk2View — unsupported LibreOffice build", str(exc))
-                raise
+        logger.info(
+            "getRealInterface: enter already_built=%s",
+            self._tool_panel is not None,
+        )
+        if self._tool_panel is not None:
+            return self._tool_panel
+
+        try:
+            window = self._create_panel_window()
+        except UnsupportedLibreOfficeBuildError as exc:
+            logger.exception(
+                "getRealInterface: unsupported LibreOffice build — "
+                "showing message and re-raising"
+            )
+            self._show_message(
+                "Talk2View — unsupported LibreOffice build", str(exc)
+            )
+            raise
+        except Exception:
+            logger.exception(
+                "getRealInterface: _create_panel_window raised — "
+                "showing message and re-raising"
+            )
+            self._show_message(
+                "Talk2View — panel build failed",
+                "Panel construction raised an exception. See talk2view.log "
+                "for the full traceback.",
+            )
+            raise
+
+        try:
             self._bind_controls(window)
+        except Exception:
+            logger.exception(
+                "getRealInterface: _bind_controls raised — re-raising"
+            )
+            raise
+
+        try:
             self._apply_auth_state()
-            self._tool_panel = Talk2ViewToolPanel(window, self.ctx)
-            logger.info("Talk2View panel window created and bound")
+        except Exception:
+            logger.exception(
+                "getRealInterface: _apply_auth_state raised — re-raising"
+            )
+            raise
+
+        self._tool_panel = Talk2ViewToolPanel(window, self.ctx)
+        _log_window_state("final_tool_panel.window", window)
+        logger.info("getRealInterface: Talk2View panel window created and bound")
         return self._tool_panel
 
     def setSettings(self, settings: object) -> None:  # noqa: N802
@@ -280,6 +569,11 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         with an actionable message; any other UNO exception
         propagates verbatim so the rotating log captures the trace.
         """
+        logger.info(
+            "_create_panel_window: enter sys.platform=%s sys.version=%s",
+            sys.platform,
+            sys.version.split()[0],
+        )
         logger.info("_create_panel_window: resolving PIP singleton")
         pip = self.ctx.getValueByName(
             "/singletons/com.sun.star.deployment.PackageInformationProvider"
@@ -288,7 +582,16 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
 
         extension_root = pip.getPackageLocation(_EXTENSION_ID)
         dialog_url = f"{extension_root}/{_XDL_PATH}"
-        logger.info("_create_panel_window: dialog_url=%s", dialog_url)
+        logger.info(
+            "_create_panel_window: extension_root=%s dialog_url=%s",
+            extension_root,
+            dialog_url,
+        )
+
+        # Verify the XDL file is actually on disk. If it isn't, the
+        # underlying createContainerWindow would crash in the C++ XML
+        # parser; surface a clean Python error here instead.
+        _assert_dialog_file_exists(dialog_url)
 
         logger.info("_create_panel_window: creating ContainerWindowProvider")
         provider = self.ctx.ServiceManager.createInstanceWithContext(
@@ -296,17 +599,27 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         )
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
+        _log_window_state("parent_window", self._parent_window)
+
+        # Flush before the native call — soffice has crashed inside
+        # createContainerWindow on Debian without leaving the most
+        # recent log lines on disk. We want every diagnostic above to
+        # survive the segfault.
+        logger.info(
+            "_create_panel_window: flushing logs before createContainerWindow"
+        )
+        flush_logs()
         logger.info("_create_panel_window: calling createContainerWindow")
         try:
             window = provider.createContainerWindow(
                 dialog_url, "", self._parent_window, None
             )
         except Exception as exc:
+            logger.exception(
+                "_create_panel_window: createContainerWindow raised %s",
+                type(exc).__name__,
+            )
             if _is_strict_pyuno_xwindowpeer_failure(exc):
-                logger.exception(
-                    "_create_panel_window: strict-PyUNO XWindowPeer rejection "
-                    "(known incompatibility — see ADR-0027 / investigation #29)"
-                )
                 raise UnsupportedLibreOfficeBuildError(
                     "This LibreOffice build has a known incompatibility with "
                     "the canonical Python sidebar pattern (the PyUNO bridge "
@@ -320,22 +633,34 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
         )
+        flush_logs()
+        _log_window_state("returned_window", window)
         self._panel_window = window
         return window
 
     def _bind_controls(self, window: Any) -> None:
         """Resolve XDL control ids to control references + wire actions."""
-        logger.info("_bind_controls: looking up status_label")
-        self._status_label = window.getControl("status_label")
-        logger.info("_bind_controls: looking up login_button")
-        self._login_button = window.getControl("login_button")
-        logger.info("_bind_controls: looking up history_field")
-        self._history_field = window.getControl("history_field")
-        logger.info("_bind_controls: looking up composer_field")
-        self._composer_field = window.getControl("composer_field")
-        logger.info("_bind_controls: looking up send_button")
-        self._send_button = window.getControl("send_button")
+        logger.info("_bind_controls: enter")
 
+        for name in (
+            "status_label",
+            "login_button",
+            "history_field",
+            "composer_field",
+            "send_button",
+        ):
+            logger.info("_bind_controls: looking up %s", name)
+            control = window.getControl(name)
+            setattr(self, f"_{name}", control)
+            _log_control("bind", name, control)
+
+        logger.info(
+            "_bind_controls: walking window children for full state dump"
+        )
+        _log_window_state("post_bind_window", window)
+
+        logger.info("_bind_controls: flushing before wiring action listeners")
+        flush_logs()
         logger.info("_bind_controls: wiring action listeners")
         self._login_button.addActionListener(_ActionForwarder(self._on_login_clicked))
         self._send_button.addActionListener(_ActionForwarder(self._on_send_clicked))
@@ -355,6 +680,12 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
     def _apply_auth_state(self) -> None:
         """Update labels + enabled state to match ``self._user``."""
         is_auth = self._user is not None
+        user_email = (
+            getattr(self._user, "email", None) if self._user is not None else None
+        )
+        logger.info(
+            "_apply_auth_state: enter is_auth=%s user_email=%s", is_auth, user_email
+        )
 
         if self._status_label is not None:
             text = (
@@ -362,15 +693,33 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
                 if self._user is not None
                 else "Talk2View — not logged in"
             )
+            old = self._status_label.getModel().getPropertyValue("Label")
             self._status_label.getModel().setPropertyValue("Label", text)
+            logger.info(
+                "_apply_auth_state: status_label.Label %r -> %r", old, text
+            )
 
         if self._login_button is not None:
-            self._login_button.getModel().setPropertyValue("EnableVisible", not is_auth)
+            new = not is_auth
+            old = self._login_button.getModel().getPropertyValue("EnableVisible")
+            self._login_button.getModel().setPropertyValue("EnableVisible", new)
+            logger.info(
+                "_apply_auth_state: login_button.EnableVisible %r -> %r", old, new
+            )
 
         if self._composer_field is not None:
+            old = self._composer_field.getModel().getPropertyValue("Enabled")
             self._composer_field.getModel().setPropertyValue("Enabled", is_auth)
+            logger.info(
+                "_apply_auth_state: composer_field.Enabled %r -> %r", old, is_auth
+            )
         if self._send_button is not None:
+            old = self._send_button.getModel().getPropertyValue("Enabled")
             self._send_button.getModel().setPropertyValue("Enabled", is_auth)
+            logger.info(
+                "_apply_auth_state: send_button.Enabled %r -> %r", old, is_auth
+            )
+        logger.info("_apply_auth_state: done")
 
     # ----- Event handlers -------------------------------------------------
 
@@ -622,6 +971,7 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
     # ----- Misc -----------------------------------------------------------
 
     def _show_message(self, title: str, message: str) -> None:
+        logger.info("_show_message: title=%r message=%r", title, message)
         if self._frame_ref is None:
             logger.warning("No frame; cannot show message: %s", message)
             return

@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import platform as _platform
 import sys
 import threading
 import traceback
@@ -202,10 +203,65 @@ def setup_logging() -> Path:
             sys.version.split()[0],
             sys.platform,
         )
+        # Second line: kernel / build / arch detail that matters for
+        # diagnosing PyUNO-bridge differences across Linux distros and
+        # macOS versions. Splitting from the banner keeps the original
+        # line under terminal width and preserves backward-compat with
+        # the bug-report triage regex.
+        try:
+            uname = " ".join(os.uname()) if hasattr(os, "uname") else "(no os.uname)"
+        except OSError:
+            # uname can raise on rare locked-down environments. Best-effort.
+            uname = "(uname failed)"
+        package_logger.info(
+            "Talk2View-Writer runtime info — platform=%s machine=%s arch=%s uname=%s env_debug=%r",
+            _platform.platform(),
+            _platform.machine(),
+            _platform.architecture()[0] if _platform.architecture() else "?",
+            uname,
+            os.environ.get("T2V_WRITER_DEBUG", ""),
+        )
 
         _setup_done = True
         _active_log_path = path
         return path
+
+
+def flush_logs() -> None:
+    """Flush every handler on the package logger + root logger.
+
+    Call this before any native UNO call that risks a segfault.
+    Without a flush, the file-handler buffer may discard the most
+    recent log lines when soffice dies — losing exactly the
+    diagnostic info that would tell you where it crashed.
+
+    If a handler's flush raises (out-of-disk, broken pipe, etc.) the
+    remaining handlers are still flushed (we don't want one broken
+    handler to block others mid-flush), then a ``RuntimeError`` is
+    raised with the first failure chained as ``__cause__``. This
+    honours the package rule "never hide errors — always re-raise so
+    the full traceback lands in the log file" without abandoning
+    other handlers.
+    """
+    errors: list[BaseException] = []
+    seen: set[int] = set()
+    for source in (logging.getLogger(_PACKAGE_LOGGER), logging.getLogger()):
+        for handler in list(source.handlers):
+            if id(handler) in seen:
+                continue
+            seen.add(id(handler))
+            try:
+                handler.flush()
+            except Exception as exc:
+                # Per-handler failure is intentionally collected (not
+                # re-raised here) so the remaining handlers still get
+                # flushed — then we raise a combined error at the end
+                # with this failure chained as ``__cause__``.
+                errors.append(exc)
+    if errors:
+        raise RuntimeError(
+            f"flush_logs: {len(errors)} handler(s) failed to flush"
+        ) from errors[0]
 
 
 def reset_for_tests() -> None:

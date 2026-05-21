@@ -31,6 +31,8 @@ _PYTHONPATH = _EXT_DIR / "pythonpath"
 if _PYTHONPATH.exists() and str(_PYTHONPATH) not in sys.path:
     sys.path.insert(0, str(_PYTHONPATH))
 
+from typing import Any  # noqa: E402
+
 import uno  # noqa: E402
 import unohelper  # noqa: E402
 from com.sun.star.frame import XDispatch, XDispatchProvider  # noqa: E402
@@ -58,6 +60,19 @@ logger.info(
     _PYTHONPATH,
     _LOG_PATH,
 )
+
+
+def _safe_repr(obj: Any) -> str:
+    """UNO-safe repr — same purpose as ``_ru`` in sidebar_panel.
+
+    Inlined here so the UNO entry module doesn't need to import the
+    sidebar panel at module load time (which would drag in the UNO
+    awt/ui stubs and break ``test_extension_module_loads_without_uno``).
+    """
+    try:
+        return repr(obj)
+    except Exception as exc:
+        return f"<repr failed: {type(exc).__name__}>"
 
 
 # ---------------------------------------------------------------------------
@@ -266,30 +281,48 @@ class ChatPanelFactory(unohelper.Base, XUIElementFactory):
         Raises:
             RuntimeError: If ParentWindow PropertyValue is missing.
         """
+        arg_summary = [
+            f"{getattr(p, 'Name', '?')}={_safe_repr(getattr(p, 'Value', None))}"
+            for p in args
+        ]
         logger.info(
-            "createUIElement called: resource_url=%s arg_count=%d arg_names=%s",
+            "createUIElement called: resource_url=%s arg_count=%d args=%s",
             resource_url,
             len(args),
-            [getattr(p, "Name", "?") for p in args],
+            arg_summary,
         )
-        parent_window: "XWindow | None" = None
-        frame: "XFrame | None" = None
-        for prop in args:
-            if prop.Name == "ParentWindow":
-                parent_window = prop.Value
-            elif prop.Name == "Frame":
-                frame = prop.Value
-        if parent_window is None:
-            raise RuntimeError(
-                "Talk2View sidebar: ParentWindow PropertyValue not supplied "
-                "by LibreOffice — cannot build panel"
+        try:
+            parent_window: "XWindow | None" = None
+            frame: "XFrame | None" = None
+            for prop in args:
+                if prop.Name == "ParentWindow":
+                    parent_window = prop.Value
+                elif prop.Name == "Frame":
+                    frame = prop.Value
+            if parent_window is None:
+                raise RuntimeError(
+                    "Talk2View sidebar: ParentWindow PropertyValue not "
+                    "supplied by LibreOffice — cannot build panel"
+                )
+
+            from talk2view_writer.ui.sidebar_panel import (
+                _log_window_state,
+                build_chat_panel,
             )
 
-        from talk2view_writer.ui.sidebar_panel import build_chat_panel
-
-        panel = build_chat_panel(self.ctx, parent_window, frame, resource_url)
-        logger.info("createUIElement returned XUIElement type=%s", type(panel).__name__)
-        return panel
+            _log_window_state("createUIElement.parent_window", parent_window)
+            panel = build_chat_panel(self.ctx, parent_window, frame, resource_url)
+            logger.info(
+                "createUIElement returned XUIElement type=%s",
+                type(panel).__name__,
+            )
+            return panel
+        except Exception:
+            logger.exception(
+                "createUIElement: failed building panel for %s — re-raising",
+                resource_url,
+            )
+            raise
 
 
 # ---------------------------------------------------------------------------

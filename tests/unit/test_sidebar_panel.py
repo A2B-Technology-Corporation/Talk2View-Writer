@@ -15,11 +15,31 @@ from a real ``.xdl`` against a live soffice.
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _ensure_caplog_sees_package_records() -> Any:
+    """Restore ``propagate=True`` on the package logger so caplog works.
+
+    :func:`setup_logging` sets ``propagate=False`` to prevent
+    double-logging in production. test_logging.py exercises that path
+    and the change persists across test files, leaving caplog blind
+    to ``talk2view_writer.*`` records. This fixture restores
+    propagation for every test in this file, then puts the original
+    value back.
+    """
+    pkg_logger = logging.getLogger("talk2view_writer")
+    saved = pkg_logger.propagate
+    pkg_logger.propagate = True
+    yield
+    pkg_logger.propagate = saved
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -593,12 +613,21 @@ class TestCreatePanelWindowErrorPath:
     def _panel_with_failing_provider(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
         exc: Exception,
     ) -> Any:
+        # The production code now verifies that the resolved XDL file
+        # exists on disk before calling createContainerWindow. Stage a
+        # real stub so the existence check passes and the test reaches
+        # the mocked provider.
+        pkg_root = tmp_path / "extension"
+        (pkg_root / "panels").mkdir(parents=True, exist_ok=True)
+        (pkg_root / "panels" / "chat_panel.xdl").write_text("<stub/>\n")
+
         panel = _make_panel(monkeypatch, auth=False)
 
         pip = MagicMock()
-        pip.getPackageLocation.return_value = "file:///opt/extension"
+        pip.getPackageLocation.return_value = pkg_root.as_uri()
         provider = MagicMock()
         provider.createContainerWindow.side_effect = exc
 
@@ -608,7 +637,7 @@ class TestCreatePanelWindowErrorPath:
         return panel
 
     def test_strict_pyuno_failure_raises_unsupported_build_error(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         from talk2view_writer.ui.sidebar_panel import (
             UnsupportedLibreOfficeBuildError,
@@ -617,7 +646,7 @@ class TestCreatePanelWindowErrorPath:
         uno_exc = type("CannotConvertException", (Exception,), {})(
             "cannot convert to com.sun.star.awt.XWindowPeer"
         )
-        panel = self._panel_with_failing_provider(monkeypatch, uno_exc)
+        panel = self._panel_with_failing_provider(monkeypatch, tmp_path, uno_exc)
 
         with pytest.raises(UnsupportedLibreOfficeBuildError) as info:
             panel._create_panel_window()
@@ -625,11 +654,323 @@ class TestCreatePanelWindowErrorPath:
         assert info.value.__cause__ is uno_exc
 
     def test_other_uno_exceptions_propagate_verbatim(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         uno_exc = type("RuntimeException", (Exception,), {})("kaboom")
-        panel = self._panel_with_failing_provider(monkeypatch, uno_exc)
+        panel = self._panel_with_failing_provider(monkeypatch, tmp_path, uno_exc)
 
         with pytest.raises(Exception) as info:
             panel._create_panel_window()
         assert info.value is uno_exc
+
+    def test_other_uno_exceptions_log_exception_before_raising(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Non-strict-PyUNO exceptions must have the full traceback logged.
+
+        The user's rule: never hide errors — every raise must have a
+        ``logger.exception(...)`` ahead of it so the trace ends up in
+        the rotating log file even if the bare ``raise`` is consumed
+        by some upstream handler that doesn't print tracebacks.
+        """
+        uno_exc = type("RuntimeException", (Exception,), {})(
+            "native createContainerWindow crashed"
+        )
+        panel = self._panel_with_failing_provider(monkeypatch, tmp_path, uno_exc)
+
+        with caplog.at_level(
+            "ERROR", logger="talk2view_writer.ui.sidebar_panel"
+        ), pytest.raises(Exception) as info:
+            panel._create_panel_window()
+        assert info.value is uno_exc
+        assert "createContainerWindow raised RuntimeException" in caplog.text
+
+    def test_missing_dialog_file_raises_filenotfounderror(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """If the resolved XDL file is missing, fail loudly with a clean Python error.
+
+        Otherwise ``createContainerWindow`` crashes deep in the C++
+        XML parser with a useless stack and no log line pointing at
+        the missing file.
+        """
+        panel = _make_panel(monkeypatch, auth=False)
+
+        # Point at a path that doesn't exist.
+        pkg_root = tmp_path / "does-not-exist"
+
+        pip = MagicMock()
+        pip.getPackageLocation.return_value = pkg_root.as_uri()
+        provider = MagicMock()
+
+        panel.ctx = MagicMock()
+        panel.ctx.getValueByName.return_value = pip
+        panel.ctx.ServiceManager.createInstanceWithContext.return_value = provider
+
+        with pytest.raises(FileNotFoundError, match=r"chat_panel\.xdl"):
+            panel._create_panel_window()
+        provider.createContainerWindow.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Diagnostic helpers: _safe_call, _log_window_state, _log_control,
+# _assert_dialog_file_exists. The "always re-raise" rule has one
+# documented exception — diagnostic walks log the full traceback via
+# ``logger.exception`` and continue. These tests pin both the success
+# path and that per-attribute failures are logged + skipped, not silenced.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSafeCall:
+    def test_returns_value_on_success(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import _safe_call
+
+        assert _safe_call("label", lambda: 42) == 42
+
+    def test_returns_none_and_logs_exception(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from talk2view_writer.ui.sidebar_panel import _safe_call
+
+        def boom() -> None:
+            raise RuntimeError("nope")
+
+        with caplog.at_level(
+            "ERROR", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            result = _safe_call("test_label", boom)
+        assert result is None
+        # The full traceback is in the log — not silenced.
+        assert "test_label" in caplog.text
+        assert "RuntimeError" in caplog.text
+        assert "nope" in caplog.text
+
+
+@pytest.mark.unit
+class TestLogWindowState:
+    def test_handles_none_window(self, caplog: pytest.LogCaptureFixture) -> None:
+        from talk2view_writer.ui.sidebar_panel import _log_window_state
+
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _log_window_state("test", None)
+        assert "window is None" in caplog.text
+
+    def test_continues_past_per_attribute_failures(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A diagnostic walker must continue past partial failures."""
+        from talk2view_writer.ui.sidebar_panel import _log_window_state
+
+        class FlakyWindow:
+            def getPosSize(self) -> Any:  # noqa: N802
+                raise RuntimeError("getPosSize broken")
+
+            def getOutputSize(self) -> Any:  # noqa: N802
+                class Size:
+                    Width = 100
+                    Height = 200
+                return Size()
+
+            def isVisible(self) -> Any:  # noqa: N802
+                raise RuntimeError("isVisible broken")
+
+            def getPeer(self) -> Any:  # noqa: N802
+                return None
+
+            def supportsService(self, name: str) -> bool:  # noqa: N802
+                return False
+
+            def getControls(self) -> tuple[Any, ...]:  # noqa: N802
+                return ()
+
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _log_window_state("flaky", FlakyWindow())
+
+        # Per-attribute failures are surfaced with their tracebacks.
+        assert "getPosSize broken" in caplog.text
+        assert "isVisible broken" in caplog.text
+        # Other attributes still got walked after the failures.
+        assert "Width=100" in caplog.text
+        assert "Height=200" in caplog.text
+        # The supportsService walk ran for both services.
+        assert "UnoControlContainer" in caplog.text
+        assert "UnoControlDialog" in caplog.text
+
+
+@pytest.mark.unit
+class TestLogControl:
+    def test_handles_none_control(self, caplog: pytest.LogCaptureFixture) -> None:
+        from talk2view_writer.ui.sidebar_panel import _log_control
+
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _log_control("group", "name", None)
+        assert "control is None" in caplog.text
+
+    def test_continues_past_model_property_failures(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from talk2view_writer.ui.sidebar_panel import _log_control
+
+        class FlakyModel:
+            def getPropertyValue(self, name: str) -> Any:  # noqa: N802
+                if name == "Label":
+                    raise RuntimeError("Label broken")
+                if name == "Text":
+                    return "hello"
+                return None
+
+        class FlakyControl:
+            def getModel(self) -> Any:  # noqa: N802
+                return FlakyModel()
+
+            def getPosSize(self) -> Any:  # noqa: N802
+                class R:
+                    X = 1
+                    Y = 2
+                    Width = 3
+                    Height = 4
+                return R()
+
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _log_control("bind", "the_widget", FlakyControl())
+
+        # Failed property: full traceback in log.
+        assert "Label broken" in caplog.text
+        # Successful properties still logged.
+        assert "'hello'" in caplog.text
+        # Rect still logged.
+        assert "Width=3" in caplog.text
+        assert "Height=4" in caplog.text
+
+
+@pytest.mark.unit
+class TestAssertDialogFileExists:
+    def test_raises_when_file_missing(self, tmp_path: Path) -> None:
+        from talk2view_writer.ui.sidebar_panel import _assert_dialog_file_exists
+
+        missing = tmp_path / "no_such_file.xdl"
+        with pytest.raises(FileNotFoundError) as info:
+            _assert_dialog_file_exists(missing.as_uri())
+        assert "no_such_file.xdl" in str(info.value)
+
+    def test_succeeds_when_file_exists(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from talk2view_writer.ui.sidebar_panel import _assert_dialog_file_exists
+
+        f = tmp_path / "stub.xdl"
+        f.write_text("<stub/>\n", encoding="utf-8")
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _assert_dialog_file_exists(f.as_uri())
+        # File size is logged so we can spot zero-byte XDLs in the wild.
+        assert "size=" in caplog.text
+
+    def test_non_file_scheme_is_skipped(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from talk2view_writer.ui.sidebar_panel import _assert_dialog_file_exists
+
+        with caplog.at_level(
+            "INFO", logger="talk2view_writer.ui.sidebar_panel"
+        ):
+            _assert_dialog_file_exists("vnd.something:nonsense")
+        assert "non-file scheme" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# getRealInterface error paths — each stage's failure must be logged
+# with full traceback (logger.exception) before re-raising.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestGetRealInterfaceErrorPaths:
+    def test_create_panel_window_failure_logged_and_message_shown(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        panel = _make_panel(monkeypatch, auth=False)
+        # Clear the test fixture's pre-built tool_panel so
+        # getRealInterface actually runs the build flow.
+        panel._tool_panel = None
+
+        monkeypatch.setattr(
+            panel,
+            "_create_panel_window",
+            lambda: (_ for _ in ()).throw(RuntimeError("native segfault analog")),
+        )
+        shown: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            panel,
+            "_show_message",
+            lambda title, msg: shown.append((title, msg)),
+        )
+
+        with caplog.at_level(
+            "ERROR", logger="talk2view_writer.ui.sidebar_panel"
+        ), pytest.raises(RuntimeError, match="native segfault analog"):
+            panel.getRealInterface()
+        assert "_create_panel_window raised" in caplog.text
+        # User-facing message also surfaced.
+        assert any("panel build failed" in t.lower() for t, _ in shown)
+
+    def test_bind_controls_failure_logged_and_re_raised(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        panel = _make_panel(monkeypatch, auth=False)
+        panel._tool_panel = None
+
+        boom_window = MagicMock()
+        boom_window.getControl.side_effect = RuntimeError("widget missing")
+        monkeypatch.setattr(panel, "_create_panel_window", lambda: boom_window)
+
+        with caplog.at_level(
+            "ERROR", logger="talk2view_writer.ui.sidebar_panel"
+        ), pytest.raises(RuntimeError, match="widget missing"):
+            panel.getRealInterface()
+        assert "_bind_controls raised" in caplog.text
+
+    def test_apply_auth_state_failure_logged_and_re_raised(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        panel = _make_panel(monkeypatch, auth=False)
+        panel._tool_panel = None
+
+        window = MagicMock()
+        # _bind_controls calls window.getControl(name) once per widget.
+        # Return real fake controls so the bind phase succeeds.
+        window.getControl.return_value = _FakeControl(Text="")
+        window.getControls.return_value = ()
+        monkeypatch.setattr(panel, "_create_panel_window", lambda: window)
+        monkeypatch.setattr(
+            panel,
+            "_apply_auth_state",
+            lambda: (_ for _ in ()).throw(RuntimeError("auth broke")),
+        )
+
+        with caplog.at_level(
+            "ERROR", logger="talk2view_writer.ui.sidebar_panel"
+        ), pytest.raises(RuntimeError, match="auth broke"):
+            panel.getRealInterface()
+        assert "_apply_auth_state raised" in caplog.text
