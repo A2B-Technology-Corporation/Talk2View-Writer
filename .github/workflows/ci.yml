@@ -16,8 +16,15 @@ on:
 
 # Cancel in-progress runs on the same branch when a newer commit
 # lands. Saves macOS arm64 minutes (the most expensive matrix entry).
+#
+# Group key uses ``github.ref_name`` (just the branch name, no
+# ``refs/heads/`` prefix) so the push trigger and pull_request
+# trigger for the same branch share one slot. Without this we'd
+# double-spend the matrix every time a branch was pushed AND had
+# an open PR, and on private repos the second copy can preempt
+# the first via runner-quota scheduling (investigation #27).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 # Minimal permissions per GitHub security guidance. Release workflow
@@ -126,33 +133,96 @@ jobs:
   #    LibreOffice and run the full integration suite.
   # -----------------------------------------------------------------
   integration:
-    name: Integration (${{ matrix.os }})
+    name: Integration (${{ matrix.os }}${{ matrix.lo_label && format(', LO {0}', matrix.lo_label) || '' }})
     needs: build
     runs-on: ${{ matrix.os }}
+    # When a matrix entry sets ``container``, the whole job runs inside
+    # that Docker image. This lets us cover Debian (stable + backports)
+    # — the user's actual deployment environment — without needing a
+    # Debian-native runner (GHA only offers Ubuntu / macOS / Windows).
+    # Matrix entries without a container value run natively on the
+    # ${{ matrix.os }} runner; GHA evaluates ``container:`` to an empty
+    # string and skips the containerization.
+    container: ${{ matrix.container }}
     strategy:
-      fail-fast: false  # one OS failing shouldn't cancel the others
+      fail-fast: false  # one OS / LO version failing shouldn't cancel the others
       matrix:
         # macos-13 (Intel) DISABLED 2026-05-18 — queues for 9+ hours on
-        # the free tier and blocks the whole run from completing (matrix
-        # only marks "done" when every entry finishes). The wheel matrix
-        # still bundles a macOS Intel pydantic_core, so the .oxt remains
-        # installable for Intel-Mac users; we just don't run CI against
-        # that environment automatically. Revisit when GitHub-hosted
-        # Intel macOS runners are faster, or move to a self-hosted runner.
-        os:
-          - ubuntu-latest    # Linux x86_64
-          - macos-14         # macOS Apple Silicon (PAID; ~$0.12/min)
-          - windows-latest   # Windows x86_64
+        # the free tier and blocks the whole run. The wheel matrix
+        # still bundles a macOS Intel pydantic_core so the .oxt
+        # remains installable for Intel-Mac users; we just don't run
+        # CI against that environment automatically.
+        #
+        # ``include`` -only matrix: each entry is its own job. We
+        # deliberately don't use a base axis (e.g. ``os: [...]``)
+        # because then ``include`` rows whose values match an existing
+        # combination *merge into* that one job instead of creating
+        # a new one — which is exactly what bit us in commit cfc7d58
+        # (four ubuntu-latest includes collapsed into a single job,
+        # only the last entry's ``lo_apt_source`` survived).
         include:
-          # Which OSes also run dogtail GUI smoke?
+          # ----- Linux x86_64: fan out across LibreOffice versions -----
+          # Catches panel-rendering regressions that only fire on a
+          # specific major LO release (the user reports a silent
+          # soffice crash on 26.x; ``ppa-fresh`` is the entry meant
+          # to reproduce it).
+          #
+          # We don't have a dedicated 25.2 entry: TDF stopped
+          # publishing version-pinned Launchpad PPAs after the 7.5.x
+          # series — there's no ``libreoffice/libreoffice-25-2`` (a
+          # previous revision of this matrix had that entry and the
+          # job failed in 22s on ``add-apt-repository``). The Still
+          # PPA currently tracks 25.2.x, so the ``ppa-still`` job
+          # is the 25 coverage.
           - os: ubuntu-latest
+            lo_apt_source: ubuntu       # noble's bundled LO 24.2.x
+            lo_label: "24.2 noble apt"
             run_gui_smoke: true
-          # Which OSes run the live chat E2E? All of them — every
-          # platform validates the SDK round-trip on its own Python ABI.
-          - os: ubuntu-latest
             run_live_chat: true
+          - os: ubuntu-latest
+            lo_apt_source: ppa-still    # TDF ppa:libreoffice/libreoffice-still (currently 25.2.x)
+            lo_label: "still TDF PPA (25.x)"
+          - os: ubuntu-latest
+            lo_apt_source: ppa-fresh    # TDF ppa:libreoffice/ppa (latest, currently 26.x)
+            lo_label: "fresh TDF PPA (26.x)"
+            run_gui_smoke: true
+          # ----- Debian containers -----
+          # GHA doesn't have Debian-native runners, but we need this
+          # coverage: the user's actual deployment environment is
+          # Debian + LibreOffice from backports, which ships a build
+          # of LO 26.2.x with a stricter PyUNO bridge than Ubuntu's
+          # 26.x builds — the proxy for ``XWindow`` arguments omits
+          # ``XWindowPeer`` from its declared interface set (see
+          # ADR-0026). The user's 2026-05-19 silent-panel-crash bug
+          # reproduces only against this combination. Running these
+          # in Docker containers reaches it from CI.
+          # ``buildpack-deps:bookworm`` is debian:bookworm with git,
+          # curl, ca-certificates, gnupg, lsb-release pre-installed
+          # — needed BEFORE actions/checkout@v4 runs (we can't run
+          # apt-get install in a step before checkout when using
+          # ``container:``). The userspace is identical to
+          # ``debian:bookworm`` so the coverage is the same; we just
+          # skip the bootstrap step that bare debian would need.
+          - os: ubuntu-latest
+            container: buildpack-deps:bookworm
+            lo_apt_source: debian-stable
+            lo_label: "Debian bookworm stable"
+          - os: ubuntu-latest
+            container: buildpack-deps:bookworm
+            lo_apt_source: debian-backports
+            lo_label: "Debian bookworm backports (LO 26.x)"
+            # Visual verification on the user's actual deployment
+            # environment — the strict-PyUNO LO 26.x build that
+            # surfaced ADR-0026's empty-panel bug. Without this,
+            # CI can pass while the panel renders empty.
+            run_gui_smoke: true
+          # ----- macOS Apple Silicon (PAID; ~$0.12/min) -----
+          # Homebrew cask installs the current LibreOffice — same
+          # major as ``ppa-fresh`` typically, so this doubles as a
+          # cross-platform sanity for the latest version.
           - os: macos-14
             run_live_chat: true
+          # ----- Windows x86_64 -----
           - os: windows-latest
             run_live_chat: true
     steps:
@@ -180,13 +250,98 @@ jobs:
 
       - name: Install LibreOffice (Linux)
         if: runner.os == 'Linux'
+        env:
+          LO_APT_SOURCE: ${{ matrix.lo_apt_source || 'ubuntu' }}
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          set -x
+          # Inside a Debian container we're root and sudo isn't
+          # installed; on the native Ubuntu runner sudo is needed.
+          if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+          # Containers from ``debian:bookworm`` are minimal — git,
+          # curl, ca-certificates, gnupg, and lsb-release aren't
+          # installed. Without them ``actions/checkout``,
+          # ``setup-uv``, and ``add-apt-repository`` can't run. Bring
+          # them in before doing anything else.
+          if [ -f /etc/debian_version ] && ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              git curl ca-certificates gnupg lsb-release \
+              software-properties-common
+          fi
+
+          # Pick the apt source by matrix entry. ``ubuntu`` (default)
+          # uses noble's bundled LO 24.2.x. The ``ppa-*`` variants pull
+          # newer LO branches from TDF's official PPAs so we can detect
+          # major-version regressions. ``debian-stable`` and
+          # ``debian-backports`` enable Debian-specific paths inside
+          # a ``debian:bookworm`` container so we cover the user's
+          # actual deployment environment (see ADR-0026).
+          case "$LO_APT_SOURCE" in
+            ubuntu)
+              echo "Using Ubuntu noble apt (LibreOffice 24.2.x)"
+              ;;
+            ppa-still)
+              $SUDO apt-get update
+              $SUDO apt-get install -y --no-install-recommends software-properties-common
+              $SUDO add-apt-repository -y ppa:libreoffice/libreoffice-still
+              ;;
+            ppa-fresh)
+              $SUDO apt-get update
+              $SUDO apt-get install -y --no-install-recommends software-properties-common
+              $SUDO add-apt-repository -y ppa:libreoffice/ppa
+              ;;
+            debian-stable)
+              echo "Using Debian bookworm stable apt (LibreOffice 7.x)"
+              ;;
+            debian-backports)
+              echo "Enabling Debian bookworm-backports for LibreOffice 26.x"
+              echo "deb http://deb.debian.org/debian bookworm-backports main" \
+                | $SUDO tee /etc/apt/sources.list.d/backports.list
+              $SUDO apt-get update
+              # Pin LibreOffice packages to backports — without this
+              # apt picks the stable LO 7.x even when backports is
+              # enabled, defeating the point of the matrix entry.
+              # Built via printf to avoid a HEREDOC whose closing
+              # delimiter would break YAML block-scalar indentation.
+              printf '%s\n' \
+                'Package: libreoffice* libobasis* python3-uno' \
+                'Pin: release a=bookworm-backports' \
+                'Pin-Priority: 990' \
+                | $SUDO tee /etc/apt/preferences.d/99-libreoffice-backports
+              ;;
+            *)
+              echo "::error::Unknown LO_APT_SOURCE=$LO_APT_SOURCE"
+              exit 1
+              ;;
+          esac
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
             libreoffice libreoffice-script-provider-python \
-            python3-uno xvfb at-spi2-core x11-utils
+            python3-uno xvfb at-spi2-core x11-utils \
+            imagemagick
+          # Log which version actually got installed so the failing
+          # job's banner line tells us the real number not just the
+          # PPA label. Also append to $GITHUB_STEP_SUMMARY so the
+          # version shows on the workflow run page without having to
+          # expand the install log — important for the matrix where
+          # the PPA name (``fresh``) drifts independently of the real
+          # major version (``fresh`` may still be 25.x on noble until
+          # 26.x is built for it).
+          echo "::group::Installed LibreOffice version"
+          lo_version="$(/usr/bin/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+          echo "$lo_version"
+          dpkg -l 'libreoffice-core*' 2>/dev/null | tail -5 || true
+          echo "::endgroup::"
+          {
+            echo "### LibreOffice version (Linux, $LO_APT_SOURCE)"
+            echo ""
+            echo '```'
+            echo "$lo_version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
           # Start a system AT-SPI bus for dogtail (Linux only).
-          sudo systemctl --version >/dev/null 2>&1 || true
+          $SUDO systemctl --version >/dev/null 2>&1 || true
 
       - name: Install LibreOffice (macOS)
         if: runner.os == 'macOS'
@@ -197,10 +352,64 @@ jobs:
           # prompt so we can headless-launch from CI.
           brew install --cask libreoffice
           xattr -dr com.apple.quarantine /Applications/LibreOffice.app || true
+          lo_version="$(/Applications/LibreOffice.app/Contents/MacOS/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+          echo "$lo_version"
+          {
+            echo "### LibreOffice version (macOS Homebrew cask)"
+            echo ""
+            echo '```'
+            echo "$lo_version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install LibreOffice (Windows)
         if: runner.os == 'Windows'
-        run: choco install libreoffice-fresh -y --no-progress
+        shell: pwsh
+        run: |
+          # documentfoundation.org's CDN intermittently times out on
+          # the Windows install — observed 2026-05-20 with a 60s
+          # ``GetResponse`` timeout from chocolatey on the
+          # ``LibreOffice_26.2.3_Win_x86-64.msi`` URL. Retry up to
+          # 3 times with exponential backoff so a transient CDN
+          # outage doesn't block the PR.
+          $maxAttempts = 3
+          $sleepSeconds = 30
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            Write-Host "choco install libreoffice-fresh attempt $attempt of $maxAttempts"
+            choco install libreoffice-fresh -y --no-progress
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Install succeeded on attempt $attempt"
+              break
+            }
+            if ($attempt -lt $maxAttempts) {
+              Write-Host "Install failed (exit $LASTEXITCODE); sleeping ${sleepSeconds}s before retry"
+              Start-Sleep -Seconds $sleepSeconds
+              $sleepSeconds = $sleepSeconds * 2
+            } else {
+              Write-Error "All $maxAttempts attempts failed"
+              exit 1
+            }
+          }
+          $sofficeExe = 'C:\Program Files\LibreOffice\program\soffice.exe'
+          if (Test-Path $sofficeExe) {
+            $lo_version = (& $sofficeExe --version) 2>&1
+          } else {
+            $lo_version = 'soffice.exe not found at expected path'
+          }
+          Write-Host $lo_version
+          # Avoid a PowerShell here-string (``@"..."@``) here: its closing
+          # delimiter must sit at column 1 of the line, but that breaks
+          # YAML's block-scalar indentation rule and the whole workflow
+          # fails to parse silently (GitHub does NOT trigger a run when
+          # the file is unparseable — the symptom is "no checks queued",
+          # not a visible error). Build the summary with explicit
+          # Add-Content lines instead.
+          $fence = [char]0x60 + [char]0x60 + [char]0x60
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### LibreOffice version (Windows Chocolatey libreoffice-fresh)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lo_version
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
 
       # ---- Install dev deps (for pytest itself) ----
 
@@ -211,6 +420,42 @@ jobs:
         if: matrix.run_gui_smoke == true
         run: uv sync --group gui-smoke
 
+      # ---- Wire LibreOffice's PyUNO into the uv venv ----
+      #
+      # ``python3-uno`` (apt) ships ``uno.py`` + ``unohelper.py`` under
+      # ``/usr/lib/python3/dist-packages/`` and the C bridge ``pyuno.so``
+      # under ``/usr/lib/libreoffice/program/``. The bridge is built for
+      # whichever system Python the apt package targets (Python 3.12 on
+      # Ubuntu noble); the pure-Python wrappers ``uno.py`` and
+      # ``unohelper.py`` work under any modern CPython 3.x. Sym-link
+      # both into the venv's site-packages so ``import uno`` from inside
+      # the uv-managed Python venv (3.13) resolves to the real bridge.
+      #
+      # If the bridge's C ABI is incompatible across minor versions
+      # (3.12 → 3.13 sometimes works thanks to Python's stable ABI but
+      # not guaranteed), ``import uno`` will surface a clear ImportError
+      # and the integration tests skip via the existing fixture path.
+      # See investigation #28.
+      - name: Wire PyUNO into the venv (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          VENV_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+          ln -sf /usr/lib/python3/dist-packages/uno.py "$VENV_SITE/uno.py"
+          ln -sf /usr/lib/python3/dist-packages/unohelper.py "$VENV_SITE/unohelper.py"
+          # Verify the bridge loads cleanly before the test step uses
+          # it — turns an ABI mismatch into a build-time failure with
+          # context instead of a silent skip.
+          .venv/bin/python -c "
+          import sys
+          import uno
+          print('uno module ok:', uno.__file__)
+          # Touching getComponentContext exercises the C bridge.
+          ctx = uno.getComponentContext()
+          print('UNO bridge ok, local ctx:', type(ctx).__name__)
+          " || {
+            echo "::warning::PyUNO bridge failed to load under venv Python $(. venv/bin/python --version 2>&1). Integration tests will skip; fix is to align venv Python with the system Python that python3-uno targets."
+          }
+
       # ---- Install the .oxt into each runner's LibreOffice ----
 
       - name: Install Talk2View-Writer .oxt
@@ -219,25 +464,90 @@ jobs:
 
       # ---- Start headless soffice with a UNO socket ----
 
-      - name: Start headless soffice (Linux, under xvfb)
+      - name: Start soffice (Linux, under xvfb)
         if: runner.os == 'Linux'
         run: |
-          # `xvfb-run --auto-servernum` allocates a free display +
-          # tears it down after the wrapped command exits. We use it
-          # via `&` so soffice keeps running for the test step.
           export DISPLAY=:99
           Xvfb :99 -screen 0 1280x1024x24 &
           sleep 1
-          # Pipe stderr/stdout to a file so we can capture GTK plugin
-          # warnings + segfault traces in the test artifacts. These are
-          # invisible to Python try/except but tell us exactly when
-          # native code crashes.
-          T2V_WRITER_DEBUG=1 /usr/bin/soffice \
-            --headless --norestore --nologo --nodefault \
+          # soffice needs a session dbus to initialise. The native
+          # GHA Ubuntu runner has a session bus already; Debian
+          # containers don't. ``dbus-run-session`` creates a
+          # per-process session bus for soffice — required in
+          # containers, harmless elsewhere.
+          if command -v dbus-run-session >/dev/null 2>&1; then
+            DBUS_WRAP=(dbus-run-session --)
+          else
+            DBUS_WRAP=()
+            echo "::warning::dbus-run-session not found; soffice may fail to start without a session bus"
+          fi
+          # Launch soffice with ``--writer`` so it opens an actual
+          # Writer window on Xvfb. With ``--headless`` (used before),
+          # soffice never paints anything to Xvfb, so screenshots
+          # are useless black rectangles. The integration tests
+          # connect via the UNO socket and AT-SPI; both work with a
+          # GUI soffice, and the GUI lets us screenshot what's
+          # actually on screen — splash, recovery dialog, frozen
+          # blank window, etc. — every 15s during the wait so we
+          # have visual forensics if the UNO listener doesn't come
+          # up.
+          T2V_WRITER_DEBUG=1 "${DBUS_WRAP[@]}" /usr/bin/soffice \
+            --writer --norestore --nologo --nodefault \
             --accept="socket,host=127.0.0.1,port=2002;urp;" \
             >soffice.stdout.log 2>soffice.stderr.log &
-          echo $! > soffice.pid
-          uv run python scripts/wait_for_soffice.py --timeout 60
+          SOFFICE_BG_PID=$!
+          echo "$SOFFICE_BG_PID" > soffice.pid
+
+          # Periodic screenshot loop running in background.
+          # Captures Xvfb every 15s up to 120s so we can SEE what
+          # soffice is showing at each stage. Saved into ``_diag/``
+          # which the upload-artifact step grabs regardless of
+          # pass/fail.
+          mkdir -p _diag
+          (
+            for t in 5 15 30 45 60 90 120; do
+              sleep_for=$((t - ${last_t:-0}))
+              sleep "$sleep_for"
+              last_t=$t
+              if command -v import >/dev/null 2>&1; then
+                DISPLAY=:99 import -window root \
+                  "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              elif command -v scrot >/dev/null 2>&1; then
+                DISPLAY=:99 scrot \
+                  "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              fi
+            done
+          ) &
+          SCREENSHOT_PID=$!
+
+          # Diagnostic snapshot at 5s — process state right after
+          # soffice fork settles. Caught the "sleeping in Sl state
+          # forever" pattern that headless mode was hiding.
+          sleep 5
+          echo "::group::Post-launch process state"
+          if kill -0 "$SOFFICE_BG_PID" 2>/dev/null; then
+            echo "soffice wrapper (pid $SOFFICE_BG_PID) is alive"
+          else
+            echo "::error::soffice wrapper (pid $SOFFICE_BG_PID) is NOT alive after 5s"
+          fi
+          if command -v ps >/dev/null 2>&1; then
+            ps auxf | grep -E 'soffice|dbus|Xvfb' | grep -v grep || echo "no soffice/dbus/Xvfb processes"
+          fi
+          if command -v ss >/dev/null 2>&1; then
+            ss -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
+          elif command -v netstat >/dev/null 2>&1; then
+            netstat -tlnp 2>/dev/null | grep :2002 || echo "nothing listening on :2002 yet"
+          else
+            echo "(neither ss nor netstat available — install iproute2 or net-tools to see listening ports)"
+          fi
+          echo "::endgroup::"
+
+          # 120s timeout matches the screenshot schedule above —
+          # if soffice opens the listener earlier we proceed; if
+          # not, we have screenshots at 5/15/30/45/60/90/120s.
+          uv run python scripts/wait_for_soffice.py --timeout 120 \
+            && kill "$SCREENSHOT_PID" 2>/dev/null || true
+        shell: bash
 
       - name: Start headless soffice (macOS)
         if: runner.os == 'macOS'
@@ -261,7 +571,18 @@ jobs:
       # ---- Run the test suites ----
 
       - name: Integration tests (UNO socket, all platforms)
-        run: uv run pytest -m integration --tb=short
+        # Step-level timeout-minutes is the hard kill — if pytest hangs
+        # beyond 5 min (the longest legitimate integration run on macOS
+        # arm64 cold-boot has been ~3:30), the step fails with a useful
+        # message rather than waiting for the runner-level idle preempt
+        # that has been killing this matrix entry with no diagnostic.
+        # See investigation #27.
+        #
+        # ``-s`` disables pytest's stdout capture so output streams to
+        # the runner log as each test progresses — without it a hanging
+        # fixture produces no log line for the whole step.
+        timeout-minutes: 5
+        run: uv run pytest -m integration -s --tb=short
 
       - name: GUI smoke test (Linux only)
         if: matrix.run_gui_smoke == true
@@ -278,11 +599,42 @@ jobs:
 
       # ---- Diagnostics on failure ----
 
+      - name: Screenshot Xvfb on failure (Linux)
+        # Capture whatever the X display looks like at the moment of
+        # failure. For soffice startup races, deck-not-clicking,
+        # or panel-rendered-empty bugs, this is the only visual
+        # evidence we get. Uploaded to ``_diag/`` via the
+        # ``Collect diagnostic logs`` step below.
+        if: failure() && runner.os == 'Linux'
+        run: |
+          mkdir -p _diag
+          if command -v import >/dev/null 2>&1; then
+            DISPLAY=:99 import -window root _diag/screenshot_on_failure.png 2>/dev/null \
+              && echo "Screenshot saved to _diag/screenshot_on_failure.png" \
+              || echo "import command failed (Xvfb not running?)"
+          elif command -v scrot >/dev/null 2>&1; then
+            DISPLAY=:99 scrot _diag/screenshot_on_failure.png \
+              && echo "Screenshot saved" \
+              || echo "scrot failed"
+          else
+            echo "No screenshot tool available"
+          fi
+
       - name: Dump LibreOffice log on failure (Linux)
         if: failure() && runner.os == 'Linux'
         run: |
+          echo "::group::soffice.stderr.log"
+          cat soffice.stderr.log 2>/dev/null || echo "(no soffice.stderr.log)"
+          echo "::endgroup::"
+          echo "::group::soffice.stdout.log"
+          cat soffice.stdout.log 2>/dev/null || echo "(no soffice.stdout.log)"
+          echo "::endgroup::"
+          echo "::group::journalctl libreoffice"
           journalctl --user -u libreoffice 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::registrymodifications.xcu"
           cat ~/.config/libreoffice/4/user/registrymodifications.xcu 2>/dev/null | head -50 || true
+          echo "::endgroup::"
 
       # Always upload our log + soffice's stderr regardless of pass/fail.
       # Native crashes (segfaults inside the sidebar dock code) leave
@@ -315,7 +667,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-logs-${{ matrix.os }}-${{ github.sha }}
+          name: integration-logs-${{ matrix.os }}${{ matrix.lo_apt_source && format('-{0}', matrix.lo_apt_source) || '' }}-${{ github.sha }}
           path: _diag/
           if-no-files-found: warn
           retention-days: 30

@@ -599,3 +599,297 @@ real — every drift is a paper-cut.
 3. Consider an opt-in "fetch missing wheel from PyPI on first launch"
    path as a fallback. Would need network access at first chat —
    acceptable as a fallback when the bundled matrix doesn't match.
+
+---
+
+## #25 — soffice's URP TCP acceptor hangs on first start in some sandbox containers
+
+**What:** Running `soffice --headless --accept="socket,host=127.0.0.1,port=2002;urp;"`
+inside the Anthropic Code Web execution sandbox (Ubuntu 24.04, no
+display, no D-Bus session bus, container-isolated network namespace)
+leaves the `URP Acceptor` thread stuck on `__futex_wait` indefinitely.
+The process stays alive (PipeIPC thread accepts on the SingleOffice
+Unix pipe), uses ~90 MB resident, but never binds the TCP listening
+socket. A `connect()` against `127.0.0.1:2002` gets `ECONNREFUSED`
+forever. `soffice --convert-to txt` exhibits the same hang.
+
+Repro:
+```
+sudo -u testrunner soffice --writer --headless --norestore --nologo --nodefault \
+  --accept="socket,host=127.0.0.1,port=2002;urp;StarOffice.ServiceManager" \
+  -env:UserInstallation=file:///home/testrunner/.config/libreoffice/4
+```
+The `URP Acceptor` thread's stack:
+```
+[<0>] __futex_wait+0x14a/0x180
+[<0>] futex_wait+0x5f/0x110
+[<0>] do_futex+0x13e/0x1d0
+[<0>] __x64_sys_futex+0x72/0x1d0
+```
+Neither `xvfb-run` nor `dbus-run-session` unblocks it. `--safe-mode`
+and a pre-initialised profile (`--terminate_after_init` first) don't
+help either. The conversion path (which doesn't need URP) also hangs,
+so the bug is upstream of the listener — likely a startup-sync
+deadlock specific to this container's seccomp / cgroup / namespace
+posture.
+
+**Where:** `Talk2View-Writer/tests/integration/conftest.py` — fixture
+`uno_context` skips with the canonical "start soffice on :2002"
+message when the connection refuses, which is the symptom in this
+sandbox. CI on GitHub-hosted runners doesn't hit this (different
+container baseline).
+
+**Why it matters:** Local end-to-end testing on the Anthropic Code Web
+sandbox can't drive a real soffice. The new `tests/synthetic/` and
+`tests/mock_chat/` suites cover the same ground using an in-process
+synthetic UNO model and an httpx MockTransport-style mock, so the
+sandbox limitation no longer blocks development — but the integration
+suite (`tests/integration/`) genuinely requires a working soffice and
+must run in CI.
+
+**Next step:**
+1. File an upstream LibreOffice bug if a minimal repro outside this
+   container reproduces the URP-acceptor hang.
+2. Move the integration suite to a self-hosted runner (or a clean
+   GitHub Actions ubuntu-latest job, which already works) for any
+   contributor who can't run soffice locally.
+3. Document the symptom + workaround (synthetic suite) in the
+   integration tests README so newcomers don't burn a day on it.
+
+---
+
+## #26 — `format_paragraph` silently dropped unknown alignment values
+
+**What:** Before this PR, `format_paragraph(alignment="diagonal")`
+raised `KeyError` from inside `_ALIGNMENT_MAP` instead of returning a
+structured error. `set_page_setup(orientation="rotated")` ignored the
+value entirely and returned `success: True, applied: {}` — leaving
+the agent unable to know that its formatting attempt was a no-op.
+
+**Where:** `src/talk2view_writer/tools/formatting.py::format_paragraph`,
+`src/talk2view_writer/tools/structure.py::set_page_setup`. Fixed in
+this PR by adding explicit allow-list checks for both fields, mirroring
+the validation pattern of every other enum-shaped argument
+(`break_type`, `paper_size`, etc.).
+
+**Why it matters:** Silent failures here defeat the agent's
+"on tool error, read recovery and adjust" rule (see CLAUDE.md).
+An unrecognised alignment looked like a successful no-op while
+actually doing nothing.
+
+**Next step:** Audit every `_*_MAP[arg]` lookup across the tool
+modules and confirm there's a preceding validation guard. The
+formatting / structure tools were the last two without one; flag any
+new tool that lands without a `validation guard → recovery message`
+flow in code review.
+
+---
+
+## #27 — Integration tests after sidebar-dock dispatch hang the next doc-load
+
+**What:** Run `pytest -m integration` against a real headless soffice
+where the suite contains `test_sidebar_dock` (which dispatches
+`.uno:SidebarDeck` with our `com.talk2view.writer.Deck` parameter)
+followed by `test_smoke::test_libreoffice_can_open_blank_writer_document`
+(which calls `desktop.loadComponentFromURL("private:factory/swriter",
+"_blank", 0, (Hidden=True,))`).
+
+Observed in PR #1 run 26102114783 / job 76755905627 (ubuntu-latest):
+
+```
+14:01:10 test_sidebar_dock.py::test_sidebar_deck_opens_without_crashing_soffice PASSED [ 25%]
+14:01:10–14:03:41  test_smoke.py::test_libreoffice_can_open_blank_writer_document  (no output for 2½ min)
+14:03:41 The runner has received a shutdown signal.
+```
+
+The second test never produced any pytest output before the GitHub-
+hosted runner sent SIGTERM (likely a job-level inactivity / quota
+mechanism — the workflow itself has no step-level timeout). soffice
+was alive on `127.0.0.1:2002` (we saw it ready 1.2s after launch)
+but the bridge call hung.
+
+Hypothesis: the sidebar dock framework still holds a strong reference
+to the previous doc's frame / controller via the panel singleton
+(`Talk2ViewWriterExtension._open_panels`), so the next
+`loadComponentFromURL` deadlocks on some shared mutex inside
+LibreOffice (likely VCL's solar_mutex held while finalising the old
+deck).
+
+**Where:** `tests/integration/conftest.py::blank_document`,
+`tests/integration/test_sidebar_dock.py`, `src/talk2view_writer/
+ui/sidebar_panel.py`.
+
+**Why it matters:** Every integration job in CI hits this. The runner
+shutdown gives us no diagnostic trail (no pytest stack, no test ID
+reported as "failed", just `##[error]The operation was canceled.`).
+Local repro is straightforward — `pytest -m integration` reproduces
+the hang as long as `test_sidebar_dock` runs before `test_smoke`.
+
+**Next step:**
+
+This PR adds three mitigations:
+
+1. ``pytest-timeout`` + ``--timeout=60`` in ``pyproject.toml`` so a
+   hang surfaces as a pytest traceback (with the actual stuck Python
+   frame) instead of an opaque runner shutdown signal.
+2. Hardened ``blank_document`` teardown in
+   ``tests/integration/conftest.py``: explicit ``.uno:Sidebar``
+   dispatch to close the deck, then ``doc.close(True)`` (force).
+3. ``pytest_collection_modifyitems`` re-orders integration tests
+   so ``test_smoke.py`` runs before ``test_sidebar_dock.py``. With
+   smoke proving the fundamentals first, a dock-test side effect
+   doesn't break unrelated fixtures.
+
+Follow-up: the real fix is to give the panel a clean disposal path
+so the sidebar framework's references to the dying frame don't
+linger. Track the panel's lifecycle and explicitly null out
+``_open_panels`` on doc-close. Probably needs a frame-listener on
+``XFrame.addEventListener(closing=...)``.
+
+---
+
+## #28 — Integration tests have always been silently mocked, never running against real soffice
+
+**What:** Every "passing" integration run in CI history has run against
+the unit-test conftest's UNO stub, not the real PyUNO bridge — and
+every "hung" integration run was a MagicMock infinite loop, not a
+real soffice deadlock.
+
+The smoking-gun stack from PR #1 run 26104536192 (commit b2e18bf,
+ubuntu-latest, with pytest-timeout enabled):
+
+```
+File ".../tests/integration/test_smoke.py", line 27, in test_libreoffice_can_open_blank_writer_document
+    el = enum.nextElement()
+File ".../python3.13/unittest/mock.py", line 730, in __getattr__
+    return result
+```
+
+`enum.nextElement()` is calling into `unittest/mock.py` — which means
+`enum` is a `MagicMock`, which means `desktop.loadComponentFromURL(...)`
+returned a `MagicMock`, which means `uno.getComponentContext()` is a
+`MagicMock`, which means **`uno` itself is the unit-test stub** instead
+of the real python3-uno package.
+
+The smoke test:
+
+```python
+enum = blank_document.getText().createEnumeration()
+while enum.hasMoreElements():
+    el = enum.nextElement()
+```
+
+`MagicMock` objects are unconditionally truthy, so
+`while enum.hasMoreElements():` never exits. The pytest-timeout dump
+finally surfaced this after we added `--timeout=60`.
+
+**Where:** `tests/conftest.py` (top-level) installs stub modules in
+`sys.modules` for `uno`, `unohelper`, every `com.sun.star.*` it knows
+about — so unit tests can `import uno` without LibreOffice. Those stubs
+persist for the whole pytest session. `tests/integration/conftest.py`'s
+`uno_context` fixture does `import uno` and gets the stub back, not
+the real bridge. Comment in the file claimed "per-directory conftest
+precedence means importing uno from this file uses the real module" —
+that was incorrect; conftest precedence does not eject pre-populated
+sys.modules entries.
+
+**Why it matters:** None of the existing integration tests have ever
+actually validated the panel-rendering or sidebar-dock-survival
+behaviour they claim to. They've been MagicMock no-ops. The previous
+commits in this repo that tried to "fix" the sidebar-crash test were
+chasing a symptom (MagicMock infinite loop) of a different root cause
+(stubs leaking into integration), not the real panel-rendering bug
+those commits described.
+
+**Next step:**
+
+This PR fixes the leak with two changes in
+`tests/integration/conftest.py`:
+
+1. At module import time, walk `sys.modules` once and drop every
+   `uno` / `unohelper` / `com.sun.star.*` entry. The subsequent
+   `import uno` inside the `uno_context` fixture then resolves to the
+   real python3-uno package (apt-installed in CI).
+2. After `import uno`, sanity-check `uno.__file__` to confirm we
+   loaded the real module and not a hand-built `ModuleType` stub.
+   Raises a clear `RuntimeError` pointing at this investigation if
+   the stub leaks again.
+
+Follow-up: re-validate the test_sidebar_dock and test_smoke
+assertions once they're running against real soffice. The pre-existing
+"sidebar panel crashes soffice" investigation work may not actually
+reflect real behaviour — those tests were mocked too.
+
+---
+
+## #29 — Sidebar panel renders as empty grey rectangle on LO 26.2.3.2
+
+**Status:** Closed — root cause identified, response documented in
+[ADR-0027](adrs/0027-canonical-toolpanel-pattern.md). The panel
+implementation now follows LibreOffice's canonical Python toolpanel
+pattern verbatim; downstream builds whose PyUNO bridge rejects that
+pattern are treated as unsupported environments and surface a
+clear user-facing message instead of an empty deck. See
+``UnsupportedLibreOfficeBuildError`` in
+``src/talk2view_writer/ui/sidebar_panel.py`` and the
+"Supported LibreOffice builds" section of ``README.md``.
+
+**Date:** 2026-05-19
+
+**What:** User reported (with screenshot) that the Talk2View sidebar
+opens to an empty grey rectangle on LibreOffice 26.2.3.2 (Debian apt
+backports). No widgets visible: no status label, no login button, no
+chat history, no composer, no send button. Settings dispatch still
+works — the extension is running, the dock is hosting our panel,
+the panel just has no rendered children.
+
+talk2view.log shows the construction reaching
+``_create_panel_window: calling createContainerWindow (parent_peer ...)``
+and then **NO** subsequent log line — the matching
+``createContainerWindow returned ...`` log statement never fires.
+That means the call either raises an exception the framework swallows,
+returns None silently, or returns a window object whose children
+were never instantiated. Soffice itself stays alive (the user
+clicked Settings 2 seconds later and it worked).
+
+**Where:** ``_create_panel_window`` in ``src/talk2view_writer/ui/sidebar_panel.py``,
+specifically the ``provider.createContainerWindow(dialog_url, "",
+parent_peer, None)`` call. The parent_peer at that point is a bare
+XWindow (the ``_resolve_parent_peer`` fallback fired because
+``queryInterface(XWindowPeer)`` and ``getPeer()`` both returned None
+on the LO 26.x sidebar parent).
+
+**Why it matters:** The whole product is unusable on the user's LO
+build. CI was green on every run that included the integration
+test_sidebar_dock — because the existing assertions only checked that
+``getRealInterface()`` returned a non-None XToolPanel proxy and that
+``.Window``/``.PanelWindow`` was non-None. Both are satisfied even
+when the underlying VCL widget tree is empty. The tests were
+asserting on the wrong layer.
+
+**Next step:**
+
+This PR makes two changes:
+
+1. Wraps ``createContainerWindow`` in try/except with
+   ``logger.exception`` so the next user repro logs the actual
+   error (RuntimeException / DialogProviderError / whatever) into
+   talk2view.log. Also asserts on a None return.
+2. Strengthens ``tests/integration/test_sidebar_dock.py`` to call
+   ``getControl(id)`` for every named XDL control and assert each
+   one (a) exists and (b) has positive PosSize. Adds screenshot
+   capture (panel region + full window + root) via ImageMagick
+   ``import``; screenshots land in ``_diag/`` and are uploaded as
+   CI artifacts so the failure is visually verifiable.
+
+Once CI runs this against the ``fresh TDF PPA`` matrix entry and
+the screenshots + logger.exception output land in the artifact,
+we'll know the real cause and can fix the construction path. The
+likely fix candidates are:
+
+- Replace ``ContainerWindowProvider`` + XDL with programmatic
+  ``Toolkit.createWindow(WindowDescriptor)`` + ``UnoControlContainer``
+  (matches the canonical SDK toolpanel sample).
+- Pass a real XWindowPeer instead of the bare XWindow fallback —
+  possibly by demanding one via ``parent_window.getToolkit().getDesktopWindow()``
+  or similar.

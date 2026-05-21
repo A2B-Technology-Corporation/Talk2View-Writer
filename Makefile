@@ -1,7 +1,7 @@
 # Talk2View-Writer Makefile
 # Develop, test, and package the LibreOffice Writer extension.
 
-.PHONY: all install dev lint lint-fix format format-check test test-unit test-integration test-gui-smoke test-live coverage typecheck security vendor-wheels build package install-oxt clean help
+.PHONY: all install dev lint lint-fix format format-check test test-unit test-synthetic test-mock-chat test-integration test-gui-smoke test-live coverage typecheck security vendor-wheels build package install-oxt clean help
 
 BUILD_DIR := build
 DIST_DIR  := dist
@@ -43,8 +43,20 @@ format-check:
 test:
 	uv run pytest
 
+# Local default: every test that does NOT need a real soffice or live
+# engine. Includes unit (helpers), synthetic (real tool bodies vs an
+# in-process Writer doc), and mock_chat (SDK round-trip vs canned SSE).
+# Fast — runs the whole tool surface + chat flow in well under a second.
 test-unit:
-	uv run pytest -m unit
+	uv run pytest -m "unit or synthetic or mock_chat"
+
+# Just the in-process tool-body tests against the synthetic UNO model.
+test-synthetic:
+	uv run pytest -m synthetic
+
+# Just the SDK round-trip tests against the mock engine (httpx mocks).
+test-mock-chat:
+	uv run pytest -m mock_chat
 
 test-integration:
 	uv run pytest -m integration

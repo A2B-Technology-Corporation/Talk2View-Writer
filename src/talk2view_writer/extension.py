@@ -92,6 +92,7 @@ class Talk2ViewWriterExtension:
         property fired before the credentials could be sent — a
         deadlock-by-property.
         """
+        stale_cache = False
         with self._lock:
             if self._sdk is None:
                 # Pre-flight: make the bundled pydantic_core wheel matching
@@ -111,13 +112,39 @@ class Talk2ViewWriterExtension:
                 # session (token in storage), the auth listener will
                 # never fire — register tools now while we hold the
                 # lock.
+                #
+                # ``is_authenticated()`` only checks for a cached user;
+                # the access token may have expired server-side. In
+                # that case ``register_tools`` returns 401 →
+                # ``AuthenticationError``. Catch it, defer the
+                # cleanup to outside this lock — ``sdk.logout()``
+                # fires ``_on_auth_changed`` which re-acquires
+                # ``self._lock``, so calling it here would deadlock.
                 if self._sdk.is_authenticated():
                     logger.info(
                         "SDK init: cached auth detected, registering "
                         "tools immediately"
                     )
-                    self._register_tools_locked()
-            return self._sdk
+                    from talk2view.errors import AuthenticationError
+
+                    try:
+                        self._register_tools_locked()
+                    except AuthenticationError:
+                        stale_cache = True
+        if stale_cache:
+            logger.warning(
+                "Cached session is stale; engine rejected register_tools "
+                "with 401. Clearing local credentials so the user is "
+                "prompted to re-login on next action."
+            )
+            try:
+                self._sdk.logout()
+            except Exception:
+                logger.exception(
+                    "Stale-session cleanup via sdk.logout() failed; "
+                    "continuing"
+                )
+        return self._sdk
 
     def _register_tools_locked(self) -> None:
         """Register every tool with the SDK. Caller must hold ``self._lock``.

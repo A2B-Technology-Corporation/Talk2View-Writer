@@ -534,6 +534,19 @@ def format_paragraph(
                 "recovery": "Provide a positive value in points.",
             }
         )
+    if alignment is not None:
+        from talk2view_writer.tools.writing import _ALIGNMENT_MAP
+
+        if alignment not in _ALIGNMENT_MAP:
+            return json.dumps(
+                {
+                    "error": f'Unknown alignment "{alignment}".',
+                    "recovery": (
+                        "Use one of: "
+                        + ", ".join(sorted(_ALIGNMENT_MAP))
+                    ),
+                }
+            )
     if has_single:
         assert paragraph_index is not None
         if paragraph_index < 0:

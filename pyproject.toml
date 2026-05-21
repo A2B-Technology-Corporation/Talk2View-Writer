@@ -35,6 +35,7 @@ talk2view = { path = "../Talk2View-Platform/packages/sdk-python", editable = tru
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "bandit[toml]>=1.7.0",
@@ -75,8 +76,10 @@ ignore = ["D100", "D104", "D107"]
 [tool.ruff.lint.per-file-ignores]
 # Tests don't need exhaustive docstrings — the function name is the
 # spec. Mocked UNO callback signatures are fine to keep camelCase to
-# mirror the real interface they replace.
-"tests/**" = ["D101", "D102", "D103", "D417"]
+# mirror the real interface they replace. D105 covers magic methods
+# in synthetic UNO classes (``__getattr__`` etc.) — their behaviour
+# is documented in the surrounding class docstring.
+"tests/**" = ["D101", "D102", "D103", "D105", "D417"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -87,10 +90,23 @@ known-first-party = ["talk2view_writer"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = ["-v", "--tb=short", "--strict-markers"]
+# `--timeout=60` is a global per-test ceiling — any test that hangs
+# beyond 60s gets killed by pytest-timeout with a Python traceback
+# instead of an opaque "runner shutdown signal". Without this, a
+# hung soffice/UNO call on a CI runner kills the whole job and leaves
+# no diagnostic trail. See investigation #27.
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--timeout=60",
+    "--timeout-method=thread",
+]
 markers = [
     "unit: Unit tests (fast, no external dependencies)",
     "integration: Requires headless soffice on 127.0.0.1:2002 (cross-platform)",
+    "synthetic: Exercises real tool bodies against an in-process synthetic UNO Writer document (no soffice required).",
+    "mock_chat: SDK round-trip against a respx/MockTransport-backed engine. Covers login + chat + tool interrupt + resume without engine.talk2view.com.",
     "gui_smoke: Linux-only AT-SPI sidebar test (dogtail). Required-pass.",
     "live: Live chat E2E against engine.talk2view.com. Requires T2V_TEST_USER_EMAIL/PASSWORD env.",
     "e2e: End-to-end tests (legacy alias; superseded by integration + gui_smoke + live)",

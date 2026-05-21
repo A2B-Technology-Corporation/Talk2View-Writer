@@ -31,10 +31,49 @@ across Python 3.10–3.13. The cross-platform `pydantic_core` wheel
 matrix is bundled in the package; the right one is selected
 automatically at first launch (see [ADR-0023](docs/adrs/0023-vendor-pydantic-core-wheels.md)).
 
+### Supported LibreOffice builds
+
+Talk2View-Writer follows the canonical Python sidebar-panel pattern
+documented in LibreOffice's own SDK example
+(`odk/examples/python/toolpanel/toolpanel.py`). It works on any build
+that ships a stock PyUNO bridge:
+
+- **LibreOffice from The Document Foundation** —
+  [`.deb` / `.dmg` / `.msi` downloads](https://www.libreoffice.org/download/download/)
+  (any 7.x, 24.x, 25.x, 26.x). All three OSes.
+- **Flatpak** — `flathub:org.libreoffice.LibreOffice` (Linux).
+- **Snap** — the LibreOffice Snap (Linux).
+- **AppImage** from documentfoundation.org (Linux).
+- **macOS Homebrew Cask** — `brew install --cask libreoffice`.
+- **Debian/Ubuntu apt packages** — verified working on `bookworm`
+  stable + backports, `noble` 24.2, and the
+  `libreoffice-still`/`libreoffice-fresh` TDF PPAs (25.x, 26.x).
+
+If the deck opens to an empty rectangle you may be on a downstream
+build whose PyUNO bridge rejects the canonical pattern — see
+[ADR-0027](docs/adrs/0027-canonical-toolpanel-pattern.md). Installing
+a TDF-shipped build (Flathub / Snap / `.deb` from
+documentfoundation.org) is the fix.
+
 ## Status
 
-Phase A scaffold — see [`plan`](../../.claude/plans/i-want-to-make-rustling-eich.md)
-for the full roadmap.
+Phase F — packaging + comprehensive test rig complete. See
+[`plan`](../../.claude/plans/i-want-to-make-rustling-eich.md) for the
+full roadmap. The current branch covers:
+
+- Sidebar deck renders reliably (ADR-0003, ADR-0007); chat panel
+  handles every SDK event type (`text`, `status`, `todos`, `tool_call`,
+  `error`, `done`) and ships with slash commands `/help`, `/clear`,
+  `/logout`, `/settings`, `/tools`.
+- All 20 tools registered with the SDK; tool-call interrupts
+  auto-execute on the worker thread and marshal UNO calls back to the
+  UI thread (ADRs 0008, 0009, 0018, 0020).
+- Cross-platform universal `.oxt` (Linux, macOS x86_64 + arm64,
+  Windows) with a bundled `pydantic_core` wheel matrix (ADR-0023).
+- Five test layers — 180 unit + 61 synthetic-UNO tool + 4 mock-engine
+  SDK round-trip + 3 real-soffice integration + 1 live-engine chat —
+  proving the panel ↔ SDK ↔ tool ↔ document loop without the engine or
+  soffice when those are unavailable. See ADR-0024 for the split.
 
 ## Documentation
 

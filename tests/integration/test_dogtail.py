@@ -181,6 +181,74 @@ def test_talk2view_panel_renders_when_deck_clicked(writer_window: object) -> Non
     assert send_button is not None, "Send button not found"
     assert send_button.sensitive, "Send button is disabled (extension not initialised?)"
 
+    # Capture a screenshot for human visual verification + CI
+    # artifact. AT-SPI confirms the widgets EXIST in the
+    # accessibility tree, but a sidebar panel with broken layout
+    # (the bug user reported 2026-05-19) can still register
+    # widgets while painting nothing. The screenshot is the
+    # source-of-truth visual proof that the panel actually
+    # renders, not just constructs.
+    _capture_panel_screenshot("panel_after_deck_clicked")
+
+
+def _capture_panel_screenshot(label: str) -> None:
+    """Save a screenshot of the current Xvfb display to ``_diag/``.
+
+    Tries ``import`` (ImageMagick — present everywhere we run xvfb),
+    then ``scrot``. Skips silently when neither is available so the
+    test still passes on environments without screenshot tooling
+    (the assertions are the actual gate).
+
+    The CI workflow's ``Collect diagnostic logs`` step uploads
+    ``_diag/`` as a build artifact, so screenshots produced here
+    surface on the workflow run page for human review on every CI
+    run — green or red. That matches the user's directive for
+    Playwright-style visual E2E verification.
+    """
+    import shutil
+    from pathlib import Path
+
+    out_dir = Path("_diag")
+    out_dir.mkdir(exist_ok=True)
+    out_path = out_dir / f"screenshot_{label}.png"
+
+    display = os.environ.get("DISPLAY", ":99")
+    env = {**os.environ, "DISPLAY": display}
+
+    if shutil.which("import"):
+        try:
+            subprocess.run(
+                ["import", "-window", "root", str(out_path)],
+                check=True,
+                capture_output=True,
+                timeout=10,
+                env=env,
+            )
+            print(f"Screenshot saved: {out_path}", file=sys.stderr)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            print(f"import failed: {exc}", file=sys.stderr)
+
+    if shutil.which("scrot"):
+        try:
+            subprocess.run(
+                ["scrot", str(out_path)],
+                check=True,
+                capture_output=True,
+                timeout=10,
+                env=env,
+            )
+            print(f"Screenshot saved: {out_path}", file=sys.stderr)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            print(f"scrot failed: {exc}", file=sys.stderr)
+
+    print(
+        "No screenshot tool available (tried 'import', 'scrot'); "
+        "skipping visual capture",
+        file=sys.stderr,
+    )
+
 
 def _retry_find(
     root: object,
