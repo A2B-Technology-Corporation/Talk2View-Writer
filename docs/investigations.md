@@ -824,6 +824,16 @@ reflect real behaviour — those tests were mocked too.
 
 ## #29 — Sidebar panel renders as empty grey rectangle on LO 26.2.3.2
 
+**Status:** Closed — root cause identified, response documented in
+[ADR-0027](adrs/0027-canonical-toolpanel-pattern.md). The panel
+implementation now follows LibreOffice's canonical Python toolpanel
+pattern verbatim; downstream builds whose PyUNO bridge rejects that
+pattern are treated as unsupported environments and surface a
+clear user-facing message instead of an empty deck. See
+``UnsupportedLibreOfficeBuildError`` in
+``src/talk2view_writer/ui/sidebar_panel.py`` and the
+"Supported LibreOffice builds" section of ``README.md``.
+
 **Date:** 2026-05-19
 
 **What:** User reported (with screenshot) that the Talk2View sidebar

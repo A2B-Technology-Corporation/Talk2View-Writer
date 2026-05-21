@@ -94,6 +94,35 @@ _EXTENSION_ID = "com.talk2view.writer"
 _XDL_PATH = "panels/chat_panel.xdl"
 
 
+class UnsupportedLibreOfficeBuildError(RuntimeError):
+    """The running LibreOffice's PyUNO bridge can't host this panel.
+
+    Raised when ``ContainerWindowProvider.createContainerWindow``
+    fails on the strict-PyUNO XWindowPeer rejection (see ADR-0027 /
+    investigation #29). The exception ``args[0]`` is the
+    user-facing message; the underlying UNO exception is the
+    ``__cause__``.
+    """
+
+
+def _is_strict_pyuno_xwindowpeer_failure(exc: BaseException) -> bool:
+    """Detect the ADR-0027 strict-PyUNO XWindowPeer rejection.
+
+    The known failure mode is a UNO ``CannotConvertException`` (or
+    ``IllegalArgumentException`` on some builds) thrown out of
+    ``createContainerWindow`` because the bridge can't marshal the
+    bare ``XWindow`` ParentWindow at the ``XWindowPeer`` slot. We
+    fingerprint by class name (avoids importing the UNO exception
+    types at module load — they aren't available in stub-only test
+    environments) and a tolerant substring check on the message.
+    """
+    cls = type(exc).__name__
+    if cls not in {"CannotConvertException", "IllegalArgumentException"}:
+        return False
+    msg = (str(exc) or "").lower()
+    return "xwindowpeer" in msg or "windowpeer" in msg
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -205,7 +234,11 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
     def getRealInterface(self) -> Any:  # noqa: N802
         """Lazily build the panel window + return an XToolPanel wrapping it."""
         if self._tool_panel is None:
-            window = self._create_panel_window()
+            try:
+                window = self._create_panel_window()
+            except UnsupportedLibreOfficeBuildError as exc:
+                self._show_message("Talk2View — unsupported LibreOffice build", str(exc))
+                raise
             self._bind_controls(window)
             self._apply_auth_state()
             self._tool_panel = Talk2ViewToolPanel(window, self.ctx)
@@ -242,18 +275,10 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
              UNO_QUERY to obtain an XWindowPeer from the
              underlying VCL window.
 
-        Raises whatever the UNO bridge surfaces. The caller (Talk2ViewPanel.getRealInterface)
-        lets the exception propagate so the sidebar deck shows an
-        empty panel instead of a half-initialised one — and the
-        rotating log file captures the full trace for diagnosis.
-
-        Builds for which this canonical call fails (e.g. the
-        Debian apt-packaged LO 26.2.x backports build, which ships
-        a stricter PyUNO bridge config that breaks the canonical
-        path — see ADR-0027 / investigation #29) are downstream
-        packaging bugs; users on those builds should switch to
-        TDF-shipped LibreOffice (deb from documentfoundation.org,
-        Flatpak from Flathub, or Snap).
+        Raises ``UnsupportedLibreOfficeBuildError`` on the known
+        strict-PyUNO failure mode (see ADR-0027 / investigation #29)
+        with an actionable message; any other UNO exception
+        propagates verbatim so the rotating log captures the trace.
         """
         logger.info("_create_panel_window: resolving PIP singleton")
         pip = self.ctx.getValueByName(
@@ -272,9 +297,26 @@ class Talk2ViewPanel(unohelper.Base, XUIElement):
         logger.info("_create_panel_window: provider %s", _ru(provider))
 
         logger.info("_create_panel_window: calling createContainerWindow")
-        window = provider.createContainerWindow(
-            dialog_url, "", self._parent_window, None
-        )
+        try:
+            window = provider.createContainerWindow(
+                dialog_url, "", self._parent_window, None
+            )
+        except Exception as exc:
+            if _is_strict_pyuno_xwindowpeer_failure(exc):
+                logger.exception(
+                    "_create_panel_window: strict-PyUNO XWindowPeer rejection "
+                    "(known incompatibility — see ADR-0027 / investigation #29)"
+                )
+                raise UnsupportedLibreOfficeBuildError(
+                    "This LibreOffice build has a known incompatibility with "
+                    "the canonical Python sidebar pattern (the PyUNO bridge "
+                    "rejects the sidebar's ParentWindow at the XWindowPeer "
+                    "slot of ContainerWindowProvider.createContainerWindow). "
+                    "Please install LibreOffice from documentfoundation.org, "
+                    "Flathub, or the Snap Store — those builds ship a stock "
+                    "PyUNO bridge that works."
+                ) from exc
+            raise
         logger.info(
             "_create_panel_window: createContainerWindow returned %s", _ru(window)
         )

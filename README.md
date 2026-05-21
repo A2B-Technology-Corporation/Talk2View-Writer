@@ -31,6 +31,30 @@ across Python 3.10–3.13. The cross-platform `pydantic_core` wheel
 matrix is bundled in the package; the right one is selected
 automatically at first launch (see [ADR-0023](docs/adrs/0023-vendor-pydantic-core-wheels.md)).
 
+### Supported LibreOffice builds
+
+Talk2View-Writer follows the canonical Python sidebar-panel pattern
+documented in LibreOffice's own SDK example
+(`odk/examples/python/toolpanel/toolpanel.py`). It works on any build
+that ships a stock PyUNO bridge:
+
+- **LibreOffice from The Document Foundation** —
+  [`.deb` / `.dmg` / `.msi` downloads](https://www.libreoffice.org/download/download/)
+  (any 7.x, 24.x, 25.x, 26.x). All three OSes.
+- **Flatpak** — `flathub:org.libreoffice.LibreOffice` (Linux).
+- **Snap** — the LibreOffice Snap (Linux).
+- **AppImage** from documentfoundation.org (Linux).
+- **macOS Homebrew Cask** — `brew install --cask libreoffice`.
+- **Debian/Ubuntu apt packages** — verified working on `bookworm`
+  stable + backports, `noble` 24.2, and the
+  `libreoffice-still`/`libreoffice-fresh` TDF PPAs (25.x, 26.x).
+
+If the deck opens to an empty rectangle you may be on a downstream
+build whose PyUNO bridge rejects the canonical pattern — see
+[ADR-0027](docs/adrs/0027-canonical-toolpanel-pattern.md). Installing
+a TDF-shipped build (Flathub / Snap / `.deb` from
+documentfoundation.org) is the fix.
+
 ## Status
 
 Phase F — packaging + comprehensive test rig complete. See

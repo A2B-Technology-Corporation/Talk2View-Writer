@@ -511,3 +511,125 @@ class TestOnSendClickedSlashRouting:
         )
         panel._on_send_clicked()
         thread_mock.start.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Strict-PyUNO XWindowPeer rejection detection (ADR-0027 / investigation #29)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestStrictPyUNOFailureDetection:
+    """ADR-0027 strict-PyUNO failure-mode detector tests.
+
+    The detector identifies the failure by exception class name +
+    message substring, without importing UNO exception types (which
+    aren't available in stub-only environments).
+    """
+
+    def _exc(self, class_name: str, message: str) -> Exception:
+        """Build an exception with the given class name + message.
+
+        Used to spoof the UNO type names we fingerprint on.
+        """
+        cls = type(class_name, (Exception,), {})
+        return cls(message)
+
+    def test_cannot_convert_with_xwindowpeer_message_matches(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        exc = self._exc(
+            "CannotConvertException",
+            "cannot convert to com.sun.star.awt.XWindowPeer",
+        )
+        assert _is_strict_pyuno_xwindowpeer_failure(exc) is True
+
+    def test_illegal_argument_with_windowpeer_message_matches(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        exc = self._exc(
+            "IllegalArgumentException",
+            "argument 3 needs XWindowPeer",
+        )
+        assert _is_strict_pyuno_xwindowpeer_failure(exc) is True
+
+    def test_unrelated_runtime_exception_does_not_match(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        exc = self._exc("RuntimeException", "internal error")
+        assert _is_strict_pyuno_xwindowpeer_failure(exc) is False
+
+    def test_cannot_convert_with_unrelated_message_does_not_match(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        exc = self._exc("CannotConvertException", "cannot convert string to integer")
+        assert _is_strict_pyuno_xwindowpeer_failure(exc) is False
+
+    def test_plain_exception_does_not_match(self) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            _is_strict_pyuno_xwindowpeer_failure,
+        )
+
+        assert _is_strict_pyuno_xwindowpeer_failure(ValueError("XWindowPeer")) is False
+
+
+@pytest.mark.unit
+class TestCreatePanelWindowErrorPath:
+    """Strict-PyUNO failure mapping in ``_create_panel_window``.
+
+    The known failure raises ``UnsupportedLibreOfficeBuildError``
+    with the UNO exception chained as ``__cause__``; everything
+    else propagates verbatim.
+    """
+
+    def _panel_with_failing_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        exc: Exception,
+    ) -> Any:
+        panel = _make_panel(monkeypatch, auth=False)
+
+        pip = MagicMock()
+        pip.getPackageLocation.return_value = "file:///opt/extension"
+        provider = MagicMock()
+        provider.createContainerWindow.side_effect = exc
+
+        panel.ctx = MagicMock()
+        panel.ctx.getValueByName.return_value = pip
+        panel.ctx.ServiceManager.createInstanceWithContext.return_value = provider
+        return panel
+
+    def test_strict_pyuno_failure_raises_unsupported_build_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from talk2view_writer.ui.sidebar_panel import (
+            UnsupportedLibreOfficeBuildError,
+        )
+
+        uno_exc = type("CannotConvertException", (Exception,), {})(
+            "cannot convert to com.sun.star.awt.XWindowPeer"
+        )
+        panel = self._panel_with_failing_provider(monkeypatch, uno_exc)
+
+        with pytest.raises(UnsupportedLibreOfficeBuildError) as info:
+            panel._create_panel_window()
+        assert "documentfoundation.org" in str(info.value)
+        assert info.value.__cause__ is uno_exc
+
+    def test_other_uno_exceptions_propagate_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        uno_exc = type("RuntimeException", (Exception,), {})("kaboom")
+        panel = self._panel_with_failing_provider(monkeypatch, uno_exc)
+
+        with pytest.raises(Exception) as info:
+            panel._create_panel_window()
+        assert info.value is uno_exc
