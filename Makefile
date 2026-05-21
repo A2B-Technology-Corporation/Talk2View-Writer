@@ -102,9 +102,7 @@ build: lint test-unit
 	@cp extension/description.xml         $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/talk2view_writer.py     $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/Addons.xcu              $(BUILD_DIR)/$(EXT_NAME)/
-	@cp extension/Sidebar.xcu             $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/ProtocolHandler.xcu     $(BUILD_DIR)/$(EXT_NAME)/
-	@cp extension/Factories.xcu          $(BUILD_DIR)/$(EXT_NAME)/
 	@cp extension/META-INF/manifest.xml   $(BUILD_DIR)/$(EXT_NAME)/META-INF/
 	@cp extension/description/description_en.txt $(BUILD_DIR)/$(EXT_NAME)/description/
 	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/registration

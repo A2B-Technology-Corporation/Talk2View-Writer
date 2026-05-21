@@ -19,7 +19,7 @@
                             <value>vnd.com.talk2view.writer:showPanel</value>
                         </prop>
                         <prop oor:name="Title" oor:type="xs:string">
-                            <value xml:lang="en">Show Talk2View Panel</value>
+                            <value xml:lang="en">Open Talk2View Chat</value>
                         </prop>
                         <prop oor:name="Target" oor:type="xs:string">
                             <value>_self</value>

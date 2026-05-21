@@ -24,7 +24,7 @@ applied.
 |-----|--------------------------------------------------------|-------|----------|
 | [0001](0001-new-sibling-project.md) | New sibling project rather than fork Word or evolve SpeedWriter | A | Accepted |
 | [0002](0002-cloud-sdk-backend.md)   | Cloud `talk2view` SDK rather than local RPyC Core              | A | Accepted |
-| [0003](0003-sidebar-deck-ui.md)     | Sidebar deck as the primary UI surface                          | A | Accepted |
+| [0003](0003-sidebar-deck-ui.md)     | Sidebar deck as the primary UI surface                          | A | Superseded by 0029 |
 | [0004](0004-dual-uno-component-entry.md) | Two UNO components in one entry file                        | A | Accepted |
 | [0005](0005-sdk-editable-path-dependency.md) | Consume Python SDK via editable path dependency       | A | Accepted |
 | [0006](0006-bundle-deps-into-pythonpath.md)  | Bundle Python deps into `pythonpath/` inside the `.oxt` | A | Accepted |
@@ -48,8 +48,9 @@ applied.
 | [0024](0024-synthetic-uno-and-mock-chat-test-rig.md) | Synthetic-UNO + mock-engine test rig alongside the real-soffice integration suite | F | Accepted |
 | [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Superseded by 0027 |
 | [0026](0026-python-xwindowpeer-adapter.md) | Python XWindowPeer adapter for strict-PyUNO sidebar panel construction | F | Superseded by 0027 |
-| [0027](0027-canonical-toolpanel-pattern.md) | Follow LibreOffice's canonical Python toolpanel pattern verbatim | F | Accepted (supersession of unsupported-build clause in 0028) |
-| [0028](0028-queryinterface-xwindowpeer.md) | Obtain XWindowPeer via queryInterface before createContainerWindow | F | Accepted |
+| [0027](0027-canonical-toolpanel-pattern.md) | Follow LibreOffice's canonical Python toolpanel pattern verbatim | F | Superseded by 0029 |
+| [0028](0028-queryinterface-xwindowpeer.md) | Obtain XWindowPeer via queryInterface before createContainerWindow | F | Superseded by 0029 |
+| [0029](0029-floating-chat-window.md) | Floating non-modal chat window instead of a sidebar panel | F | Accepted |
 
 ## Writing a new ADR
 

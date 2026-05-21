@@ -24,7 +24,5 @@ BASE_URL: str = "https://engine.talk2view.com"
 # ---------------------------------------------------------------------------
 
 EXTENSION_ID: str = "com.talk2view.writer"
-DECK_ID: str = "com.talk2view.writer.Deck"
-PANEL_ID: str = "com.talk2view.writer.ChatPanel"
 JOB_SERVICE_NAME: str = "com.talk2view.writer.Talk2ViewJob"
-PANEL_FACTORY_SERVICE_NAME: str = "com.talk2view.writer.ChatPanelFactory"
+PROTOCOL_HANDLER_SERVICE_NAME: str = "com.talk2view.writer.ProtocolHandler"

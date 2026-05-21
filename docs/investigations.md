@@ -824,21 +824,31 @@ reflect real behaviour — those tests were mocked too.
 
 ## #29 — Sidebar panel renders as empty grey rectangle on LO 26.2.3.2
 
-**Status:** Closed — root cause identified, response now documented
-in [ADR-0028](adrs/0028-queryinterface-xwindowpeer.md). Adding one
-`parent_window.queryInterface(XWindowPeer)` call before
-`createContainerWindow` produces a properly-typed peer reference
-that PyUNO's argument marshaller accepts on strict-PyUNO builds
-(Debian apt LO 26.2.x) as well as on non-strict builds (TDF,
-Flathub, Snap). One canonical code path, no fallbacks.
+**Status:** Closed — final root cause documented in
+[ADR-0029](adrs/0029-floating-chat-window.md). The LibreOffice 26.x
+sidebar framework hands Python panels a 4-interface stub
+(`{XWeak, XComponent, XTypeProvider, XWindow}`) that lacks
+XWindowPeer entirely (queryInterface returns None) and where even
+basic XWindow methods like `getPosSize` raise "not implemented".
+This is not a strict-PyUNO bug, not a Debian-packaging bug, and not
+something workable around from Python — the sidebar parent_window
+is structurally too restricted to host the canonical Python
+toolpanel pattern.
 
-The earlier [ADR-0027](adrs/0027-canonical-toolpanel-pattern.md)
-"this build is unsupported; install TDF" follow-up clause is
-superseded by ADR-0028 — that response was based on the assumption
-that strict-PyUNO failures were unworkaroundable from Python. The
-2026-05-21 Debian repro (with full diagnostic logging from the
-companion logging pass) showed `queryInterface` is the documented
-way out.
+Resolution: drop the sidebar entry point entirely and replace it
+with a floating non-modal chat window built via
+`DialogProvider2.createDialog`, which takes only a URL string and
+needs no XWindowPeer parent. The user opens it from the
+**Talk2View → Open Chat** menu and can drag it where they want
+(OS-level snap-to-edge gives a docked-side feel on every modern
+desktop).
+
+ADRs 0003 (sidebar deck as primary UI), 0027 (canonical toolpanel
+pattern), and 0028 (queryInterface workaround) are all superseded
+by ADR-0029. The previous workaround ladders chased a problem that
+turned out to be unfixable from Python; the floating-window pivot
+is the single canonical path that works on every supported
+LibreOffice build.
 
 **Date:** 2026-05-19
 

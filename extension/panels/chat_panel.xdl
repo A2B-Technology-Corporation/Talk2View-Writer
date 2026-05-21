@@ -1,56 +1,57 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Talk2View chat panel layout — loaded by ContainerWindowProvider in
-  src/talk2view_writer/ui/sidebar_panel.py. Don't author this file
+  Talk2View chat window layout — loaded by DialogProvider2 in
+  src/talk2view_writer/ui/chat_window.py. Don't author this file
   through LibreOffice's Dialog Editor; edit by hand so review diffs
   stay readable.
 
-  Control ids must match the names looked up in Talk2ViewPanel._bind_controls.
-  Sizing uses the LibreOffice "Map AppFont" unit (~1.7px); LibreOffice
-  scales the dialog to fill the sidebar deck slot at runtime, so the
-  width here is a baseline that gets stretched by the deck.
+  Control ids must match the names looked up in ChatWindow._bind_controls.
+  Sizing uses the LibreOffice "Map AppFont" unit (~1.7px); the window
+  opens at width × height and the user is free to move it (per ADR-0029
+  this is a floating non-modal window, not an embedded sidebar slot).
 -->
 <dlg:window xmlns:dlg="http://openoffice.org/2000/dialog"
             xmlns:script="http://openoffice.org/2000/script"
-            dlg:id="ChatPanel"
+            dlg:id="ChatWindow"
             dlg:left="0" dlg:top="0"
-            dlg:width="200" dlg:height="400"
-            dlg:withtitlebar="false"
-            dlg:closeable="false"
-            dlg:moveable="false">
+            dlg:width="240" dlg:height="420"
+            dlg:title="Talk2View"
+            dlg:withtitlebar="true"
+            dlg:closeable="true"
+            dlg:moveable="true">
     <dlg:bulletinboard>
 
         <dlg:text dlg:id="status_label"
                   dlg:tab-index="0"
                   dlg:left="4" dlg:top="4"
-                  dlg:width="192" dlg:height="12"
+                  dlg:width="232" dlg:height="12"
                   dlg:value="Talk2View &#x2014; not logged in"/>
 
         <dlg:button dlg:id="login_button"
                     dlg:tab-index="1"
                     dlg:left="4" dlg:top="20"
-                    dlg:width="192" dlg:height="16"
+                    dlg:width="232" dlg:height="16"
                     dlg:value="Log in&#x2026;"/>
 
         <dlg:textfield dlg:id="history_field"
                        dlg:tab-index="2"
                        dlg:left="4" dlg:top="40"
-                       dlg:width="192" dlg:height="280"
+                       dlg:width="232" dlg:height="300"
                        dlg:multiline="true"
                        dlg:readonly="true"
                        dlg:vscroll="true"/>
 
         <dlg:textfield dlg:id="composer_field"
                        dlg:tab-index="3"
-                       dlg:left="4" dlg:top="324"
-                       dlg:width="192" dlg:height="40"
+                       dlg:left="4" dlg:top="344"
+                       dlg:width="232" dlg:height="40"
                        dlg:multiline="true"
                        dlg:vscroll="true"/>
 
         <dlg:button dlg:id="send_button"
                     dlg:tab-index="4"
-                    dlg:left="4" dlg:top="368"
-                    dlg:width="192" dlg:height="16"
+                    dlg:left="4" dlg:top="388"
+                    dlg:width="232" dlg:height="16"
                     dlg:value="Send"/>
 
     </dlg:bulletinboard>

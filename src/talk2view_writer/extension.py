@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from talk2view.types import User
 
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
-    from talk2view_writer.ui.sidebar_panel import Talk2ViewPanel
+    from talk2view_writer.ui.chat_window import ChatWindow
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
 logger = logging.getLogger(__name__)
@@ -29,8 +29,9 @@ class Talk2ViewWriterExtension:
     Owns:
 
     - the :class:`Talk2ViewSDKClient` (lazy-init on first ``sdk`` access),
-    - the list of open sidebar panels,
-    - the auth-state listener that broadcasts login/logout to panels.
+    - the singleton :class:`ChatWindow` (per ADR-0029 — one floating
+      chat window per process),
+    - the auth-state listener that broadcasts login/logout to it.
     """
 
     def __init__(self, ctx: XComponentContext) -> None:
@@ -39,7 +40,7 @@ class Talk2ViewWriterExtension:
         self._sdk: Talk2ViewSDKClient | None = None
         self._ui_thread: UIThreadDispatcher | None = None
         self._tools_registered = False
-        self._open_panels: list[Talk2ViewPanel] = []
+        self._chat_window: ChatWindow | None = None
         # NOTE: render ctx via repr() at the call site rather than passing
         # the UNO proxy through %r. Python logging's fast path does
         # `isinstance(args[0], Mapping)` when there's a single positional
@@ -172,36 +173,30 @@ class Talk2ViewWriterExtension:
     # Menu command handlers (called by Talk2ViewJob.trigger)
     # ------------------------------------------------------------------
 
-    def show_sidebar(self) -> None:
-        """Open the Talk2View sidebar deck in the current Writer window.
+    def show_chat_window(self) -> None:
+        """Open (or raise) the singleton floating Talk2View chat window.
 
-        Raises:
-            RuntimeError: If no Writer document window is active.
+        Per ADR-0029: the LibreOffice sidebar parent_window pattern is
+        fundamentally broken on LO 26.x. We replace the sidebar entry
+        point with a floating non-modal window opened via
+        DialogProvider2.createDialog — a single canonical path that
+        works on every LO build.
         """
-        logger.info("show_sidebar invoked (menu command)")
-        desktop = self.ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.frame.Desktop", self.ctx
-        )
-        frame = desktop.getCurrentFrame()
-        if frame is None:
-            logger.error("show_sidebar: no active frame; cannot open deck")
-            raise RuntimeError("No active Writer window")
+        logger.info("show_chat_window invoked (menu command)")
+        with self._lock:
+            if self._chat_window is None:
+                from talk2view_writer.ui.chat_window import ChatWindow
 
-        dispatcher = self.ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.frame.DispatchHelper", self.ctx
-        )
-        from com.sun.star.beans import PropertyValue  # type: ignore[import-not-found]
-
-        prop = PropertyValue()
-        prop.Name = "Sidebar"
-        prop.Value = "com.talk2view.writer.Deck"
-        logger.debug(
-            "show_sidebar: dispatching .uno:SidebarDeck with Sidebar=%s frame=%r",
-            prop.Value,
-            frame,
-        )
-        dispatcher.executeDispatch(frame, ".uno:SidebarDeck", "_self", 0, (prop,))
-        logger.info("show_sidebar: dispatch complete")
+                self._chat_window = ChatWindow(self.ctx)
+                # Push the current auth state immediately so the
+                # window's first render reflects login status.
+                user = self.sdk.current_user if self._sdk is not None else None
+                # on_auth_changed is a no-op until the dialog is built;
+                # the .show() below builds it and _apply_auth_state runs
+                # then. So we just stash the user via the same path.
+                self._chat_window._user = user
+        self._chat_window.show()
+        logger.info("show_chat_window: complete")
 
     def show_login_dialog(self, parent_window: XWindow | None = None) -> None:
         """Prompt for credentials and call ``sdk.login``."""
@@ -245,32 +240,11 @@ class Talk2ViewWriterExtension:
         show_settings_dialog(self.ctx, self.sdk, parent_window=parent_window)
 
     # ------------------------------------------------------------------
-    # Panel lifecycle (called by ChatPanelFactory.createUIElement)
-    # ------------------------------------------------------------------
-
-    def register_panel(self, panel: Talk2ViewPanel) -> None:
-        """Track an open sidebar panel and push the current auth state to it."""
-        with self._lock:
-            self._open_panels.append(panel)
-        # Push the current auth state to the new panel so its initial
-        # render reflects login status without waiting for a transition.
-        user = self.sdk.current_user if self._sdk is not None else None
-        panel.on_auth_changed(user)
-        logger.info("Panel registered (total open: %d)", len(self._open_panels))
-
-    def unregister_panel(self, panel: Talk2ViewPanel) -> None:
-        """Remove a closed sidebar panel from the tracking list."""
-        with self._lock:
-            if panel in self._open_panels:
-                self._open_panels.remove(panel)
-        logger.info("Panel unregistered (total open: %d)", len(self._open_panels))
-
-    # ------------------------------------------------------------------
     # Internal: auth state fan-out
     # ------------------------------------------------------------------
 
     def _on_auth_changed(self, user: User | None) -> None:
-        """SDK auth-state callback — register/unregister tools + fan out to panels.
+        """SDK auth-state callback — register/unregister tools + fan out to the chat window.
 
         Tool registration belongs here (not in the ``sdk`` getter)
         because ``/v1/tools/register`` needs an active session. Login
@@ -280,7 +254,7 @@ class Talk2ViewWriterExtension:
         login re-registers against the fresh session.
         """
         with self._lock:
-            panels = list(self._open_panels)
+            chat_window = self._chat_window
             if user is not None:
                 self._register_tools_locked()
             else:
@@ -288,12 +262,12 @@ class Talk2ViewWriterExtension:
                 # is invalid against the next session.
                 self._tools_registered = False
         logger.info(
-            "Auth changed: user=%s; notifying %d panel(s)",
+            "Auth changed: user=%s; chat_window_open=%s",
             user.email if user else None,
-            len(panels),
+            chat_window is not None,
         )
-        for panel in panels:
-            panel.on_auth_changed(user)
+        if chat_window is not None:
+            chat_window.on_auth_changed(user)
 
 
 _INSTANCE: Talk2ViewWriterExtension | None = None

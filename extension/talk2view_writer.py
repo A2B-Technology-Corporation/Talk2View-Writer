@@ -1,14 +1,17 @@
 """Talk2View-Writer UNO entry point.
 
-Two UNO components are registered:
+One UNO component is registered:
 
 1. ``Talk2ViewProtocolHandler`` (``com.sun.star.frame.ProtocolHandler``)
    — handles menu commands from ``Addons.xcu`` via the custom
    ``vnd.com.talk2view.writer:<command>`` URL scheme. Implements
    ``XDispatchProvider`` + ``XDispatch``. Wired by ``ProtocolHandler.xcu``.
-2. ``ChatPanelFactory`` (``com.sun.star.ui.UIElementFactory``) — called by
-   LibreOffice when the Talk2View sidebar deck is opened. Returns the
-   ``Talk2ViewPanel`` UI element that contains the chat widgets.
+
+Per ADR-0029, the previous ``ChatPanelFactory`` (UIElementFactory for
+the sidebar deck) has been removed: the LibreOffice 26.x sidebar
+parent-window pattern is fundamentally broken from Python. The
+``showPanel`` menu command now opens a floating non-modal chat window
+via :class:`ChatWindow` (built with ``DialogProvider2.createDialog``).
 
 The original ``service:com.talk2view.writer.Talk2ViewJob?<cmd>`` URL
 scheme + ``XJobExecutor`` registration was abandoned because modern
@@ -31,12 +34,9 @@ _PYTHONPATH = _EXT_DIR / "pythonpath"
 if _PYTHONPATH.exists() and str(_PYTHONPATH) not in sys.path:
     sys.path.insert(0, str(_PYTHONPATH))
 
-from typing import Any  # noqa: E402
-
 import uno  # noqa: E402
 import unohelper  # noqa: E402
 from com.sun.star.frame import XDispatch, XDispatchProvider  # noqa: E402
-from com.sun.star.ui import XUIElementFactory  # noqa: E402
 
 # Bootstrap the persistent rotating log file as early as possible:
 # every other module logged via `getLogger(__name__)` inherits the
@@ -46,10 +46,7 @@ from talk2view_writer._logging import setup_logging  # noqa: E402
 _LOG_PATH = setup_logging()
 
 if TYPE_CHECKING:
-    from com.sun.star.awt import XWindow
     from com.sun.star.beans import PropertyValue
-    from com.sun.star.frame import XFrame
-    from com.sun.star.ui import XUIElement
     from com.sun.star.uno import XComponentContext
 
 # Logger named after the UNO entry — distinct from "talk2view_writer.*"
@@ -60,19 +57,6 @@ logger.info(
     _PYTHONPATH,
     _LOG_PATH,
 )
-
-
-def _safe_repr(obj: Any) -> str:
-    """UNO-safe repr — same purpose as ``_ru`` in sidebar_panel.
-
-    Inlined here so the UNO entry module doesn't need to import the
-    sidebar panel at module load time (which would drag in the UNO
-    awt/ui stubs and break ``test_extension_module_loads_without_uno``).
-    """
-    try:
-        return repr(obj)
-    except Exception as exc:
-        return f"<repr failed: {type(exc).__name__}>"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +165,9 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
 
             ext = get_extension(self.ctx)
             if command == "showPanel":
-                ext.show_sidebar()
+                # Opens the floating chat window (ADR-0029 — replaces
+                # the broken sidebar deck on LO 26.x).
+                ext.show_chat_window()
             elif command == "login":
                 ext.show_login_dialog()
             elif command == "logout":
@@ -237,95 +223,6 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
 
 
 # ---------------------------------------------------------------------------
-# Sidebar panel factory
-# ---------------------------------------------------------------------------
-
-
-class ChatPanelFactory(unohelper.Base, XUIElementFactory):
-    """Factory that builds the Talk2View sidebar panel on demand.
-
-    Sidebar.xcu declares this implementation under
-    ``ImplementationURL = private:resource/toolpanel/com.talk2view.writer.ChatPanelFactory/Chat``.
-    When the user opens the Talk2View deck, LibreOffice calls
-    ``createUIElement(resource_url, args)`` and we return an XUIElement
-    wrapping a panel built in ``talk2view_writer.ui.sidebar_panel``.
-    """
-
-    def __init__(self, ctx: "XComponentContext") -> None:
-        self.ctx = ctx
-        # See note in extension.py — repr() the UNO proxy at the call
-        # site to avoid Python logging's single-arg Mapping fast path,
-        # which crashes on objects with a synthetic __class__.
-        logger.info(
-            "ChatPanelFactory constructed (ctx=%s) — sidebar deck registered, "
-            "createUIElement will fire when user opens the Talk2View tab",
-            repr(ctx),
-        )
-
-    def createUIElement(  # noqa: N802 — UNO interface naming
-        self,
-        resource_url: str,
-        args: "tuple[PropertyValue, ...]",
-    ) -> "XUIElement":
-        """Build the sidebar XUIElement.
-
-        Args:
-            resource_url: The ``private:resource/toolpanel/...`` URL.
-            args: PropertyValues including ``ParentWindow`` (XWindow) and
-                ``Frame`` (XFrame) supplied by LibreOffice.
-
-        Returns:
-            An ``XUIElement`` whose ``getRealInterface()`` is the
-            ``Talk2ViewPanel`` UNO panel object.
-
-        Raises:
-            RuntimeError: If ParentWindow PropertyValue is missing.
-        """
-        arg_summary = [
-            f"{getattr(p, 'Name', '?')}={_safe_repr(getattr(p, 'Value', None))}"
-            for p in args
-        ]
-        logger.info(
-            "createUIElement called: resource_url=%s arg_count=%d args=%s",
-            resource_url,
-            len(args),
-            arg_summary,
-        )
-        try:
-            parent_window: "XWindow | None" = None
-            frame: "XFrame | None" = None
-            for prop in args:
-                if prop.Name == "ParentWindow":
-                    parent_window = prop.Value
-                elif prop.Name == "Frame":
-                    frame = prop.Value
-            if parent_window is None:
-                raise RuntimeError(
-                    "Talk2View sidebar: ParentWindow PropertyValue not "
-                    "supplied by LibreOffice — cannot build panel"
-                )
-
-            from talk2view_writer.ui.sidebar_panel import (
-                _log_window_state,
-                build_chat_panel,
-            )
-
-            _log_window_state("createUIElement.parent_window", parent_window)
-            panel = build_chat_panel(self.ctx, parent_window, frame, resource_url)
-            logger.info(
-                "createUIElement returned XUIElement type=%s",
-                type(panel).__name__,
-            )
-            return panel
-        except Exception:
-            logger.exception(
-                "createUIElement: failed building panel for %s — re-raising",
-                resource_url,
-            )
-            raise
-
-
-# ---------------------------------------------------------------------------
 # UNO component registration
 # ---------------------------------------------------------------------------
 
@@ -335,9 +232,4 @@ g_ImplementationHelper.addImplementation(
     Talk2ViewProtocolHandler,
     "com.talk2view.writer.ProtocolHandler",
     ("com.sun.star.frame.ProtocolHandler",),
-)
-g_ImplementationHelper.addImplementation(
-    ChatPanelFactory,
-    "com.talk2view.writer.ChatPanelFactory",
-    ("com.sun.star.ui.UIElementFactory",),
 )

@@ -34,5 +34,4 @@ def test_config_constants_present() -> None:
     assert config.PARTNER_KEY.startswith("pk_")
     assert config.BASE_URL.startswith("https://")
     assert config.EXTENSION_ID == "com.talk2view.writer"
-    assert config.DECK_ID.startswith(config.EXTENSION_ID)
-    assert config.PANEL_ID.startswith(config.EXTENSION_ID)
+    assert config.PROTOCOL_HANDLER_SERVICE_NAME.startswith(config.EXTENSION_ID)
