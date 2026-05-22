@@ -37,6 +37,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _ru(obj: Any) -> str:
+    """UNO-safe repr for log args.
+
+    Python's logging fast path does ``isinstance(args[0], Mapping)``
+    when a record has a single positional arg, which invokes
+    ABC ``__subclasscheck__`` and dereferences ``args[0].__class__``.
+    UNO proxies have a synthetic ``__class__`` that is not a real
+    Python class, so the check raises ``TypeError: issubclass() arg
+    1 must be a class`` inside Python's C-implemented logging code.
+    Stringify UNO objects before passing them to a logger.
+    """
+    try:
+        return repr(obj)
+    except Exception as exc:
+        return f"<repr failed: {type(exc).__name__}>"
+
+
 _EXTENSION_ID = "com.talk2view.writer"
 _HTML_PATH = "web/index.html"
 
@@ -53,7 +71,7 @@ class WebWindow:
         self.ctx = ctx
         self._started = False
         self._window: Any | None = None
-        logger.info("WebWindow instantiated (ctx=%r)", ctx)
+        logger.info("WebWindow instantiated (ctx=%s)", _ru(ctx))
 
     def show(self) -> None:
         """Open the chat window. First call constructs + starts the webview."""
@@ -78,7 +96,7 @@ class WebWindow:
             width=400,
             height=600,
         )
-        logger.info("WebWindow.show: create_window returned %r", self._window)
+        logger.info("WebWindow.show: create_window returned %s", _ru(self._window))
         self._started = True
 
         # webview.start() blocks until the window closes. Run it in a
