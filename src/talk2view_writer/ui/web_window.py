@@ -18,6 +18,7 @@ next slice.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import shutil
@@ -110,16 +111,17 @@ class WebWindow:
         ]
         logger.info("WebWindow.show: spawning subprocess %s", args)
         try:
+            # No ``start_new_session`` — the subprocess shares LO's
+            # process group, so when LO exits (clean or signal) the
+            # webview process gets the same signal and dies with it.
+            # Avoids orphaned chat windows after LO closes. Belt+
+            # braces: ``atexit`` below explicitly terminates the
+            # process on normal Python shutdown.
             self._proc = subprocess.Popen(
                 args,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                # Detach so closing LO doesn't take the window with
-                # it on signal — explicit cleanup is preferred but
-                # the subprocess is meant to outlive a single LO
-                # event-loop tick at minimum.
-                start_new_session=True,
             )
         except Exception:
             logger.exception(
@@ -129,6 +131,7 @@ class WebWindow:
         logger.info(
             "WebWindow.show: subprocess started pid=%s", self._proc.pid
         )
+        atexit.register(self._terminate_on_exit)
 
         # Pump subprocess stderr into our log so the user sees
         # webview/GTK/whatever diagnostic output without having to
@@ -144,6 +147,34 @@ class WebWindow:
 
     def _is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    def _terminate_on_exit(self) -> None:
+        """Tear down the subprocess + bridge on LO shutdown (atexit hook)."""
+        if self._is_alive() and self._proc is not None:
+            logger.info(
+                "WebWindow.atexit: terminating subprocess pid=%s",
+                self._proc.pid,
+            )
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "WebWindow.atexit: subprocess didn't exit on SIGTERM, "
+                    "sending SIGKILL"
+                )
+                self._proc.kill()
+            except Exception:
+                logger.exception(
+                    "WebWindow.atexit: terminate raised — continuing"
+                )
+        if self._bridge is not None:
+            try:
+                self._bridge.stop()
+            except Exception:
+                logger.exception(
+                    "WebWindow.atexit: bridge.stop raised — continuing"
+                )
 
     def _ensure_bridge(self) -> str:
         """Lazily start the Unix-socket JSON-RPC bridge. Returns its path."""

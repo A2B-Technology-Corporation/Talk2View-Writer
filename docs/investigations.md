@@ -850,6 +850,16 @@ turned out to be unfixable from Python; the floating-window pivot
 is the single canonical path that works on every supported
 LibreOffice build.
 
+**2026-05-22 update:** ADR-0029's UNO `XDialog` chat panel was
+itself superseded by [ADR-0030](adrs/0030-web-chat-via-pywebview-subprocess.md).
+The dialog opened and authenticated but every text-stream chunk
+required a UNO `setPropertyValue` round-trip through
+`UIThreadDispatcher`, which is too slow for chat throughput, and
+the chat worker deadlocked at the `AsyncCallback` marshalling step
+on first send. The chat UI now lives in a pywebview subprocess
+running the same React + `@talk2view/sdk/ui` stack as
+Talk2View-Word; UNO is touched only when a tool runs.
+
 **Date:** 2026-05-19
 
 **What:** User reported (with screenshot) that the Talk2View sidebar
