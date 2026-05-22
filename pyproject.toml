@@ -26,6 +26,7 @@ dependencies = [
     "talk2view",
     "httpx>=0.27",
     "pydantic>=2.0",
+    "pywebview>=6.2.1",
 ]
 
 [tool.uv.sources]

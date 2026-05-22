@@ -12,7 +12,7 @@ OXT       := $(DIST_DIR)/$(EXT_NAME).oxt
 # pythonpath/. Each entry MUST be installable in the dev venv.
 # pydantic_core is INTENTIONALLY ABSENT — it ships as per-platform
 # wheels under vendor/extracted/ (see ADR-0023).
-PY_RUNTIME_DEPS := talk2view httpx httpcore h11 certifi idna anyio pydantic typing_extensions annotated_types typing_inspection
+PY_RUNTIME_DEPS := talk2view httpx httpcore h11 certifi idna anyio pydantic typing_extensions annotated_types typing_inspection webview bottle proxy_tools
 
 # Optional pure-Python deps — bundled if present, skipped if not.
 # anyio runs fine without sniffio (it has a `try: import sniffio`
@@ -114,6 +114,7 @@ build: lint test-unit
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r extension/icons $(BUILD_DIR)/$(EXT_NAME)/icons
 	@cp -r extension/panels $(BUILD_DIR)/$(EXT_NAME)/panels
+	@cp -r extension/web $(BUILD_DIR)/$(EXT_NAME)/web
 	@echo "Bundling pure-Python runtime dependencies..."
 	@# Resolve each dep via the venv's Python so editable installs
 	@# (.pth indirection — e.g. our local talk2view SDK) and single-

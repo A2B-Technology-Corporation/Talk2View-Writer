@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from talk2view.types import User
 
     from talk2view_writer.sdk_client import Talk2ViewSDKClient
-    from talk2view_writer.ui.chat_window import ChatWindow
+    from talk2view_writer.ui.web_window import WebWindow
     from talk2view_writer.ui_thread import UIThreadDispatcher
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ class Talk2ViewWriterExtension:
         self._sdk: Talk2ViewSDKClient | None = None
         self._ui_thread: UIThreadDispatcher | None = None
         self._tools_registered = False
-        self._chat_window: ChatWindow | None = None
+        self._chat_window: WebWindow | None = None
         # NOTE: render ctx via repr() at the call site rather than passing
         # the UNO proxy through %r. Python logging's fast path does
         # `isinstance(args[0], Mapping)` when there's a single positional
@@ -174,27 +174,22 @@ class Talk2ViewWriterExtension:
     # ------------------------------------------------------------------
 
     def show_chat_window(self) -> None:
-        """Open (or raise) the singleton floating Talk2View chat window.
+        """Open (or refocus) the singleton Talk2View chat window.
 
-        Per ADR-0029: the LibreOffice sidebar parent_window pattern is
-        fundamentally broken on LO 26.x. We replace the sidebar entry
-        point with a floating non-modal window opened via
-        DialogProvider2.createDialog — a single canonical path that
-        works on every LO build.
+        Per ADR-0030: the chat UI is a pywebview-backed window that
+        renders the same React + Talk2View SDK stack the Word
+        integration uses. The previous UNO-based dialog (ADR-0029) is
+        retired because every text-stream chunk required a
+        UNO-via-UI-thread round-trip and the worker deadlocked on the
+        AsyncCallback marshal — the web stack does all rendering
+        client-side and never touches UNO except when a tool runs.
         """
         logger.info("show_chat_window invoked (menu command)")
         with self._lock:
             if self._chat_window is None:
-                from talk2view_writer.ui.chat_window import ChatWindow
+                from talk2view_writer.ui.web_window import WebWindow
 
-                self._chat_window = ChatWindow(self.ctx)
-                # Push the current auth state immediately so the
-                # window's first render reflects login status.
-                user = self.sdk.current_user if self._sdk is not None else None
-                # on_auth_changed is a no-op until the dialog is built;
-                # the .show() below builds it and _apply_auth_state runs
-                # then. So we just stash the user via the same path.
-                self._chat_window._user = user
+                self._chat_window = WebWindow(self.ctx)
         self._chat_window.show()
         logger.info("show_chat_window: complete")
 
@@ -244,17 +239,15 @@ class Talk2ViewWriterExtension:
     # ------------------------------------------------------------------
 
     def _on_auth_changed(self, user: User | None) -> None:
-        """SDK auth-state callback — register/unregister tools + fan out to the chat window.
+        """SDK auth-state callback — register/unregister tools.
 
-        Tool registration belongs here (not in the ``sdk`` getter)
-        because ``/v1/tools/register`` needs an active session. Login
-        fires this with ``user != None``, at which point auth has
-        succeeded and the call is safe. Logout fires with
-        ``user is None``; we clear the registered flag so the next
-        login re-registers against the fresh session.
+        Per ADR-0030 the chat UI lives in a webview and runs its own
+        Talk2View SDK in the browser. The Python-side SDK kept here is
+        used only for the legacy login-dialog flow + tool registration
+        bookkeeping until the web shell takes over those too. There is
+        no longer a Python-side chat window to fan auth events to.
         """
         with self._lock:
-            chat_window = self._chat_window
             if user is not None:
                 self._register_tools_locked()
             else:
@@ -262,12 +255,9 @@ class Talk2ViewWriterExtension:
                 # is invalid against the next session.
                 self._tools_registered = False
         logger.info(
-            "Auth changed: user=%s; chat_window_open=%s",
+            "Auth changed: user=%s",
             user.email if user else None,
-            chat_window is not None,
         )
-        if chat_window is not None:
-            chat_window.on_auth_changed(user)
 
 
 _INSTANCE: Talk2ViewWriterExtension | None = None
