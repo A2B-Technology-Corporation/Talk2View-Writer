@@ -424,22 +424,28 @@ def _patch_webkitgtk_cors_settings() -> None:
 
 
 def _install_focus_signal_handler(webview_module: Any) -> None:
-    """Register a SIGUSR1 handler that raises the chat window.
+    """Register a SIGUSR2 handler that raises the chat window.
 
     When the user re-clicks the Talk2View menu while a chat window
-    is already open, LO sends SIGUSR1 to us; we call ``window.show()``
+    is already open, LO sends SIGUSR2 to us; we call ``window.show()``
     which on GTK invokes ``gtk_window_present()`` — raising +
     focusing the window. Idempotent: if no window exists yet (signal
     arrived between subprocess start and create_window), we no-op
     and the next show() call will succeed.
+
+    SIGUSR2, not SIGUSR1: WebKitGTK's JavaScriptCore claims SIGUSR1
+    for garbage collection during ``webview.start()`` and overrides
+    any handler we installed earlier (it emits "Overriding existing
+    handler for signal 10" to stderr). SIGUSR2 is not claimed by
+    JSC or WebKit, so our handler survives the webview start.
 
     Windows ignores this path — POSIX-only signal — and falls back
     to the no-op-on-re-click behaviour documented in WebWindow.show.
     """
     import signal
 
-    if not hasattr(signal, "SIGUSR1"):
-        logger.info("Focus signal handler: SIGUSR1 not available on this OS")
+    if not hasattr(signal, "SIGUSR2"):
+        logger.info("Focus signal handler: SIGUSR2 not available on this OS")
         return
 
     def _handle_focus_signal(signum: int, frame: Any) -> None:
@@ -467,8 +473,8 @@ def _install_focus_signal_handler(webview_module: Any) -> None:
             logger.exception("Focus signal handler raised")
 
     try:
-        signal.signal(signal.SIGUSR1, _handle_focus_signal)
-        logger.info("Focus signal handler: installed (SIGUSR1 → window.show)")
+        signal.signal(signal.SIGUSR2, _handle_focus_signal)
+        logger.info("Focus signal handler: installed (SIGUSR2 → window.show)")
     except (OSError, ValueError):
         # ValueError if called from a non-main thread, OSError on
         # platforms that surface signal errors. Both unexpected here

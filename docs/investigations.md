@@ -1007,3 +1007,41 @@ The E2E smoke spec catches any regression to this.
 (which uses ChatWidget for the Office task pane's floating
 behaviour) don't translate 1:1 to Writer's pywebview window. Every
 SDK component swap needs a visual smoke covering the new use site.
+
+
+## #33 — WebKitGTK JSC clobbered our SIGUSR1 focus handler (FIXED 2026-05-22)
+
+**What:** The 2026-05-22 22:24 repro log showed our refocus
+handler installing successfully:
+
+    INFO Focus signal handler: installed (SIGUSR1 → window.show)
+
+…followed 25 ms later by WebKitGTK's JavaScriptCore emitting:
+
+    Overriding existing handler for signal 10. Set
+    JSC_SIGNAL_FOR_GC if you want WebKit to use a different signal
+
+So our SIGUSR1 → window.show() handler was replaced by JSC's GC
+handler. Sending SIGUSR1 from LO to refocus the window would
+trigger JSC garbage collection, not the focus.
+
+**Where:** `src/talk2view_writer/web_runner.py`
+(``_install_focus_signal_handler``) and
+`src/talk2view_writer/ui/web_window.py` (``show()``'s ``os.kill``
+call).
+
+**Why it matters:** Silently broke the single-window refocus
+feature that task #26 had just landed. The user wouldn't notice
+until re-clicking the menu and seeing nothing happen — and JSC
+might do an unscheduled GC pass each time.
+
+**Fix:** Switched both ends to SIGUSR2 (signal 12). JSC uses
+SIGUSR1 only; SIGUSR2 is free. ``JSC_SIGNAL_FOR_GC=12`` would
+also work but bets on WebKit honouring the env var across
+versions — SIGUSR2-by-us is simpler.
+
+**Lesson:** when adding signal handlers in a pywebview / WebKit
+process, default to SIGUSR2 + reserve SIGUSR1 for WebKit's
+runtime. The "Overriding existing handler" warning is the only
+signal (heh) that this collision is happening — easy to miss
+unless you're scanning the full subprocess stderr.

@@ -68,37 +68,45 @@ class WebWindow:
         """Open the chat window, or raise it to the front if already open.
 
         Re-clicking the menu while a chat window is already alive
-        sends SIGUSR1 to the subprocess; ``web_runner`` catches the
+        sends SIGUSR2 to the subprocess; ``web_runner`` catches the
         signal and calls ``window.show()`` which on GTK calls
         ``gtk_window_present()`` (raises + focuses the window). If
         the signal raises ``ProcessLookupError`` — race between
         ``poll()`` returning None and the subprocess actually
         exiting — we fall back to spawning a fresh window.
 
-        Windows: no SIGUSR1; the second invocation still no-ops for
-        now. Cross-platform refocus is task TBD.
+        SIGUSR2 rather than SIGUSR1 because WebKitGTK's
+        JavaScriptCore uses SIGUSR1 internally for garbage collection
+        (see WebKit's ``Set JSC_SIGNAL_FOR_GC if you want WebKit to
+        use a different signal`` warning). Installing our handler on
+        SIGUSR1 first appears to work, then WebKit overrides it
+        during ``webview.start()`` — sending SIGUSR1 afterwards
+        triggers JSC GC, not our focus handler.
+
+        Windows: no POSIX signals; the second invocation still
+        no-ops for now. Cross-platform refocus is TBD.
         """
         logger.info("WebWindow.show: subprocess_alive=%s", self._is_alive())
         if self._is_alive() and self._proc is not None:
             if sys.platform == "win32":
                 logger.info(
                     "WebWindow.show: subprocess alive (pid=%s) on Windows — "
-                    "no SIGUSR1 path; click is a no-op (refocus TBD)",
+                    "no signal path; click is a no-op (refocus TBD)",
                     self._proc.pid,
                 )
                 return
             try:
                 logger.info(
-                    "WebWindow.show: refocus via SIGUSR1 to pid=%s",
+                    "WebWindow.show: refocus via SIGUSR2 to pid=%s",
                     self._proc.pid,
                 )
-                os.kill(self._proc.pid, signal.SIGUSR1)
+                os.kill(self._proc.pid, signal.SIGUSR2)
                 return
             except ProcessLookupError:
                 # Race: poll() said alive but the process exited
                 # between then and our kill. Clean up + respawn.
                 logger.warning(
-                    "WebWindow.show: SIGUSR1 to pid=%s raised "
+                    "WebWindow.show: SIGUSR2 to pid=%s raised "
                     "ProcessLookupError — subprocess gone, respawning",
                     self._proc.pid,
                 )
@@ -108,7 +116,7 @@ class WebWindow:
                 # available, ...) — log + respawn so the user still
                 # gets a working window.
                 logger.exception(
-                    "WebWindow.show: SIGUSR1 to pid=%s failed; respawning",
+                    "WebWindow.show: SIGUSR2 to pid=%s failed; respawning",
                     self._proc.pid,
                 )
                 self._proc = None

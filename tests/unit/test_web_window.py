@@ -1,7 +1,7 @@
 """Unit tests for ``talk2view_writer.ui.web_window.WebWindow``.
 
-Covers the refocus-on-re-click path (SIGUSR1 sent to the existing
-subprocess) and the spawn-on-first-call path (no SIGUSR1 fired).
+Covers the refocus-on-re-click path (SIGUSR2 sent to the existing
+subprocess) and the spawn-on-first-call path (no SIGUSR2 fired).
 The actual subprocess.Popen + signal delivery is mocked; we assert
 on call shape, not behaviour of the real OS primitives.
 """
@@ -102,7 +102,7 @@ class TestWebWindowRefocus:
     def test_refocus_signals_existing_subprocess(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When the subprocess is alive, ``show()`` sends SIGUSR1 to it.
+        """When the subprocess is alive, ``show()`` sends SIGUSR2 to it.
 
         We mock os.kill so the test doesn't depend on a real running
         subprocess. The assertion is on the call shape — pid + signum.
@@ -124,8 +124,8 @@ class TestWebWindowRefocus:
 
         win.show()
 
-        assert sent == [(12345, signal.SIGUSR1)], (
-            f"expected one SIGUSR1 to pid 12345, got {sent!r}"
+        assert sent == [(12345, signal.SIGUSR2)], (
+            f"expected one SIGUSR2 to pid 12345, got {sent!r}"
         )
 
     @pytest.mark.skipif(
@@ -160,9 +160,9 @@ class TestWebWindowRefocus:
     def test_signal_failure_falls_back_to_respawn(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """SIGUSR1 race recovery.
+        """SIGUSR2 race recovery.
 
-        If SIGUSR1 raises ``ProcessLookupError`` (race vs subprocess
+        If SIGUSR2 raises ``ProcessLookupError`` (race vs subprocess
         exit), ``show()`` should still recover by spawning a fresh
         subprocess.
         """
@@ -184,5 +184,5 @@ class TestWebWindowRefocus:
             win.show()
 
         assert spawn_calls == [True], (
-            "ProcessLookupError on SIGUSR1 should trigger a respawn"
+            "ProcessLookupError on SIGUSR2 should trigger a respawn"
         )
