@@ -186,6 +186,13 @@ class BridgeServer:
                 return json.dumps({"id": req_id, "result": result})
             if method == "list_tools":
                 return json.dumps({"id": req_id, "result": list(_MVP_TOOL_NAMES)})
+            if method == "log":
+                self._log_from_web(
+                    str(params.get("level", "info")),
+                    str(params.get("message", "")),
+                    params.get("context"),
+                )
+                return json.dumps({"id": req_id, "result": None})
             return json.dumps(
                 {
                     "id": req_id,
@@ -208,6 +215,30 @@ class BridgeServer:
                     },
                 }
             )
+
+    # ----- Logging from the web side --------------------------------------
+
+    def _log_from_web(
+        self, level: str, message: str, context: Any
+    ) -> None:
+        """Append a log line forwarded from the chat UI.
+
+        The web layer routes console.*, window.error, unhandledrejection,
+        and every chat message (user + assistant + tool_call) here so
+        the rotating log captures everything the user can see in the
+        chat window.
+        """
+        web_logger = logging.getLogger("talk2view_writer.web")
+        level_lower = level.lower()
+        log_method = getattr(web_logger, level_lower, web_logger.info)
+        if context is not None:
+            try:
+                ctx_str = json.dumps(context, default=str)
+            except (TypeError, ValueError):
+                ctx_str = repr(context)
+            log_method("%s | %s", message, ctx_str)
+        else:
+            log_method("%s", message)
 
     # ----- Tool dispatch --------------------------------------------------
 

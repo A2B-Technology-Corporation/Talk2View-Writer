@@ -65,6 +65,12 @@ class _BridgeClient:
     def list_tools(self) -> list[str]:
         return self._call("list_tools", {})
 
+    def log(self, level: str, message: str, context: Any | None) -> None:
+        # No need to round-trip the response; fire-and-forget the
+        # log call but keep the request-id machinery so the server
+        # can correlate later.
+        self._call("log", {"level": level, "message": message, "context": context})
+
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
             raise RuntimeError("BridgeClient: not connected")
@@ -146,6 +152,30 @@ class _Api:
                 "the subprocess with --bridge-socket?"
             )
         return self._bridge.invoke_tool(name, args or {})
+
+    def log(
+        self,
+        level: str = "info",
+        message: str = "",
+        context: Any | None = None,
+    ) -> None:
+        """Forward a log line from the chat UI into LO's rotating log.
+
+        Called from JS as ``window.pywebview.api.log(level, message,
+        context)``. Best-effort: a bridge outage shouldn't crash the
+        UI, so we swallow the connection error here. The local
+        ``[talk2view-web]`` print keeps a trail in the subprocess
+        stderr (which LO's web_runner-stderr pump captures too).
+        """
+        print(f"[talk2view-web] {level}: {message}", file=sys.stderr)
+        if self._bridge is None:
+            return
+        try:
+            self._bridge.log(level, message, context)
+        except Exception:
+            logger.exception(
+                "_Api.log: bridge log forwarding failed — continuing"
+            )
 
 
 # ---------------------------------------------------------------------------

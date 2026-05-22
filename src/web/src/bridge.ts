@@ -20,6 +20,11 @@ interface PywebviewApi {
     name: string,
     args: Record<string, unknown>,
   ): Promise<unknown>;
+  log(
+    level: string,
+    message: string,
+    context: unknown,
+  ): Promise<null>;
 }
 
 declare global {
@@ -77,4 +82,120 @@ export async function invokeTool(
 ): Promise<unknown> {
   const api = await whenBridgeReady();
   return api.invoke_tool(name, args);
+}
+
+/**
+ * Forward a log line to LO's rotating log via the bridge.
+ *
+ * Best-effort and async. Buffers calls made before the bridge is
+ * ready and drains them once it is, so log lines emitted by
+ * import-time SDK init or React's first render aren't lost.
+ */
+type LogLevel = 'debug' | 'info' | 'warning' | 'error';
+
+const _logBuffer: Array<{ level: LogLevel; message: string; context?: unknown }> = [];
+let _logFlushStarted = false;
+
+export function logToHost(level: LogLevel, message: string, context?: unknown): void {
+  _logBuffer.push({ level, message, context });
+  if (!_logFlushStarted) {
+    _logFlushStarted = true;
+    whenBridgeReady().then(
+      async (api) => {
+        // Drain on the microtask queue so we never block the main
+        // thread with chains of awaits on a slow socket.
+        while (_logBuffer.length > 0) {
+          const entry = _logBuffer.shift()!;
+          try {
+            await api.log(entry.level, entry.message, entry.context ?? null);
+          } catch {
+            // Swallow — losing a single log line is preferable to a
+            // cascading promise rejection that breaks the UI.
+          }
+        }
+      },
+      () => {
+        // Bridge never became ready. Drop the buffer; the local
+        // console already has the lines.
+        _logBuffer.length = 0;
+      },
+    );
+  }
+}
+
+/**
+ * Install global hooks that route console.* + uncaught errors to LO.
+ *
+ * - console.{log,info,warn,error} are mirrored to logToHost. The
+ *   original console method is still called so the webview's
+ *   DevTools (if open) shows the same output.
+ * - window.error and window.unhandledrejection are intercepted and
+ *   logged at error level.
+ *
+ * Call this once at the very start of main() so we capture errors
+ * from React mount + SDK init.
+ */
+export function installHostLogging(): void {
+  const origLog = console.log.bind(console);
+  const origInfo = console.info.bind(console);
+  const origWarn = console.warn.bind(console);
+  const origError = console.error.bind(console);
+  const origDebug = console.debug?.bind(console) ?? origLog;
+
+  function _fmt(args: unknown[]): string {
+    return args
+      .map((a) => {
+        if (a instanceof Error) return `${a.name}: ${a.message}\n${a.stack ?? ''}`;
+        if (typeof a === 'string') return a;
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(' ');
+  }
+
+  console.log = (...args: unknown[]) => {
+    origLog(...args);
+    logToHost('info', `[console.log] ${_fmt(args)}`);
+  };
+  console.info = (...args: unknown[]) => {
+    origInfo(...args);
+    logToHost('info', `[console.info] ${_fmt(args)}`);
+  };
+  console.warn = (...args: unknown[]) => {
+    origWarn(...args);
+    logToHost('warning', `[console.warn] ${_fmt(args)}`);
+  };
+  console.error = (...args: unknown[]) => {
+    origError(...args);
+    logToHost('error', `[console.error] ${_fmt(args)}`);
+  };
+  console.debug = (...args: unknown[]) => {
+    origDebug(...args);
+    logToHost('debug', `[console.debug] ${_fmt(args)}`);
+  };
+
+  window.addEventListener('error', (e) => {
+    const err = e.error;
+    const detail = err instanceof Error
+      ? { name: err.name, message: err.message, stack: err.stack }
+      : { message: String(e.message), source: e.filename, line: e.lineno };
+    logToHost('error', `[window.error] ${detail.message ?? e.message}`, detail);
+  });
+
+  window.addEventListener('unhandledrejection', (e) => {
+    const reason = e.reason;
+    const detail = reason instanceof Error
+      ? { name: reason.name, message: reason.message, stack: reason.stack }
+      : { reason: String(reason) };
+    logToHost(
+      'error',
+      `[unhandledrejection] ${reason instanceof Error ? reason.message : String(reason)}`,
+      detail,
+    );
+  });
+
+  logToHost('info', '[bridge] host logging installed');
 }

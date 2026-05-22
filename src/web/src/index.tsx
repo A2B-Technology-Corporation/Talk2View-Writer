@@ -1,26 +1,35 @@
 /**
  * Talk2View-Writer chat — React entry point.
  *
- * Mounted into the pywebview window's <div id="root">. The bridge
- * (window.pywebview.api) is injected by pywebview before this
- * script runs, but we still wait for it inside ``invokeTool`` so
- * tools that fire on first render don't see a missing API.
+ * Mounted into the pywebview window's <div id="root">. ``installHostLogging``
+ * runs BEFORE React mounts so any error during SDK init or first
+ * render is captured in LO's rotating log via the bridge.
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+import { installHostLogging, logToHost } from './bridge';
+
+installHostLogging();
+logToHost('info', '[boot] index.tsx loaded', {
+  url: window.location.href,
+  userAgent: navigator.userAgent,
+  ts: new Date().toISOString(),
+});
 
 const container = document.getElementById('root');
 if (!container) {
+  logToHost('error', '[boot] #root element missing in HTML');
   throw new Error('Root element not found in HTML');
 }
-createRoot(container).render(<App />);
-
-window.addEventListener('error', (e) => {
-  // eslint-disable-next-line no-console
-  console.error('[taskpane] uncaught error', e.error ?? e.message);
-});
-window.addEventListener('unhandledrejection', (e) => {
-  // eslint-disable-next-line no-console
-  console.error('[taskpane] unhandled promise rejection', e.reason);
-});
+try {
+  createRoot(container).render(<App />);
+  logToHost('info', '[boot] React mounted');
+} catch (err) {
+  const e = err as Error;
+  logToHost('error', `[boot] React mount threw: ${e.message}`, {
+    name: e.name,
+    stack: e.stack,
+  });
+  throw err;
+}
