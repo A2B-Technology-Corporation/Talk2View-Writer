@@ -59,6 +59,7 @@ class WebWindow:
         self.ctx = ctx
         self._proc: subprocess.Popen | None = None
         self._stderr_pump: threading.Thread | None = None
+        self._bridge: Any = None  # BridgeServer, lazy-imported
         logger.info("WebWindow instantiated (ctx=%s)", _ru(ctx))
 
     def show(self) -> None:
@@ -77,11 +78,14 @@ class WebWindow:
         html_path = self._resolve_html_path()
         pythonpath_dir = self._resolve_pythonpath()
         python_bin = self._resolve_python()
+        socket_path = self._ensure_bridge()
         logger.info(
-            "WebWindow.show: html_path=%s pythonpath_dir=%s python=%s",
+            "WebWindow.show: html_path=%s pythonpath_dir=%s python=%s "
+            "bridge_socket=%s",
             html_path,
             pythonpath_dir,
             python_bin,
+            socket_path,
         )
 
         env = os.environ.copy()
@@ -101,6 +105,8 @@ class WebWindow:
             "-m",
             "talk2view_writer.web_runner",
             html_path.as_uri(),
+            "--bridge-socket",
+            socket_path,
         ]
         logger.info("WebWindow.show: spawning subprocess %s", args)
         try:
@@ -138,6 +144,17 @@ class WebWindow:
 
     def _is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    def _ensure_bridge(self) -> str:
+        """Lazily start the Unix-socket JSON-RPC bridge. Returns its path."""
+        if self._bridge is not None:
+            return self._bridge.socket_path
+        from talk2view_writer.bridge_server import BridgeServer
+
+        self._bridge = BridgeServer(self.ctx)
+        path = self._bridge.start()
+        logger.info("WebWindow: bridge listening on %s", path)
+        return path
 
     def _pump_stderr(self) -> None:
         """Forward subprocess stderr lines into our logger."""
