@@ -13,7 +13,11 @@
  * the chat session is fully captured in talk2view.log.
  */
 import React, { useEffect, useRef } from 'react';
-import { Talk2View, ChatWidget, useChat, useTalk2View } from '@talk2view/sdk/ui';
+// ChatPanel is the full-window chat UI; ChatWidget is the floating
+// launcher-bubble variant — wrong shape for our pywebview window
+// (the window IS the chat). E2E smoke caught the difference in
+// 2026-05-22.
+import { Talk2View, ChatPanel, useChat, useTalk2View } from '@talk2view/sdk/ui';
 import { writerTools } from './tools';
 import { logToHost } from './bridge';
 import { rememberEmail, installEmailAutofill } from './remember_email';
@@ -23,7 +27,17 @@ import { rememberEmail, installEmailAutofill } from './remember_email';
 // to agree on the key the engine sees, but only the JS side
 // actually uses it now that auth has moved to the browser.
 const PARTNER_KEY = 'pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7';
-const BASE_URL = 'https://engine.talk2view.com';
+// E2E tests set window.__T2V_BASE_URL_OVERRIDE so the SDK fetches from
+// the per-test mock engine instead of the production engine. The
+// override is only honored when the value looks like a localhost URL
+// — a safeguard so a compromised page can't redirect chat traffic.
+const PRODUCTION_BASE_URL = 'https://engine.talk2view.com';
+const _override = (window as unknown as { __T2V_BASE_URL_OVERRIDE?: string })
+  .__T2V_BASE_URL_OVERRIDE;
+const BASE_URL =
+  _override && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(_override)
+    ? _override
+    : PRODUCTION_BASE_URL;
 
 function LogBridge() {
   const chat = useChat();
@@ -139,7 +153,7 @@ export function App() {
     >
       <LogBridge />
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
-        <ChatWidget />
+        <ChatPanel />
       </div>
     </Talk2View>
   );

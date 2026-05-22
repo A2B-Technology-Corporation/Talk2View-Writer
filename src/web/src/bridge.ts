@@ -105,33 +105,51 @@ export async function invokeTool(
 type LogLevel = 'debug' | 'info' | 'warning' | 'error';
 
 const _logBuffer: Array<{ level: LogLevel; message: string; context?: unknown }> = [];
-let _logFlushStarted = false;
+// One drain pump runs at a time. Each call to logToHost pushes to the
+// buffer, and if the pump is idle we wake it. A previous version
+// latched _drainStarted permanently after the first drain finished —
+// new logs added afterward stayed in the buffer forever. Caught by
+// the Playwright smoke spec on 2026-05-22: the bridge in the test
+// shim is instant, so the first drain emptied the buffer before
+// React's useEffects had a chance to push their logs.
+let _drainInFlight = false;
+let _bridgeUnavailable = false;
+
+async function _pumpLogBuffer(): Promise<void> {
+  if (_drainInFlight || _bridgeUnavailable) return;
+  _drainInFlight = true;
+  try {
+    let api: PywebviewApi;
+    try {
+      api = await whenBridgeReady();
+    } catch {
+      // Bridge never became ready. Drop the current buffer and stop
+      // retrying so we don't leak unbounded log entries.
+      _logBuffer.length = 0;
+      _bridgeUnavailable = true;
+      return;
+    }
+    while (_logBuffer.length > 0) {
+      const entry = _logBuffer.shift()!;
+      try {
+        await api.log(entry.level, entry.message, entry.context ?? null);
+      } catch {
+        // Swallow — losing a single log line is preferable to a
+        // cascading promise rejection that breaks the UI.
+      }
+    }
+  } finally {
+    _drainInFlight = false;
+  }
+  // A log might have arrived during the await — re-pump if so.
+  if (_logBuffer.length > 0) {
+    void _pumpLogBuffer();
+  }
+}
 
 export function logToHost(level: LogLevel, message: string, context?: unknown): void {
   _logBuffer.push({ level, message, context });
-  if (!_logFlushStarted) {
-    _logFlushStarted = true;
-    whenBridgeReady().then(
-      async (api) => {
-        // Drain on the microtask queue so we never block the main
-        // thread with chains of awaits on a slow socket.
-        while (_logBuffer.length > 0) {
-          const entry = _logBuffer.shift()!;
-          try {
-            await api.log(entry.level, entry.message, entry.context ?? null);
-          } catch {
-            // Swallow — losing a single log line is preferable to a
-            // cascading promise rejection that breaks the UI.
-          }
-        }
-      },
-      () => {
-        // Bridge never became ready. Drop the buffer; the local
-        // console already has the lines.
-        _logBuffer.length = 0;
-      },
-    );
-  }
+  void _pumpLogBuffer();
 }
 
 /**

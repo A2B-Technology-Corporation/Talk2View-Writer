@@ -950,3 +950,60 @@ never activates), so this is invisible upstream.
 without trashing the unit-test stubs. Or convert the integration
 session fixture to a per-test conftest path that only runs when
 ``-m integration`` is active.
+
+
+## #31 — `bridge.ts` logToHost lost late logs (FIXED 2026-05-22)
+
+**What:** `src/web/src/bridge.ts`'s `logToHost` latched a
+`_logFlushStarted` boolean to true on first call, then started a
+drain pump in `whenBridgeReady().then(...)`. The pump's `while
+(_logBuffer.length > 0)` loop exited when the buffer emptied. Any
+log added AFTER that exit sat in the buffer forever — `logToHost`
+saw the latch and never restarted the pump.
+
+**Where:** `src/web/src/bridge.ts` — `_logFlushStarted` /
+`_logBuffer` (pre-fix version).
+
+**Why it matters:** Production LO never tripped this because
+pywebview's actual bridge resolution is slow enough that React's
+entire initial render burst lands in the buffer before drain
+starts; the drain then consumes everything in one cycle. Under the
+Playwright shim the bridge is in-process and instant — the drain
+emptied the buffer before React's `useEffect`s fired, so the `[app]
+<App> mounted` log and every `LogBridge` useEffect log (auth state,
+loading transitions, chat messages) was silently dropped.
+
+**Status:** FIXED in the same commit that surfaced it. Pump is now
+re-entrant: every `logToHost` schedules a `_pumpLogBuffer()`, and
+when the pump finishes a cycle it re-checks the buffer and
+self-schedules if more arrived during the await. Regression
+captured by `tests/e2e/specs/bridge-log-flush.spec.ts`.
+
+**Lesson:** code that's gated by "bridge has become ready" can have
+two distinct correctness modes — slow-bridge mode (where the queue
+naturally absorbs the burst) and fast-bridge mode (where the
+absence of a re-entrant pump is visible). Test both.
+
+## #32 — `ChatWidget` is a floating launcher, not the embedded chat (FIXED 2026-05-22)
+
+**What:** `App.tsx` rendered `<ChatWidget />` from `@talk2view/sdk/ui`
+inside a 100vh container, expecting the chat panel to fill the
+window. The SDK's `ChatWidget` is actually a floating circular
+launcher button in the bottom-right of the viewport that
+toggles a popover; the embedded full-window component is
+`ChatPanel`.
+
+**Where:** `src/web/src/App.tsx` — `<ChatPanel />` (post-fix).
+
+**Why it matters:** Until the E2E spec landed, this rendered as a
+green chat-bubble in the corner of the pywebview window. Clicking
+opened a tiny popover instead of filling the window — users would
+see "a chat button in a chat window" rather than "a chat window".
+
+**Status:** FIXED — App.tsx now imports + renders `ChatPanel`.
+The E2E smoke spec catches any regression to this.
+
+**Lesson:** the SDK component names cargo-culted from Talk2View-Word
+(which uses ChatWidget for the Office task pane's floating
+behaviour) don't translate 1:1 to Writer's pywebview window. Every
+SDK component swap needs a visual smoke covering the new use site.

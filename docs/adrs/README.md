@@ -52,6 +52,7 @@ applied.
 | [0028](0028-queryinterface-xwindowpeer.md) | Obtain XWindowPeer via queryInterface before createContainerWindow | F | Superseded by 0029 |
 | [0029](0029-floating-chat-window.md) | Floating non-modal chat window instead of a sidebar panel | F | Superseded by 0030 |
 | [0030](0030-web-chat-via-pywebview-subprocess.md) | Web chat UI via pywebview subprocess + Unix-socket bridge | F | Accepted |
+| [0031](0031-e2e-via-playwright-against-browser-bundle.md) | E2E via Playwright against the browser-bundle in Chromium, not pywebview | G | Accepted |
 
 ## Writing a new ADR
 

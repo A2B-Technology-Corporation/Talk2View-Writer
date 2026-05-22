@@ -1,7 +1,7 @@
 # Talk2View-Writer Makefile
 # Develop, test, and package the LibreOffice Writer extension.
 
-.PHONY: all install dev lint lint-fix format format-check test test-unit test-synthetic test-mock-chat test-integration test-gui-smoke test-live coverage typecheck security vendor-wheels build package install-oxt clean help
+.PHONY: all install dev lint lint-fix format format-check test test-unit test-synthetic test-mock-chat test-integration test-gui-smoke test-live test-e2e test-e2e-install coverage typecheck security vendor-wheels build package install-oxt clean help
 
 BUILD_DIR := build
 DIST_DIR  := dist
@@ -72,6 +72,20 @@ test-gui-smoke:
 # skips with a clear message).
 test-live:
 	uv run pytest -m live
+
+# Playwright E2E specs against the bundled chat UI + an in-process
+# mock engine. See ADR-0031. Requires `make test-e2e-install` once
+# per machine to fetch the Chromium/WebKit browser binaries.
+# Auto-rebuilds the bundle so the spec uses the latest local code.
+test-e2e: build-web
+	npx playwright test
+
+# One-time install of the Playwright browser binaries (~250 MB total
+# for Chromium + WebKit + WebKit deps). Uses `--with-deps` only on
+# Linux — macOS/Windows installs ship native deps with the bundle.
+test-e2e-install:
+	npm install
+	npx playwright install chromium webkit
 
 coverage:
 	uv run pytest --cov=src/talk2view_writer --cov-report=html --cov-report=term
@@ -203,6 +217,8 @@ help:
 	@echo "  test-integration  UNO-socket tests (needs running soffice on :2002)"
 	@echo "  test-gui-smoke    Linux-only AT-SPI/dogtail tests"
 	@echo "  test-live      Live chat against engine.talk2view.com (needs T2V_TEST_USER_* env)"
+	@echo "  test-e2e          Playwright specs against the bundled chat UI + mock engine"
+	@echo "  test-e2e-install  One-time Playwright browser-binary install"
 	@echo "  vendor-wheels  Refresh cross-platform pydantic_core matrix"
 	@echo "  build          Stage extension into $(BUILD_DIR)/"
 	@echo "  package        Create $(OXT)"
