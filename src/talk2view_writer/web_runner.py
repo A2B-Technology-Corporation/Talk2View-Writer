@@ -25,9 +25,11 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import socket
 import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("talk2view_writer.web_runner")
@@ -233,6 +235,7 @@ def main() -> None:
     # same CA roots as system Python's httpx.
     webview.settings['IGNORE_SSL_ERRORS'] = True
 
+    storage_path = _webview_storage_path()
     logger.info("webview imported, calling create_window")
     webview.create_window(
         "Talk2View",
@@ -241,9 +244,43 @@ def main() -> None:
         width=400,
         height=600,
     )
-    logger.info("webview.create_window returned; entering webview.start()")
-    webview.start(debug=True)
+    logger.info(
+        "webview.create_window returned; entering webview.start "
+        "(private_mode=False storage_path=%s)",
+        storage_path,
+    )
+    # private_mode=False persists cookies + localStorage across
+    # sessions. The Talk2View SDK stores its auth token in
+    # localStorage, so flipping this is the difference between
+    # "user signs in every time they open the app" and "session
+    # restored automatically". storage_path keeps the data in a
+    # stable XDG-friendly location instead of pywebview's default
+    # (~/.cache/<sys.argv[0]>) which depends on how soffice was
+    # launched.
+    webview.start(
+        debug=True,
+        private_mode=False,
+        storage_path=str(storage_path),
+    )
     logger.info("webview.start() returned — window closed, exiting")
+
+
+def _webview_storage_path() -> Path:
+    """Return a stable per-OS directory for webview cookies + localStorage.
+
+    Mirrors ``talk2view_writer._logging.log_file_path`` so all of our
+    persistent state lives under the same parent. Created if missing.
+    """
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / "Talk2View-Writer" / "webview"
+    elif sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        base = Path(local) / "Talk2View-Writer" / "webview"
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+        base = Path(xdg) / "talk2view-writer" / "webview"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 
 def _patch_webkitgtk_cors_settings() -> None:

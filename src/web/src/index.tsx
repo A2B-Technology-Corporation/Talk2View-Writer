@@ -9,8 +9,10 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { installHostLogging, logToHost } from './bridge';
+import { installEmailAutofill } from './remember_email';
 
 installHostLogging();
+installEmailAutofill();
 logToHost('info', '[boot] index.tsx loaded', {
   url: window.location.href,
   userAgent: navigator.userAgent,

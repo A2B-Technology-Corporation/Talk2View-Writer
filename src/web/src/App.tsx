@@ -16,6 +16,7 @@ import React, { useEffect, useRef } from 'react';
 import { Talk2View, ChatWidget, useChat, useTalk2View } from '@talk2view/sdk/ui';
 import { writerTools } from './tools';
 import { logToHost } from './bridge';
+import { rememberEmail, installEmailAutofill } from './remember_email';
 
 // Writer-specific partner key (provisioned 2026-05-17). Mirrors
 // PARTNER_KEY in src/talk2view_writer/config.py — both sides need
@@ -89,12 +90,21 @@ function LogBridge() {
     logToHost('debug', `[chat:loading] ${chat.isLoading}`);
   }, [chat.isLoading]);
 
-  // Log auth state.
+  // Log auth state + persist last-used email for autofill.
   useEffect(() => {
     logToHost('info', '[auth] state', {
       isAuthenticated: t2v.isAuthenticated,
       email: t2v.user?.email ?? null,
     });
+    if (t2v.isAuthenticated && t2v.user?.email) {
+      rememberEmail(t2v.user.email);
+    } else if (!t2v.isAuthenticated) {
+      // User just logged out (or this is the initial load with no
+      // session). The SDK will re-render the LoginForm; the email
+      // input is fresh in the DOM each time, so re-arm the autofill
+      // observer to catch it.
+      installEmailAutofill();
+    }
   }, [t2v.isAuthenticated, t2v.user?.email]);
 
   // Log tool-call approval requests (the engine wants user OK).
