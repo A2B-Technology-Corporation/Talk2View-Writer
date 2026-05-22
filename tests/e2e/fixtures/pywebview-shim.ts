@@ -44,6 +44,19 @@ declare global {
           headers: Record<string, string>;
           body: string;
         }>;
+        proxy_stream_open: (
+          url: string,
+          method: string,
+          headers: Record<string, string>,
+          body: string | null,
+        ) => Promise<{ stream_id: string }>;
+        proxy_stream_next: (streamId: string) => Promise<
+          | { type: 'headers'; status: number; statusText: string; headers: Record<string, string> }
+          | { type: 'chunk'; data: string }
+          | { type: 'done' }
+          | { type: 'error'; message: string }
+          | { type: 'timeout' }
+        >;
       };
     };
     // Test hook so spec code can read what the bundle has logged via
@@ -134,6 +147,92 @@ export function installPywebviewShim(opts: { overrides?: ShimOverrides } = {}): 
             headers: respHeaders,
             body: text,
           };
+        },
+        async proxy_stream_open(url, method, headers, body) {
+          // Open a real streaming fetch against the mock engine.
+          // The shim drains the response body in the background and
+          // feeds chunks into a queue read by proxy_stream_next.
+          // Each call to proxy_stream_open creates an independent
+          // stream id; cleanup happens after the consumer reads
+          // ``done``.
+          const streams = ((window as unknown as {
+            __t2vMockStreams?: Map<
+              string,
+              { queue: Array<{ type: string; [k: string]: unknown }>; waiters: Array<(v: unknown) => void> }
+            >;
+          }).__t2vMockStreams ??= new Map());
+          const streamId = `s-${Math.random().toString(36).slice(2)}-${Date.now()}`;
+          const state: {
+            queue: Array<{ type: string; [k: string]: unknown }>;
+            waiters: Array<(v: unknown) => void>;
+          } = { queue: [], waiters: [] };
+          streams.set(streamId, state);
+          const push = (ev: { type: string; [k: string]: unknown }): void => {
+            const w = state.waiters.shift();
+            if (w) {
+              w(ev);
+            } else {
+              state.queue.push(ev);
+            }
+          };
+          // Drain in the background.
+          void (async () => {
+            try {
+              const resp = await fetch(url, {
+                method,
+                headers,
+                body: method === 'GET' || method === 'HEAD' ? undefined : body ?? undefined,
+              });
+              const respHeaders: Record<string, string> = {};
+              resp.headers.forEach((v, k) => {
+                respHeaders[k.toLowerCase()] = v;
+              });
+              push({
+                type: 'headers',
+                status: resp.status,
+                statusText: resp.statusText,
+                headers: respHeaders,
+              });
+              if (resp.body) {
+                const reader = resp.body.getReader();
+                const decoder = new TextDecoder();
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  if (value && value.byteLength > 0) {
+                    push({ type: 'chunk', data: decoder.decode(value, { stream: true }) });
+                  }
+                }
+              }
+            } catch (err) {
+              push({ type: 'error', message: (err as Error).message });
+            } finally {
+              push({ type: 'done' });
+            }
+          })();
+          return { stream_id: streamId };
+        },
+        async proxy_stream_next(streamId) {
+          const streams = (window as unknown as {
+            __t2vMockStreams?: Map<
+              string,
+              { queue: Array<{ type: string; [k: string]: unknown }>; waiters: Array<(v: unknown) => void> }
+            >;
+          }).__t2vMockStreams;
+          const state = streams?.get(streamId);
+          if (!state) return { type: 'error', message: `unknown stream_id ${streamId}` };
+          if (state.queue.length > 0) {
+            const ev = state.queue.shift()!;
+            if (ev.type === 'done') streams!.delete(streamId);
+            return ev as Awaited<ReturnType<NonNullable<typeof window.pywebview>['api']['proxy_stream_next']>>;
+          }
+          return await new Promise((resolve) => {
+            state.waiters.push((ev) => {
+              const event = ev as { type: string };
+              if (event.type === 'done') streams!.delete(streamId);
+              resolve(ev as Awaited<ReturnType<NonNullable<typeof window.pywebview>['api']['proxy_stream_next']>>);
+            });
+          });
         },
       },
     };

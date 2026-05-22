@@ -90,6 +90,26 @@ class _BridgeClient:
             },
         )
 
+    def proxy_stream_open(
+        self,
+        url: str,
+        method: str,
+        headers: dict[str, str],
+        body: str | None,
+    ) -> dict[str, Any]:
+        return self._call(
+            "proxy_stream_open",
+            {
+                "url": url,
+                "method": method,
+                "headers": headers,
+                "body": body,
+            },
+        )
+
+    def proxy_stream_next(self, stream_id: str) -> dict[str, Any]:
+        return self._call("proxy_stream_next", {"stream_id": stream_id})
+
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
             raise RuntimeError("BridgeClient: not connected")
@@ -193,6 +213,32 @@ class _Api:
                 "start the subprocess with --bridge-socket?"
             )
         return self._bridge.proxy_fetch(url, method, headers or {}, body)
+
+    def proxy_stream_open(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        """Open a streaming proxy. Returns ``{stream_id}``.
+
+        JS then calls :meth:`proxy_stream_next` repeatedly with the
+        returned id to drain events. See ADR-0033.
+        """
+        if self._bridge is None:
+            raise RuntimeError(
+                "Bridge not configured; cannot open proxy stream."
+            )
+        return self._bridge.proxy_stream_open(url, method, headers or {}, body)
+
+    def proxy_stream_next(self, stream_id: str) -> dict[str, Any]:
+        """Pop the next streaming event for ``stream_id``."""
+        if self._bridge is None:
+            raise RuntimeError(
+                "Bridge not configured; cannot read proxy stream."
+            )
+        return self._bridge.proxy_stream_next(stream_id)
 
     def log(
         self,

@@ -249,6 +249,303 @@ class TestSocketLifecycle:
 
 
 @pytest.mark.unit
+class TestProxyStream:
+    """Streaming proxy: open + drain chunk-by-chunk.
+
+    Mocks httpx.stream so we can script the SSE chunks deterministically
+    without spinning a real server. The bridge worker thread runs to
+    completion before the test reads chunks; ordering is enforced by
+    the FIFO queue.
+    """
+
+    def _server(self) -> BridgeServer:
+        return BridgeServer(ctx=MagicMock(name="ctx"))
+
+    def _patch_httpx_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        status: int = 200,
+        reason: str = "OK",
+        headers: dict[str, str] | None = None,
+        chunks: list[str] | None = None,
+        raise_exc: Exception | None = None,
+    ) -> list[dict[str, Any]]:
+        """Patch ``httpx.stream`` to yield a scripted response.
+
+        Returns a list that records every call to ``stream(...)`` so
+        tests can assert on the request shape.
+        """
+        from contextlib import contextmanager
+
+        calls: list[dict[str, Any]] = []
+
+        class _Resp:
+            status_code = status
+            reason_phrase = reason
+
+            def __init__(self) -> None:
+                self.headers = headers or {}
+
+            def iter_text(self):
+                yield from chunks or []
+
+        @contextmanager
+        def fake_stream(method, url, **kwargs):
+            calls.append({"method": method, "url": url, **kwargs})
+            if raise_exc is not None:
+                raise raise_exc
+            yield _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "stream", fake_stream)
+        return calls
+
+    def test_stream_open_returns_stream_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_httpx_stream(monkeypatch, chunks=["data: hello\n\n"])
+        srv = self._server()
+        line = json.dumps(
+            {
+                "id": 1,
+                "method": "proxy_stream_open",
+                "params": {
+                    "url": "https://example.test/x",
+                    "method": "POST",
+                    "headers": {"accept": "text/event-stream"},
+                    "body": "{}",
+                },
+            }
+        )
+        resp = json.loads(srv._dispatch_line(line))
+        assert resp["id"] == 1
+        assert "stream_id" in resp["result"]
+        assert isinstance(resp["result"]["stream_id"], str)
+        assert len(resp["result"]["stream_id"]) > 0
+
+    def test_stream_delivers_headers_then_chunks_then_done(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_httpx_stream(
+            monkeypatch,
+            status=200,
+            reason="OK",
+            headers={"content-type": "text/event-stream"},
+            chunks=["data: a\n\n", "data: b\n\n", "data: [DONE]\n\n"],
+        )
+        srv = self._server()
+        opened = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "proxy_stream_open",
+                        "params": {
+                            "url": "https://example.test/x",
+                            "method": "POST",
+                            "headers": {},
+                            "body": None,
+                        },
+                    }
+                )
+            )
+        )
+        stream_id = opened["result"]["stream_id"]
+
+        events: list[dict[str, Any]] = []
+        for next_id in range(2, 100):
+            r = json.loads(
+                srv._dispatch_line(
+                    json.dumps(
+                        {
+                            "id": next_id,
+                            "method": "proxy_stream_next",
+                            "params": {"stream_id": stream_id},
+                        }
+                    )
+                )
+            )
+            events.append(r["result"])
+            if r["result"]["type"] == "done":
+                break
+        else:
+            pytest.fail("stream never finished")
+
+        # First event is headers
+        assert events[0]["type"] == "headers"
+        assert events[0]["status"] == 200
+        assert events[0]["statusText"] == "OK"
+        assert events[0]["headers"] == {"content-type": "text/event-stream"}
+        # Then exactly three chunks in order
+        chunk_events = [e for e in events if e["type"] == "chunk"]
+        assert [e["data"] for e in chunk_events] == [
+            "data: a\n\n",
+            "data: b\n\n",
+            "data: [DONE]\n\n",
+        ]
+        # Then a done event
+        assert events[-1]["type"] == "done"
+
+    def test_stream_next_unknown_stream_id_returns_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        srv = self._server()
+        r = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "proxy_stream_next",
+                        "params": {"stream_id": "does-not-exist"},
+                    }
+                )
+            )
+        )
+        # We model unknown stream as a result.type=error so the JS
+        # side gets a defined event (vs an RPC error which would
+        # reject the promise).
+        assert r["result"]["type"] == "error"
+        assert "unknown" in r["result"]["message"].lower()
+
+    def test_stream_open_passes_method_url_and_body_to_httpx(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._patch_httpx_stream(monkeypatch, chunks=[])
+        srv = self._server()
+        body = '{"messages":[{"role":"user","content":"hi"}],"stream":true}'
+        srv._dispatch_line(
+            json.dumps(
+                {
+                    "id": 1,
+                    "method": "proxy_stream_open",
+                    "params": {
+                        "url": "https://example.test/v1/sessions/abc/messages",
+                        "method": "POST",
+                        "headers": {"x-t2v-partner-key": "pk"},
+                        "body": body,
+                    },
+                }
+            )
+        )
+        # Wait briefly for the worker thread to make the httpx call.
+        # The worker copies the call args at start.
+        for _ in range(50):
+            if calls:
+                break
+            time.sleep(0.01)
+        assert len(calls) == 1
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["url"] == "https://example.test/v1/sessions/abc/messages"
+        # httpx receives the body as ``content=...`` bytes.
+        assert calls[0]["content"] == body.encode("utf-8")
+
+    def test_stream_done_event_cleans_up_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-reading a finished stream returns 'error: unknown stream'."""
+        self._patch_httpx_stream(monkeypatch, chunks=["one"])
+        srv = self._server()
+        opened = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "proxy_stream_open",
+                        "params": {
+                            "url": "https://example.test/x",
+                            "method": "GET",
+                            "headers": {},
+                            "body": None,
+                        },
+                    }
+                )
+            )
+        )
+        stream_id = opened["result"]["stream_id"]
+        # Drain to done
+        for next_id in range(2, 20):
+            r = json.loads(
+                srv._dispatch_line(
+                    json.dumps(
+                        {
+                            "id": next_id,
+                            "method": "proxy_stream_next",
+                            "params": {"stream_id": stream_id},
+                        }
+                    )
+                )
+            )
+            if r["result"]["type"] == "done":
+                break
+        # Now stream_id should be unknown
+        post = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 99,
+                        "method": "proxy_stream_next",
+                        "params": {"stream_id": stream_id},
+                    }
+                )
+            )
+        )
+        assert post["result"]["type"] == "error"
+        assert "unknown" in post["result"]["message"].lower()
+
+    def test_stream_httpx_error_surfaces_as_error_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        self._patch_httpx_stream(
+            monkeypatch,
+            raise_exc=httpx.ConnectError("connection refused"),
+        )
+        srv = self._server()
+        opened = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "proxy_stream_open",
+                        "params": {
+                            "url": "https://example.test/x",
+                            "method": "GET",
+                            "headers": {},
+                            "body": None,
+                        },
+                    }
+                )
+            )
+        )
+        stream_id = opened["result"]["stream_id"]
+        # First (and only) event should be an error, then a done.
+        events: list[dict[str, Any]] = []
+        for next_id in range(2, 10):
+            r = json.loads(
+                srv._dispatch_line(
+                    json.dumps(
+                        {
+                            "id": next_id,
+                            "method": "proxy_stream_next",
+                            "params": {"stream_id": stream_id},
+                        }
+                    )
+                )
+            )
+            events.append(r["result"])
+            if r["result"]["type"] == "done":
+                break
+        types = [e["type"] for e in events]
+        assert "error" in types
+        assert types[-1] == "done"
+        err = next(e for e in events if e["type"] == "error")
+        assert "connection refused" in err["message"]
+
+
+@pytest.mark.unit
 class TestToolRegistry:
     """The registry caches the tools list (built once per server)."""
 

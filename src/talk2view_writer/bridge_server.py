@@ -35,9 +35,11 @@ import errno
 import json
 import logging
 import os
+import queue
 import socket
 import tempfile
 import threading
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -72,6 +74,12 @@ class BridgeServer:
         self._conn_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._tools_by_name: dict[str, Callable[..., Any]] | None = None
+        # Active streams keyed by stream_id. Each entry is a Queue
+        # that the worker thread feeds events into, drained by
+        # proxy_stream_next calls. Cleaned up when the consumer
+        # receives the "done" event. See ADR-0033 (streaming SSE).
+        self._streams: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._streams_lock = threading.Lock()
 
     # ----- Lifecycle ------------------------------------------------------
 
@@ -199,6 +207,19 @@ class BridgeServer:
                     str(params.get("method", "GET")).upper(),
                     params.get("headers") or {},
                     params.get("body"),
+                )
+                return json.dumps({"id": req_id, "result": result})
+            if method == "proxy_stream_open":
+                result = self._proxy_stream_open(
+                    str(params.get("url", "")),
+                    str(params.get("method", "GET")).upper(),
+                    params.get("headers") or {},
+                    params.get("body"),
+                )
+                return json.dumps({"id": req_id, "result": result})
+            if method == "proxy_stream_next":
+                result = self._proxy_stream_next(
+                    str(params.get("stream_id", "")),
                 )
                 return json.dumps({"id": req_id, "result": result})
             return json.dumps(
@@ -342,6 +363,137 @@ class BridgeServer:
             # would need base64 but the engine's API is JSON throughout.
             "body": resp.text,
         }
+
+    # ----- HTTPS streaming proxy -----------------------------------------
+
+    def _proxy_stream_open(
+        self,
+        url: str,
+        method: str,
+        headers: dict[str, Any],
+        body: Any,
+    ) -> dict[str, Any]:
+        """Begin streaming an HTTPS request via ``httpx.stream``.
+
+        The actual HTTP work runs on a worker thread that pushes
+        events into a per-stream Queue. The JS side drains the queue
+        with ``proxy_stream_next(stream_id)`` calls. This polling
+        model is forced by pywebview's request-response ``js_api`` —
+        there is no way for Python to push to JS, so JS asks for the
+        next event whenever it's ready.
+
+        Event protocol on the queue:
+
+          {"type": "headers", "status": N, "statusText": "...",
+           "headers": {lowercase: value}}
+          {"type": "chunk", "data": "..."}        # zero or more
+          {"type": "error", "message": "..."}     # at most one
+          {"type": "done"}                        # always last
+
+        The consumer keeps calling ``proxy_stream_next`` until it
+        receives a "done" event; the stream is removed from the
+        registry at that point. A consumer that disappears mid-stream
+        leaks the Queue + worker until LO exits — acceptable for now
+        because there's exactly one consumer subprocess and it dies
+        when LO does. See ADR-0033.
+        """
+        import httpx
+
+        # Normalise inputs the same way ``_proxy_fetch`` does so the
+        # streaming and non-streaming paths behave identically on
+        # header / body coercion.
+        clean_headers = {str(k): str(v) for k, v in headers.items()}
+        content: bytes | None
+        if body is None:
+            content = None
+        elif isinstance(body, str):
+            content = body.encode("utf-8")
+        elif isinstance(body, bytes | bytearray):
+            content = bytes(body)
+        else:
+            content = json.dumps(body).encode("utf-8")
+
+        stream_id = uuid.uuid4().hex
+        q: queue.Queue[dict[str, Any]] = queue.Queue()
+        with self._streams_lock:
+            self._streams[stream_id] = q
+
+        def worker() -> None:
+            try:
+                with httpx.stream(
+                    method,
+                    url,
+                    headers=clean_headers,
+                    content=content,
+                    timeout=httpx.Timeout(30.0, read=None),
+                    follow_redirects=True,
+                ) as resp:
+                    q.put(
+                        {
+                            "type": "headers",
+                            "status": resp.status_code,
+                            "statusText": resp.reason_phrase or "",
+                            "headers": {
+                                k.lower(): v for k, v in resp.headers.items()
+                            },
+                        }
+                    )
+                    for chunk in resp.iter_text():
+                        if chunk:
+                            q.put({"type": "chunk", "data": chunk})
+            except Exception as exc:
+                logger.exception(
+                    "proxy_stream_open worker raised for %s %s", method, url
+                )
+                q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+            finally:
+                q.put({"type": "done"})
+
+        thread = threading.Thread(
+            target=worker, name=f"proxy-stream-{stream_id[:8]}", daemon=True
+        )
+        thread.start()
+
+        logger.info(
+            "proxy_stream_open: %s %s stream_id=%s", method, url, stream_id
+        )
+        return {"stream_id": stream_id}
+
+    def _proxy_stream_next(self, stream_id: str) -> dict[str, Any]:
+        """Pop the next event from ``stream_id``'s queue.
+
+        Blocks the dispatch thread (i.e. one bridge-server connection
+        handler) until an event is available. JS-side dispatch is
+        single-threaded per stream, so the only thing blocked is one
+        chunk's read latency.
+
+        Removes the stream from the registry when it returns a
+        ``done`` event. Unknown stream IDs return a ``type=error``
+        result (rather than raising) so the JS side gets a defined
+        event it can route to the stream's error path.
+        """
+        with self._streams_lock:
+            q = self._streams.get(stream_id)
+        if q is None:
+            return {
+                "type": "error",
+                "message": f"unknown stream_id {stream_id!r}",
+            }
+        # 60s upper bound — keeps the bridge thread from blocking on
+        # a worker that has wedged (e.g. the engine started streaming
+        # and then went unresponsive). The JS side can retry.
+        try:
+            event = q.get(timeout=60.0)
+        except queue.Empty:
+            logger.warning(
+                "proxy_stream_next: 60s wait elapsed for %s — returning timeout",
+                stream_id,
+            )
+            return {"type": "timeout"}
+        if event.get("type") == "done":
+            with self._streams_lock:
+                self._streams.pop(stream_id, None)
+        return event
 
     # ----- Tool dispatch --------------------------------------------------
 

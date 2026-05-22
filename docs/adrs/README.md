@@ -53,6 +53,7 @@ applied.
 | [0029](0029-floating-chat-window.md) | Floating non-modal chat window instead of a sidebar panel | F | Superseded by 0030 |
 | [0030](0030-web-chat-via-pywebview-subprocess.md) | Web chat UI via pywebview subprocess + Unix-socket bridge | F | Accepted |
 | [0031](0031-e2e-via-playwright-against-browser-bundle.md) | E2E via Playwright against the browser-bundle in Chromium, not pywebview | G | Accepted |
+| [0033](0033-streaming-sse-proxy-via-polled-queue.md) | Streaming SSE proxy via a polled per-stream queue | G | Accepted |
 
 ## Writing a new ADR
 

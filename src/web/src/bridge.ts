@@ -36,6 +36,19 @@ interface PywebviewApi {
     headers: Record<string, string>;
     body: string;
   }>;
+  proxy_stream_open(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | null,
+  ): Promise<{ stream_id: string }>;
+  proxy_stream_next(stream_id: string): Promise<
+    | { type: 'headers'; status: number; statusText: string; headers: Record<string, string> }
+    | { type: 'chunk'; data: string }
+    | { type: 'done' }
+    | { type: 'error'; message: string }
+    | { type: 'timeout' }
+  >;
 }
 
 declare global {
@@ -284,6 +297,112 @@ export function installHostLogging(): void {
     }
   }
 
+  /**
+   * Stream a proxied request chunk-by-chunk back to the SDK.
+   *
+   * The bridge's ``proxy_stream_open`` returns a ``stream_id`` and
+   * starts an httpx worker that pushes events into a queue: one
+   * ``headers`` event, zero or more ``chunk`` events, then ``done``
+   * (with an optional ``error`` immediately before done on failure).
+   * We drain via ``proxy_stream_next`` polls and re-shape the events
+   * into a ``ReadableStream`` body so the SDK can use ``response.body``
+   * exactly as it would with a real network fetch.
+   *
+   * Latency: each ``proxy_stream_next`` is one Unix-socket round-trip
+   * (~1-2 ms), so chunks arrive in JS within a few ms of being read
+   * from the engine. Good enough for token-by-token rendering.
+   */
+  async function _proxyStream(
+    api: PywebviewApi,
+    reqId: number,
+    t0: number,
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | null,
+  ): Promise<Response> {
+    const { stream_id } = await api.proxy_stream_open(url, method, headers, body);
+
+    // Pump the first event — it must be ``headers``, ``error``, or
+    // ``done`` (engine could close immediately).
+    let first = await api.proxy_stream_next(stream_id);
+    while (first.type === 'timeout') {
+      first = await api.proxy_stream_next(stream_id);
+    }
+
+    if (first.type === 'error') {
+      logToHost(
+        'error',
+        `[fetch:${reqId}] (proxy-stream) !! ${first.message} (${Date.now() - t0}ms) ${url}`,
+      );
+      // Drain the trailing done.
+      while ((await api.proxy_stream_next(stream_id)).type !== 'done') {
+        // loop
+      }
+      throw new Error(`Bridge stream error: ${first.message}`);
+    }
+    if (first.type === 'done') {
+      logToHost(
+        'warning',
+        `[fetch:${reqId}] (proxy-stream) ← empty (closed before headers) (${Date.now() - t0}ms) ${url}`,
+      );
+      return new Response('', { status: 502, statusText: 'Bridge: empty stream' });
+    }
+    if (first.type !== 'headers') {
+      throw new Error(`Bridge stream: unexpected first event type ${first.type}`);
+    }
+
+    const { status, statusText, headers: respHeaders } = first;
+    logToHost('info', `[fetch:${reqId}] (proxy-stream) ⇡ ${status} ${statusText} (${Date.now() - t0}ms) ${url}`, {
+      headerKeys: Object.keys(respHeaders),
+    });
+
+    let chunkCount = 0;
+    let totalBytes = 0;
+    const encoder = new TextEncoder();
+
+    const responseBody = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        while (true) {
+          const ev = await api.proxy_stream_next(stream_id);
+          if (ev.type === 'timeout') {
+            continue;
+          }
+          if (ev.type === 'chunk') {
+            chunkCount += 1;
+            const encoded = encoder.encode(ev.data);
+            totalBytes += encoded.byteLength;
+            controller.enqueue(encoded);
+            return;
+          }
+          if (ev.type === 'error') {
+            logToHost(
+              'error',
+              `[fetch:${reqId}] (proxy-stream) mid-stream error: ${ev.message}`,
+            );
+            controller.error(new Error(ev.message));
+            return;
+          }
+          if (ev.type === 'done') {
+            logToHost(
+              'info',
+              `[fetch:${reqId}] (proxy-stream) ⇣ closed ${chunkCount}ch ${totalBytes}B (${Date.now() - t0}ms) ${url}`,
+            );
+            controller.close();
+            return;
+          }
+          throw new Error(`Bridge stream: unexpected event type ${(ev as { type: string }).type}`);
+        }
+      },
+    });
+
+    return new Response(responseBody, {
+      status,
+      statusText,
+      headers: respHeaders,
+    });
+  }
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const reqId = ++fetchSeq;
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -297,10 +416,23 @@ export function installHostLogging(): void {
     const t0 = Date.now();
 
     if (_shouldProxy(url)) {
+      // Routes that stream (chat completion is SSE) need chunk-by-chunk
+      // delivery so the UI sees text as the model emits it. We pick
+      // the streaming path when the caller declared
+      // ``Accept: text/event-stream`` OR when the URL is the chat
+      // messages endpoint (which is SSE even without an explicit
+      // Accept). Everything else uses the non-streaming proxy_fetch.
+      const hdrs = await _headersToObj(init);
+      const accept = (hdrs.Accept || hdrs.accept || '').toLowerCase();
+      const isStreaming =
+        accept.includes('text/event-stream') ||
+        /\/v1\/sessions\/[^/]+\/messages$/.test(new URL(url).pathname);
       try {
         const api = await whenBridgeReady();
-        const hdrs = await _headersToObj(init);
         const bodyStr = await _bodyToString(init);
+        if (isStreaming) {
+          return await _proxyStream(api, reqId, t0, url, method, hdrs, bodyStr);
+        }
         const result = await api.proxy_fetch(url, method, hdrs, bodyStr);
         logToHost(
           result.status >= 400 || result.status === 0 ? 'error' : 'info',

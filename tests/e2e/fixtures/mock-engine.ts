@@ -33,6 +33,8 @@ export type StreamChunk = {
   content?: string;
   tool_calls?: Array<{ id: string; name: string; arguments: string }>;
   finish_reason?: 'stop' | 'length' | 'tool_calls';
+  /** Optional delay before sending this chunk, in milliseconds. */
+  delayMs?: number;
 };
 
 /** Scripted response to a chat-completion request. */
@@ -230,6 +232,9 @@ export class MockEngine {
     const threadId = randomUUID();
 
     for (const chunk of script) {
+      if (chunk.delayMs && chunk.delayMs > 0) {
+        await sleep(chunk.delayMs);
+      }
       const sse = {
         id: completionId,
         object: 'chat.completion.chunk',
@@ -253,8 +258,16 @@ export class MockEngine {
         todos: null,
       };
       res.write(`data: ${JSON.stringify(sse)}\n\n`);
-      // Small gap between chunks so tests can observe streaming behaviour.
-      await sleep(10);
+      // Force a flush so the chunk reaches the client now, not at
+      // request end. Node's http stream buffers tiny writes by
+      // default; without flushHeaders+cork toggling we get a single
+      // batched delivery that defeats progressive-render tests.
+      if (typeof (res as unknown as { flush?: () => void }).flush === 'function') {
+        (res as unknown as { flush: () => void }).flush();
+      }
+      // Default tiny gap so tests can observe streaming behaviour
+      // when no explicit delayMs is given.
+      if (!chunk.delayMs) await sleep(10);
     }
     res.write('data: [DONE]\n\n');
     res.end();
