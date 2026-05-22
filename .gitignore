@@ -13,3 +13,7 @@ dist/
 # Vendored cross-platform pydantic-core wheels; regenerated via
 # `make vendor-wheels` (see scripts/vendor_wheels.py).
 vendor/
+# Web bundle (src/web/) — checked-in source, generated artefacts ignored.
+# Regenerated via `make build-web` (see Makefile).
+src/web/node_modules/
+src/web/dist/

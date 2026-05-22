@@ -90,8 +90,18 @@ vendor-wheels:
 	@echo "Downloading + extracting pydantic_core wheel matrix..."
 	@uv run python scripts/vendor_wheels.py
 
+build-web:
+	@echo "Building Talk2View-Writer web bundle (React + Talk2View SDK)..."
+	@if [ ! -d src/web/node_modules ]; then \
+		echo "  installing npm dependencies (one-off)..."; \
+		cd src/web && npm install --silent; \
+	fi
+	@cd src/web && npm run build --silent
+	@echo "Web bundle built: src/web/dist/"
+	@ls -la src/web/dist/ | tail -n +2
+
 # Build the extension into BUILD_DIR/EXT_NAME/
-build: lint test-unit
+build: lint test-unit build-web
 	@echo "Building Talk2View-Writer extension..."
 	@if [ ! -d vendor/extracted ]; then \
 		echo "ERROR: vendor/extracted/ missing. Run 'make vendor-wheels' first."; \
@@ -114,7 +124,11 @@ build: lint test-unit
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r extension/icons $(BUILD_DIR)/$(EXT_NAME)/icons
 	@cp -r extension/panels $(BUILD_DIR)/$(EXT_NAME)/panels
-	@cp -r extension/web $(BUILD_DIR)/$(EXT_NAME)/web
+	@# Web bundle: copy the webpack output from src/web/dist/ rather
+	@# than the source HTML smoke-test in extension/web/. build-web
+	@# is a prerequisite of `build` so the dist/ dir is up to date.
+	@mkdir -p $(BUILD_DIR)/$(EXT_NAME)/web
+	@cp -r src/web/dist/* $(BUILD_DIR)/$(EXT_NAME)/web/
 	@echo "Bundling pure-Python runtime dependencies..."
 	@# Resolve each dep via the venv's Python so editable installs
 	@# (.pth indirection — e.g. our local talk2view SDK) and single-
