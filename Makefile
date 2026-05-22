@@ -83,8 +83,24 @@ test-e2e-install:
 	npm install
 	npx playwright install chromium webkit
 
+# Coverage from the same test set as test-unit (unit + synthetic).
+# We exclude integration on purpose — its session fixture evicts the
+# unit-test UNO stubs (see investigation #30) which would corrupt the
+# unit suite's coverage. Re-add ``-m "unit or synthetic or integration"``
+# once that conftest is rewritten.
+#
+# --cov-fail-under=58 ratchets the floor at the current measured value
+# (58.52% line+branch). Raise this number as tests are added; never
+# lower it without a documented reason. See task #29 — the path to
+# 100% is laid out in tests/COVERAGE_PLAN.md (TBD).
 coverage:
-	uv run pytest --cov=src/talk2view_writer --cov-report=html --cov-report=term
+	uv run pytest -m "unit or synthetic" \
+	    --cov=src/talk2view_writer \
+	    --cov-report=html \
+	    --cov-report=term \
+	    --cov-report=xml \
+	    --cov-branch \
+	    --cov-fail-under=58
 
 typecheck:
 	uv run mypy src/

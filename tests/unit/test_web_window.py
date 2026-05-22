@@ -17,6 +17,77 @@ import pytest
 
 
 @pytest.mark.unit
+class TestResolvePython:
+    """Cross-platform discovery of the python interpreter."""
+
+    def _win(self) -> Any:
+        from talk2view_writer.ui.web_window import WebWindow
+
+        return WebWindow(ctx=MagicMock(name="ctx"))
+
+    def test_override_env_var_wins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T2V_PYTHON", "/custom/python")
+        assert self._win()._resolve_python() == "/custom/python"
+
+    def test_linux_uses_which_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: "/usr/local/bin/python3" if name == "python3" else None,
+        )
+        assert self._win()._resolve_python() == "/usr/local/bin/python3"
+
+    def test_linux_falls_back_to_usr_bin_python3(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert self._win()._resolve_python() == "/usr/bin/python3"
+
+    def test_darwin_uses_which_or_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        assert self._win()._resolve_python() == "/usr/bin/python3"
+
+    def test_windows_uses_which_python(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda name: "C:/Python/python.exe" if name == "python" else None,
+        )
+        assert self._win()._resolve_python() == "C:/Python/python.exe"
+
+    def test_windows_raises_if_no_python(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        with pytest.raises(FileNotFoundError, match=r"python\.exe"):
+            self._win()._resolve_python()
+
+    def test_unsupported_platform_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_PYTHON", raising=False)
+        monkeypatch.setattr(sys, "platform", "aix")
+        with pytest.raises(RuntimeError, match="unsupported platform"):
+            self._win()._resolve_python()
+
+
+@pytest.mark.unit
 class TestWebWindowRefocus:
     """Re-click on an open chat window refocuses, doesn't respawn."""
 

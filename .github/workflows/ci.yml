@@ -71,8 +71,23 @@ jobs:
       - name: Mypy
         run: make typecheck
 
-      - name: Unit tests
-        run: make test-unit
+      - name: Unit tests + coverage (ratchet enforced)
+        # Coverage runs the unit + synthetic suite with branch + line
+        # coverage AND --cov-fail-under=59 so a regression below the
+        # current floor fails the job. Raise the floor when adding
+        # tests; never lower without a documented reason. See task #29.
+        run: make coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            htmlcov/
+            coverage.xml
+          if-no-files-found: warn
+          retention-days: 30
 
   # -----------------------------------------------------------------
   # 2. Build the universal .oxt (one Linux job — wheels for all OSes
