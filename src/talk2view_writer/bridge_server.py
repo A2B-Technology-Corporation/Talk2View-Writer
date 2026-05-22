@@ -193,6 +193,14 @@ class BridgeServer:
                     params.get("context"),
                 )
                 return json.dumps({"id": req_id, "result": None})
+            if method == "proxy_fetch":
+                result = self._proxy_fetch(
+                    str(params.get("url", "")),
+                    str(params.get("method", "GET")).upper(),
+                    params.get("headers") or {},
+                    params.get("body"),
+                )
+                return json.dumps({"id": req_id, "result": result})
             return json.dumps(
                 {
                     "id": req_id,
@@ -239,6 +247,101 @@ class BridgeServer:
             log_method("%s | %s", message, ctx_str)
         else:
             log_method("%s", message)
+
+    # ----- HTTPS proxy ----------------------------------------------------
+
+    def _proxy_fetch(
+        self,
+        url: str,
+        method: str,
+        headers: dict[str, Any],
+        body: Any,
+    ) -> dict[str, Any]:
+        """Proxy an HTTPS request from the webview through Python's httpx.
+
+        The webview loads our HTML via ``file://``, so when the
+        Talk2View SDK fetches ``https://engine.talk2view.com/...`` the
+        engine treats the Origin as ``null`` (or ``file://`` on some
+        WebKit builds) and rejects the response via CORS — but
+        silently, without surfacing the rejection to the JS fetch
+        promise. The 2026-05-22 19:50 repro showed requests firing
+        and never resolving.
+
+        Routing the call through this method instead lets Python's
+        httpx make the actual HTTPS request. Python is not a browser
+        and has no CORS rules; it just sends the headers we pass and
+        returns the response verbatim.
+
+        Returns a dict mirroring the parts of ``fetch``'s Response
+        the SDK reads: status, statusText, headers, body. Non-streaming
+        only — SSE chat streaming will need a separate path
+        (next iteration).
+        """
+        # Lazy import — httpx is bundled but the rotating-log + unit
+        # tests don't need to drag it in just to dispatch invoke_tool.
+        import httpx
+
+        # Coerce header values to str — they sometimes arrive as
+        # ints / bools from JSON.
+        clean_headers = {str(k): str(v) for k, v in headers.items()}
+
+        if body is None:
+            content: Any = None
+        elif isinstance(body, str):
+            content = body.encode("utf-8")
+        elif isinstance(body, (bytes, bytearray)):
+            content = bytes(body)
+        else:
+            # JSON-shaped body (dict/list) — re-serialise so the
+            # exact bytes hit the wire.
+            content = json.dumps(body).encode("utf-8")
+
+        logger.info(
+            "proxy_fetch: %s %s (header_count=%d body_len=%s)",
+            method,
+            url,
+            len(clean_headers),
+            len(content) if content is not None else None,
+        )
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                resp = client.request(
+                    method=method,
+                    url=url,
+                    headers=clean_headers,
+                    content=content,
+                )
+        except httpx.RequestError as exc:
+            logger.exception(
+                "proxy_fetch: %s %s raised — synthesising 0 status",
+                method,
+                url,
+            )
+            return {
+                "status": 0,
+                "statusText": f"{type(exc).__name__}: {exc}",
+                "headers": {},
+                "body": "",
+            }
+
+        logger.info(
+            "proxy_fetch: %s %s → %d %s (body_len=%d)",
+            method,
+            url,
+            resp.status_code,
+            resp.reason_phrase or "",
+            len(resp.content),
+        )
+        return {
+            "status": resp.status_code,
+            "statusText": resp.reason_phrase or "",
+            # Lower-case header names so JS-side matching is consistent;
+            # the Fetch API also normalises to lowercase.
+            "headers": {k.lower(): v for k, v in resp.headers.items()},
+            # Use response.text for human-readable; binary responses
+            # would need base64 but the engine's API is JSON throughout.
+            "body": resp.text,
+        }
 
     # ----- Tool dispatch --------------------------------------------------
 

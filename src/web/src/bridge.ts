@@ -25,6 +25,17 @@ interface PywebviewApi {
     message: string,
     context: unknown,
   ): Promise<null>;
+  proxy_fetch(
+    url: string,
+    method: string,
+    headers: Record<string, string>,
+    body: string | null,
+  ): Promise<{
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    body: string;
+  }>;
 }
 
 declare global {
@@ -199,18 +210,106 @@ export function installHostLogging(): void {
 
   // Instrument fetch + XHR so every network request is captured.
   // Critical for diagnosing CORS / network failures that don't fire
-  // console.error (browsers often reject silently).
+  // console.error (browsers often reject silently). Also routes
+  // engine.talk2view.com requests through the Python bridge to
+  // bypass WebKit's file://-origin CORS (see ENGINE_HOST below).
   const origFetch = window.fetch.bind(window);
   let fetchSeq = 0;
+
+  // The webview is loaded via ``file://``. WebKit gates cross-origin
+  // responses on the engine's ``Access-Control-Allow-Origin`` header,
+  // which doesn't allow ``null`` / ``file://``. Requests fire but
+  // responses are silently dropped. We sidestep by routing engine
+  // calls through Python's httpx via the bridge (no browser CORS
+  // rules). Non-streaming endpoints only for now — chat streaming
+  // (SSE) needs a separate mechanism (next iteration).
+  const ENGINE_HOST = 'engine.talk2view.com';
+
+  async function _headersToObj(init?: RequestInit): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    const h = init?.headers;
+    if (!h) return out;
+    if (h instanceof Headers) {
+      h.forEach((v, k) => { out[k] = v; });
+    } else if (Array.isArray(h)) {
+      for (const [k, v] of h) out[k] = String(v);
+    } else {
+      for (const [k, v] of Object.entries(h)) out[k] = String(v);
+    }
+    return out;
+  }
+
+  async function _bodyToString(init?: RequestInit): Promise<string | null> {
+    const b = init?.body;
+    if (b == null) return null;
+    if (typeof b === 'string') return b;
+    if (b instanceof URLSearchParams) return b.toString();
+    if (b instanceof Blob) return await b.text();
+    if (b instanceof ArrayBuffer) return new TextDecoder().decode(b);
+    if (ArrayBuffer.isView(b)) {
+      return new TextDecoder().decode(b as Uint8Array);
+    }
+    // FormData / ReadableStream not commonly used by the SDK; fall back
+    // to String() and log a warning so we know if this hits.
+    logToHost(
+      'warning',
+      `[fetch] unrecognised body type ${b.constructor?.name ?? typeof b}; serialising via String()`,
+    );
+    return String(b);
+  }
+
+  function _shouldProxy(url: string): boolean {
+    try {
+      return new URL(url, window.location.href).hostname === ENGINE_HOST;
+    } catch {
+      return false;
+    }
+  }
+
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const reqId = ++fetchSeq;
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const method = (init?.method ?? (typeof input !== 'string' && !(input instanceof URL) ? input.method : 'GET')) || 'GET';
+
     logToHost('info', `[fetch:${reqId}] → ${method} ${url}`, {
       headers: init?.headers ?? null,
       bodyType: init?.body ? typeof init.body : null,
+      proxied: _shouldProxy(url),
     });
     const t0 = Date.now();
+
+    if (_shouldProxy(url)) {
+      try {
+        const api = await whenBridgeReady();
+        const hdrs = await _headersToObj(init);
+        const bodyStr = await _bodyToString(init);
+        const result = await api.proxy_fetch(url, method, hdrs, bodyStr);
+        logToHost(
+          result.status >= 400 || result.status === 0 ? 'error' : 'info',
+          `[fetch:${reqId}] (proxy) ← ${result.status} ${result.statusText} (${Date.now() - t0}ms) ${url}`,
+          {
+            bodyPreview: result.body.slice(0, 200),
+            headerKeys: Object.keys(result.headers),
+          },
+        );
+        // Synthesise a Response. Headers passed through verbatim
+        // so the SDK can read Content-Type, etc.
+        return new Response(result.body, {
+          status: result.status || 502,
+          statusText: result.statusText || (result.status === 0 ? 'Bridge Error' : ''),
+          headers: result.headers,
+        });
+      } catch (err) {
+        const e = err as Error;
+        logToHost(
+          'error',
+          `[fetch:${reqId}] (proxy) !! ${e.name}: ${e.message} (${Date.now() - t0}ms) ${url}`,
+          { name: e.name, message: e.message, stack: e.stack },
+        );
+        throw err;
+      }
+    }
+
     try {
       const resp = await origFetch(input, init);
       logToHost('info', `[fetch:${reqId}] ← ${resp.status} ${resp.statusText} (${Date.now() - t0}ms) ${url}`, {
