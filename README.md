@@ -93,22 +93,31 @@ full roadmap. The current branch covers:
 
 ```
 LibreOffice Writer
-  └─ Sidebar deck "Talk2View"
-       └─ ChatPanel (UNO widgets)
-            │
-            ▼  user message
-       sdk_client → talk2view (Python SDK) ──HTTPS──▶ engine.talk2view.com
-            ▲                                         │
-            │     interrupt: tool_call ───────────────┘
-            ▼
-       WriterTools (Python functions calling UNO XText/XTable/XStyle …)
+  └─ Talk2View menu → "Open Talk2View Chat"
+       │
+       └─ pywebview subprocess (WebKitGTK / WKWebView / WebView2)
+             │  WebpackedReact+SDK bundle (src/web/)
+             ├──────────────────────────────────────▶ engine.talk2view.com
+             │                  (HTTPS via Python httpx proxy — bridge.py)
+             │                  (auth, chat, tool registration all client-side)
+             │
+             ▼  invoke_tool / tool result
+       Unix-socket JSON-RPC bridge ──▶ LibreOffice Python
+                                            │
+                                            ▼
+                                     WriterTools (UNO XText / XTable / XStyle …)
 ```
 
 - **Backend:** cloud (`engine.talk2view.com`) via partner key + user JWT.
-- **SDK:** [`talk2view`](../Talk2View-Platform/packages/sdk-python/) — handles
-  SSE streaming and the tool-execution `interrupt → resume` loop.
-- **Tools:** 26 Python functions registered via `@tool`, mirroring the
-  TypeScript tools in `Talk2View-Word/src/taskpane/tools/`.
+- **Chat UI:** React + [`@talk2view/sdk/ui`](../Talk2View-Platform/packages/sdk-typescript/)
+  bundled by webpack and loaded into a pywebview window. Auth + chat + settings
+  all happen client-side in the SDK; the Python side is a thin shell that
+  proxies HTTPS (CORS workaround for `file://`) and runs UNO tools.
+- **Streaming:** SSE chat-completion responses are streamed chunk-by-chunk
+  back to the SDK via a polled per-stream queue (ADR-0033).
+- **Tools:** 20 Python functions, invoked via the bridge's `invoke_tool` RPC
+  when the SDK emits a tool-call interrupt. Mirror the TypeScript tools in
+  `Talk2View-Word/src/taskpane/tools/`.
 
 ## Development
 
@@ -120,27 +129,30 @@ make package        # produce dist/Talk2ViewWriter.oxt
 make install-oxt    # install into user's LibreOffice profile
 ```
 
-After `make install-oxt`, restart LibreOffice Writer and open the sidebar
-(View → Sidebar). The "Talk2View" deck should appear.
+After `make install-oxt`, restart LibreOffice Writer and pick
+**Talk2View → Open Talk2View Chat** from the menu bar. A floating chat
+window backed by pywebview opens with the bundled React UI.
 
 ## Project Layout
 
 ```
 Talk2View-Writer/
 ├── extension/                       # OXT packaging files
-│   ├── talk2view_writer.py          # UNO entry (XJobExecutor + XSidebarPanelFactory)
+│   ├── talk2view_writer.py          # UNO entry (XJobExecutor + protocol handler)
 │   ├── description.xml
-│   ├── Addons.xcu                   # menu bar entries
-│   ├── Sidebar.xcu                  # sidebar deck registration
+│   ├── Addons.xcu                   # "Open Talk2View Chat" menu entry
 │   └── META-INF/manifest.xml
 ├── src/talk2view_writer/
-│   ├── extension.py                 # singleton lifecycle + auth state
-│   ├── sdk_client.py                # talk2view SDK wrapper
-│   ├── ui/                          # sidebar panel, login dialog, components
-│   ├── tools/                       # 26 UNO tools across 6 modules
+│   ├── extension.py                 # singleton (UI thread + chat window handle)
+│   ├── bridge_server.py             # Unix-socket JSON-RPC bridge (ADR-0030)
+│   ├── web_runner.py                # pywebview subprocess entry point
+│   ├── ui/web_window.py             # WebWindow that spawns the subprocess
+│   ├── tools/                       # 20 UNO tools across 6 modules
 │   ├── uno_helpers/                 # cursor, tables, styles, comments
 │   └── skills/                      # SKILL.md docs (copied from Talk2View-Word)
-└── tests/{unit,integration}/
+├── src/web/                         # React + SDK chat bundle (webpack)
+│   └── src/{App.tsx,bridge.ts,...}
+└── tests/{unit,synthetic,integration,e2e}/
 ```
 
 ## License

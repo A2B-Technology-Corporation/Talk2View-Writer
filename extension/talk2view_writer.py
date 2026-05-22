@@ -165,15 +165,21 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
 
             ext = get_extension(self.ctx)
             if command == "showPanel":
-                # Opens the floating chat window (ADR-0029 — replaces
-                # the broken sidebar deck on LO 26.x).
+                # Opens the chat window. Per ADR-0030 this is a
+                # pywebview React app — login, logout, and settings
+                # are all handled inside the window, no separate
+                # menu items needed.
                 ext.show_chat_window()
-            elif command == "login":
-                ext.show_login_dialog()
-            elif command == "logout":
-                ext.logout()
-            elif command == "settings":
-                ext.show_settings_dialog()
+            elif command in {"login", "logout", "settings"}:
+                # Legacy URLs from pre-ADR-0030 user profiles. The
+                # menu no longer exposes them (Addons.xcu, 2026-05-22)
+                # but a user with a customised toolbar might still
+                # invoke them. Funnel into the chat window — that's
+                # where auth lives now.
+                logger.info(
+                    "dispatch: legacy command %r → opening chat window", command
+                )
+                ext.show_chat_window()
             else:
                 raise ValueError(f"Unknown command: {command!r}")
             logger.info("dispatch: command=%r completed cleanly", command)

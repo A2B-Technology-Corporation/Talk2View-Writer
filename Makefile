@@ -1,7 +1,7 @@
 # Talk2View-Writer Makefile
 # Develop, test, and package the LibreOffice Writer extension.
 
-.PHONY: all install dev lint lint-fix format format-check test test-unit test-synthetic test-mock-chat test-integration test-gui-smoke test-live test-e2e test-e2e-install coverage typecheck security vendor-wheels build package install-oxt clean help
+.PHONY: all install dev lint lint-fix format format-check test test-unit test-synthetic test-integration test-gui-smoke test-live test-e2e test-e2e-install coverage typecheck security vendor-wheels build package install-oxt clean help
 
 BUILD_DIR := build
 DIST_DIR  := dist
@@ -44,19 +44,15 @@ test:
 	uv run pytest
 
 # Local default: every test that does NOT need a real soffice or live
-# engine. Includes unit (helpers), synthetic (real tool bodies vs an
-# in-process Writer doc), and mock_chat (SDK round-trip vs canned SSE).
-# Fast — runs the whole tool surface + chat flow in well under a second.
+# engine. Includes unit (helpers) and synthetic (real tool bodies vs
+# an in-process Writer doc). Fast — runs the whole tool surface in
+# well under a second.
 test-unit:
-	uv run pytest -m "unit or synthetic or mock_chat"
+	uv run pytest -m "unit or synthetic"
 
 # Just the in-process tool-body tests against the synthetic UNO model.
 test-synthetic:
 	uv run pytest -m synthetic
-
-# Just the SDK round-trip tests against the mock engine (httpx mocks).
-test-mock-chat:
-	uv run pytest -m mock_chat
 
 test-integration:
 	uv run pytest -m integration
@@ -137,7 +133,6 @@ build: lint test-unit build-web
 	@cp SYSTEM_PROMPT.md $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r skills $(BUILD_DIR)/$(EXT_NAME)/resources/
 	@cp -r extension/icons $(BUILD_DIR)/$(EXT_NAME)/icons
-	@cp -r extension/panels $(BUILD_DIR)/$(EXT_NAME)/panels
 	@# Web bundle: copy the webpack output from src/web/dist/ rather
 	@# than the source HTML smoke-test in extension/web/. build-web
 	@# is a prerequisite of `build` so the dist/ dir is up to date.
