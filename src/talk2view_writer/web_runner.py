@@ -73,6 +73,23 @@ class _BridgeClient:
         # can correlate later.
         self._call("log", {"level": level, "message": message, "context": context})
 
+    def proxy_fetch(
+        self,
+        url: str,
+        method: str,
+        headers: dict[str, str],
+        body: str | None,
+    ) -> dict[str, Any]:
+        return self._call(
+            "proxy_fetch",
+            {
+                "url": url,
+                "method": method,
+                "headers": headers,
+                "body": body,
+            },
+        )
+
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
             raise RuntimeError("BridgeClient: not connected")
@@ -154,6 +171,28 @@ class _Api:
                 "the subprocess with --bridge-socket?"
             )
         return self._bridge.invoke_tool(name, args or {})
+
+    def proxy_fetch(
+        self,
+        url: str,
+        method: str = "GET",
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> dict[str, Any]:
+        """Proxy an HTTPS request through Python's httpx.
+
+        Called from JS as ``window.pywebview.api.proxy_fetch(url,
+        method, headers, body)``. The webview's file:// origin
+        can't talk to engine.talk2view.com directly (browser CORS
+        silently drops the response); Python has no such rules.
+        See ``BridgeServer._proxy_fetch`` for the Python side.
+        """
+        if self._bridge is None:
+            raise RuntimeError(
+                "Bridge not configured; cannot proxy fetch. Did you "
+                "start the subprocess with --bridge-socket?"
+            )
+        return self._bridge.proxy_fetch(url, method, headers or {}, body)
 
     def log(
         self,
