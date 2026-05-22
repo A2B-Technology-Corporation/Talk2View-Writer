@@ -329,6 +329,7 @@ def main() -> None:
         width=400,
         height=600,
     )
+    _install_focus_signal_handler(webview)
     logger.info(
         "webview.create_window returned; entering webview.start "
         "(private_mode=False storage_path=%s)",
@@ -420,6 +421,59 @@ def _patch_webkitgtk_cors_settings() -> None:
     gtk_backend.BrowserView.__init__ = patched_init
     gtk_backend.BrowserView._t2v_cors_patched = True
     logger.info("WebKitGTK patch: BrowserView.__init__ wrapped")
+
+
+def _install_focus_signal_handler(webview_module: Any) -> None:
+    """Register a SIGUSR1 handler that raises the chat window.
+
+    When the user re-clicks the Talk2View menu while a chat window
+    is already open, LO sends SIGUSR1 to us; we call ``window.show()``
+    which on GTK invokes ``gtk_window_present()`` — raising +
+    focusing the window. Idempotent: if no window exists yet (signal
+    arrived between subprocess start and create_window), we no-op
+    and the next show() call will succeed.
+
+    Windows ignores this path — POSIX-only signal — and falls back
+    to the no-op-on-re-click behaviour documented in WebWindow.show.
+    """
+    import signal
+
+    if not hasattr(signal, "SIGUSR1"):
+        logger.info("Focus signal handler: SIGUSR1 not available on this OS")
+        return
+
+    def _handle_focus_signal(signum: int, frame: Any) -> None:
+        try:
+            windows = getattr(webview_module, "windows", []) or []
+            if not windows:
+                logger.warning(
+                    "Focus signal: no webview windows registered yet — ignoring"
+                )
+                return
+            win = windows[0]
+            # ``show()`` on GTK calls gtk_window_present() which
+            # both reveals + raises + focuses. On WKWebView/macOS
+            # it raises the NSWindow.
+            try:
+                win.show()
+            except Exception:
+                logger.exception("Focus signal: window.show() raised")
+            logger.info(
+                "Focus signal: window raised (sig=%d windows=%d)",
+                signum,
+                len(windows),
+            )
+        except Exception:
+            logger.exception("Focus signal handler raised")
+
+    try:
+        signal.signal(signal.SIGUSR1, _handle_focus_signal)
+        logger.info("Focus signal handler: installed (SIGUSR1 → window.show)")
+    except (OSError, ValueError):
+        # ValueError if called from a non-main thread, OSError on
+        # platforms that surface signal errors. Both unexpected here
+        # (main thread, POSIX) but logging keeps the failure visible.
+        logger.exception("Focus signal handler: signal.signal failed")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ import atexit
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -64,18 +65,62 @@ class WebWindow:
         logger.info("WebWindow instantiated (ctx=%s)", _ru(ctx))
 
     def show(self) -> None:
-        """Spawn the pywebview subprocess pointed at the bundled HTML."""
-        logger.info(
-            "WebWindow.show: subprocess_alive=%s", self._is_alive()
-        )
-        if self._is_alive():
-            logger.info(
-                "WebWindow.show: subprocess already running (pid=%s); "
-                "no-op (TODO: refocus via IPC)",
-                self._proc.pid if self._proc else None,
-            )
-            return
+        """Open the chat window, or raise it to the front if already open.
 
+        Re-clicking the menu while a chat window is already alive
+        sends SIGUSR1 to the subprocess; ``web_runner`` catches the
+        signal and calls ``window.show()`` which on GTK calls
+        ``gtk_window_present()`` (raises + focuses the window). If
+        the signal raises ``ProcessLookupError`` — race between
+        ``poll()`` returning None and the subprocess actually
+        exiting — we fall back to spawning a fresh window.
+
+        Windows: no SIGUSR1; the second invocation still no-ops for
+        now. Cross-platform refocus is task TBD.
+        """
+        logger.info("WebWindow.show: subprocess_alive=%s", self._is_alive())
+        if self._is_alive() and self._proc is not None:
+            if sys.platform == "win32":
+                logger.info(
+                    "WebWindow.show: subprocess alive (pid=%s) on Windows — "
+                    "no SIGUSR1 path; click is a no-op (refocus TBD)",
+                    self._proc.pid,
+                )
+                return
+            try:
+                logger.info(
+                    "WebWindow.show: refocus via SIGUSR1 to pid=%s",
+                    self._proc.pid,
+                )
+                os.kill(self._proc.pid, signal.SIGUSR1)
+                return
+            except ProcessLookupError:
+                # Race: poll() said alive but the process exited
+                # between then and our kill. Clean up + respawn.
+                logger.warning(
+                    "WebWindow.show: SIGUSR1 to pid=%s raised "
+                    "ProcessLookupError — subprocess gone, respawning",
+                    self._proc.pid,
+                )
+                self._proc = None
+            except OSError:
+                # Other OS-level failures (permission, signal not
+                # available, ...) — log + respawn so the user still
+                # gets a working window.
+                logger.exception(
+                    "WebWindow.show: SIGUSR1 to pid=%s failed; respawning",
+                    self._proc.pid,
+                )
+                self._proc = None
+
+        self._spawn_subprocess()
+
+    def _spawn_subprocess(self) -> None:
+        """Start a fresh pywebview subprocess.
+
+        Extracted from :meth:`show` so the refocus branch can be
+        unit-tested without driving the full subprocess.Popen path.
+        """
         html_path = self._resolve_html_path()
         pythonpath_dir = self._resolve_pythonpath()
         python_bin = self._resolve_python()
