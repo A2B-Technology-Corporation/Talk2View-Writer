@@ -197,5 +197,73 @@ export function installHostLogging(): void {
     );
   });
 
-  logToHost('info', '[bridge] host logging installed');
+  // Instrument fetch + XHR so every network request is captured.
+  // Critical for diagnosing CORS / network failures that don't fire
+  // console.error (browsers often reject silently).
+  const origFetch = window.fetch.bind(window);
+  let fetchSeq = 0;
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const reqId = ++fetchSeq;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const method = (init?.method ?? (typeof input !== 'string' && !(input instanceof URL) ? input.method : 'GET')) || 'GET';
+    logToHost('info', `[fetch:${reqId}] → ${method} ${url}`, {
+      headers: init?.headers ?? null,
+      bodyType: init?.body ? typeof init.body : null,
+    });
+    const t0 = Date.now();
+    try {
+      const resp = await origFetch(input, init);
+      logToHost('info', `[fetch:${reqId}] ← ${resp.status} ${resp.statusText} (${Date.now() - t0}ms) ${url}`, {
+        ok: resp.ok,
+        type: resp.type,
+        redirected: resp.redirected,
+      });
+      return resp;
+    } catch (err) {
+      const e = err as Error;
+      logToHost('error', `[fetch:${reqId}] !! ${e.name}: ${e.message} (${Date.now() - t0}ms) ${url}`, {
+        name: e.name,
+        message: e.message,
+        stack: e.stack,
+      });
+      throw err;
+    }
+  };
+
+  const OrigXHR = window.XMLHttpRequest;
+  let xhrSeq = 0;
+  function PatchedXHR(this: XMLHttpRequest) {
+    const xhr = new OrigXHR();
+    const reqId = ++xhrSeq;
+    let method = 'GET';
+    let url = '';
+    const origOpen = xhr.open.bind(xhr);
+    xhr.open = function (m: string, u: string | URL, ...rest: unknown[]) {
+      method = m;
+      url = typeof u === 'string' ? u : u.toString();
+      logToHost('info', `[xhr:${reqId}] open ${method} ${url}`);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (origOpen as any)(m, u, ...rest);
+    };
+    const origSend = xhr.send.bind(xhr);
+    xhr.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+      const t0 = Date.now();
+      logToHost('info', `[xhr:${reqId}] send ${method} ${url}`, { bodyType: body ? typeof body : null });
+      xhr.addEventListener('loadend', () => {
+        logToHost(
+          xhr.status >= 400 || xhr.status === 0 ? 'error' : 'info',
+          `[xhr:${reqId}] ← ${xhr.status} (${Date.now() - t0}ms) ${url}`,
+        );
+      });
+      xhr.addEventListener('error', () => {
+        logToHost('error', `[xhr:${reqId}] !! network error ${url}`);
+      });
+      return origSend(body);
+    };
+    return xhr;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  window.XMLHttpRequest = PatchedXHR as any;
+
+  logToHost('info', '[bridge] host logging installed (fetch + xhr + console + errors)');
 }
