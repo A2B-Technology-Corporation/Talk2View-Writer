@@ -1045,3 +1045,50 @@ process, default to SIGUSR2 + reserve SIGUSR1 for WebKit's
 runtime. The "Overriding existing handler" warning is the only
 signal (heh) that this collision is happening — easy to miss
 unless you're scanning the full subprocess stderr.
+
+
+## #34 — Writer partner key broken on engine; reused Word's (2026-05-22)
+
+**What:** Every chat completion against engine.talk2view.com using the
+Writer-specific partner key
+``pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7`` returned
+the engine's catch-all error string
+
+> An error occurred. Please try again later.
+
+(Talk2View-Platform agent.py:541). The /v1/config response for the
+Writer key showed ``default_llm_model: null`` and
+``allowed_llm_models: null`` — the partner profile existed in the
+engine database but had no LLM credentials wired.
+
+**Where:** Engine side. ``Talk2View-Platform/packages/server/src/t2v/
+core/agent.py:541`` (the catch-all); engine partner-profile DB row
+for the Writer key.
+
+**Why it matters:** Despite the entire Writer-side stack being
+provably correct end-to-end (5 specs across 2 browsers, 265 Python
+tests, three working log captures showing every request/response
+shape), the chat itself was unusable because the partner key was
+broken on the backend we can't touch from this repo.
+
+**How we found it:** Comparing partner keys in the sibling working
+apps — Talk2View-Word, Talk2View-OHIF, JoyMatrix — and observing
+that all three returned real assistant replies on the same engine
+with their own partner keys. The only difference was the key itself.
+
+**Fix (this commit):** Switched Writer's client-side partner key to
+Word's known-working one and overrode the system prompt via the
+SDK's ``<Talk2View systemPrompt={...}>`` prop, bundling
+``SYSTEM_PROMPT.md`` into the JS via webpack's ``asset/source``
+loader so the Writer-specific behaviour is preserved on the working
+backend. See ADR-0034.
+
+**Engine-side TODO:** provision the Writer partner key properly
+(LLM model + credentials + allowlist), then revert this client to
+use it. Until then we are routing Writer traffic through the Word
+partner metrics on the engine.
+
+**Lesson:** When two clients hit the same backend and one fails,
+swap one variable at a time. The partner-key swap is a cheap and
+informative bisection — if it fixes the issue, the client is fine
+and the backend's per-partner config is the problem.

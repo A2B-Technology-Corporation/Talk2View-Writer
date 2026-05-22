@@ -42,6 +42,16 @@ module.exports = (env, argv) => {
           exclude: /node_modules/,
           options: { transpileOnly: false },
         },
+        {
+          // Inline .md files (notably SYSTEM_PROMPT.md) as raw strings.
+          // App.tsx imports the Writer system prompt this way and
+          // passes it to the SDK's <Talk2View systemPrompt={...}>
+          // prop so the engine sees the Writer-flavoured prompt even
+          // when the partner key it's using has a different default
+          // configured.
+          test: /\.md$/,
+          type: 'asset/source',
+        },
       ],
     },
     plugins: [
