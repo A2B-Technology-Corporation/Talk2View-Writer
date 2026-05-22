@@ -227,6 +227,12 @@ def main() -> None:
 
     import webview
 
+    _patch_webkitgtk_cors_settings()
+    # Belt + braces: also raise the SSL tolerance just in case the
+    # WebKitGTK shipped with this user's distro doesn't bundle the
+    # same CA roots as system Python's httpx.
+    webview.settings['IGNORE_SSL_ERRORS'] = True
+
     logger.info("webview imported, calling create_window")
     webview.create_window(
         "Talk2View",
@@ -238,6 +244,60 @@ def main() -> None:
     logger.info("webview.create_window returned; entering webview.start()")
     webview.start(debug=True)
     logger.info("webview.start() returned — window closed, exiting")
+
+
+def _patch_webkitgtk_cors_settings() -> None:
+    """Flip ``allow_universal_access_from_file_urls`` on WebKitGTK.
+
+    The 2026-05-22 repro showed the Talk2View SDK firing
+    ``POST https://engine.talk2view.com/v1/tools/register`` and the
+    fetch never resolving — WebKitGTK silently drops cross-origin
+    requests from ``file://`` pages unless universal access is
+    explicitly granted. pywebview's GTK backend (gtk.py:217-227)
+    sets several WebKit settings but not this one; we splice it in.
+
+    No-op on macOS / Windows (those backends import their own
+    platform module). Safe to call before ``webview.create_window``.
+    """
+    try:
+        from webview.platforms import gtk as gtk_backend
+    except ImportError:
+        logger.info(
+            "WebKitGTK patch: pywebview.platforms.gtk not importable on "
+            "this platform — assuming non-Linux backend; skipping"
+        )
+        return
+
+    if getattr(gtk_backend.BrowserView, "_t2v_cors_patched", False):
+        return
+
+    original_init = gtk_backend.BrowserView.__init__
+
+    def patched_init(self: Any, window: Any) -> None:
+        original_init(self, window)
+        try:
+            props = self.webview.get_settings().props
+            props.allow_universal_access_from_file_urls = True
+            # Pywebview only sets this from settings['ALLOW_FILE_URLS']
+            # (default True) — make doubly sure file→file works too,
+            # since SDK code-split chunks load via additional file://
+            # requests off our entry HTML.
+            props.allow_file_access_from_file_urls = True
+            logger.info(
+                "WebKitGTK patch applied: "
+                "allow_universal_access_from_file_urls=True, "
+                "allow_file_access_from_file_urls=True"
+            )
+        except Exception:
+            logger.exception(
+                "WebKitGTK patch: setting CORS-relaxing props raised — "
+                "the webview will still open but cross-origin fetches to "
+                "engine.talk2view.com will be silently dropped"
+            )
+
+    gtk_backend.BrowserView.__init__ = patched_init
+    gtk_backend.BrowserView._t2v_cors_patched = True
+    logger.info("WebKitGTK patch: BrowserView.__init__ wrapped")
 
 
 if __name__ == "__main__":
