@@ -48,18 +48,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Tools we expose to the web UI for the MVP slice. Everything in
-# ``tools/`` is technically callable, but the chat UI's writerTools.ts
-# only declares schemas for these five; gating the dispatcher to the
+# Tools we expose to the web UI. Everything in ``tools/`` is
+# technically callable, but the chat UI's writerTools.ts only declares
+# schemas for the names listed here; gating the dispatcher to the
 # same set means the engine cannot trick the bridge into calling
-# something the user hasn't authorised. Future slices broaden this
-# to all 20 tools.
+# something the user hasn't authorised.
+#
+# Each addition is paired with a matching entry in
+# src/web/src/tools.ts so the schema the engine sees and the function
+# the bridge dispatches to stay in lockstep (Investigation #35).
 _MVP_TOOL_NAMES: tuple[str, ...] = (
     "get_document",
     "get_selection",
     "insert_content",
     "format_text",
+    "format_paragraph",
     "search_document",
+    "manage_preferences",
 )
 
 

@@ -10,6 +10,12 @@
 - ``WriterDocumentRequiredError``: raised when no Writer document is active
   (e.g. user has only a Calc spreadsheet open). Tool wrappers catch
   this and return a structured error message the agent can interpret.
+
+Track-changes envelope (ADR-0035): every mutating AI tool call runs
+inside a save → enable RecordChanges → run → restore pair so AI edits
+land as redlines the user can review without changing the document's
+persistent track-changes setting. Gated by the
+``ai_track_changes_enabled`` preference (default True).
 """
 
 from __future__ import annotations
@@ -30,6 +36,30 @@ _F = TypeVar("_F", bound=Callable[..., Any])
 
 class WriterDocumentRequiredError(RuntimeError):
     """Raised when a tool needs an active Writer document but none is open."""
+
+
+# Tools whose bodies mutate the document. The track-changes envelope is
+# only applied for these — read-only tools (get_document, get_selection)
+# and state-restoring tools (undo_redo) skip the wrap so the user's
+# Undo of an AI change reverts to the pre-AI state rather than logging
+# the revert itself as a tracked insertion.
+_MUTATING_TOOL_NAMES: frozenset[str] = frozenset({
+    "insert_content",
+    "insert_table",
+    "insert_image",
+    "delete_content",
+    "edit_table",
+    "format_text",
+    "format_paragraph",
+    "manage_list",
+    "search_document",
+    "insert_break",
+    "set_header_footer",
+    "insert_page_numbers",
+    "set_page_setup",
+    "add_comment",
+    "manage_comment",
+})
 
 
 def ui_thread_tool(fn: _F) -> _F:
@@ -60,6 +90,10 @@ def ui_thread_tool(fn: _F) -> _F:
         import time
 
         from talk2view_writer.extension import get_extension_or_raise
+        from talk2view_writer.preferences import (
+            PREF_AI_TRACK_CHANGES,
+            get_preferences,
+        )
 
         ext = get_extension_or_raise()
         tool_name = getattr(fn, "__name__", "<unknown>")
@@ -80,8 +114,21 @@ def ui_thread_tool(fn: _F) -> _F:
             arg_summary,
             kwarg_summary,
         )
+        # Decide whether to wrap this call in the track-changes
+        # envelope. Read the preference before marshalling so a
+        # disabled toggle skips the UI-thread overhead of resolving
+        # the document.
+        track_changes = (
+            tool_name in _MUTATING_TOOL_NAMES
+            and bool(get_preferences().get(PREF_AI_TRACK_CHANGES))
+        )
         start = time.monotonic()
-        result = ext.ui_thread.run_sync(fn, *args, **kwargs)
+        if track_changes:
+            result = ext.ui_thread.run_sync(
+                _run_with_track_changes, fn, ext.ctx, args, kwargs
+            )
+        else:
+            result = ext.ui_thread.run_sync(fn, *args, **kwargs)
         elapsed_ms = (time.monotonic() - start) * 1000
         result_summary = _summary(result)
         logger.info(
@@ -93,6 +140,65 @@ def ui_thread_tool(fn: _F) -> _F:
         return result
 
     return wrapper  # type: ignore[return-value]
+
+
+def _run_with_track_changes(
+    fn: Callable[..., Any],
+    ctx: XComponentContext,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """Run ``fn(*args, **kwargs)`` with document redlining temporarily on.
+
+    Must be invoked on the LibreOffice UI thread — UNO property access
+    is not thread-safe.
+
+    The Writer model's ``RecordChanges`` property is the global "Track
+    Changes" toggle the user sees under Edit -> Track Changes -> Record.
+    We save its current value, force it on, run the tool body, and
+    restore the original value in a ``finally`` block so a tool raising
+    mid-edit doesn't leave the document in a different track-changes
+    mode than the user started with.
+
+    If no Writer document is currently active (e.g. only a Calc
+    spreadsheet is open) we skip the wrap and call the tool directly
+    — the tool itself will raise :class:`WriterDocumentRequiredError`
+    with a clearer message than anything we could synthesise here.
+    """
+    try:
+        doc = get_writer_document(ctx)
+    except WriterDocumentRequiredError:
+        return fn(*args, **kwargs)
+    try:
+        prior = doc.getPropertyValue("RecordChanges")
+    except Exception:
+        # Some embeddings (older LO builds, headless contexts) refuse
+        # to read the property. Log the full traceback and skip the
+        # wrap — failing the whole tool call over redlining would be
+        # worse than not redlining.
+        logger.exception(
+            "Could not read RecordChanges; skipping track-changes wrap"
+        )
+        return fn(*args, **kwargs)
+    try:
+        doc.setPropertyValue("RecordChanges", True)
+    except Exception:
+        logger.exception(
+            "Could not enable RecordChanges; skipping track-changes wrap"
+        )
+        return fn(*args, **kwargs)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        try:
+            doc.setPropertyValue("RecordChanges", bool(prior))
+        except Exception:
+            logger.exception(
+                "Could not restore RecordChanges to %r — document is "
+                "now in track-changes=True even though the user's prior "
+                "setting was different",
+                prior,
+            )
 
 
 def get_writer_document(ctx: XComponentContext) -> XTextDocument:

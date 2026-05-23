@@ -343,10 +343,18 @@ def main() -> None:
     # stable XDG-friendly location instead of pywebview's default
     # (~/.cache/<sys.argv[0]>) which depends on how soffice was
     # launched.
+    # gui='gtk' on Linux skips pywebview's QT import-probe path, which
+    # otherwise prints a misleading "QT cannot be loaded" / qtpy
+    # ModuleNotFoundError error on every launch even though GTK is
+    # what we want and it works fine. On macOS pywebview's only
+    # backend is Cocoa, on Windows it's EdgeChromium — passing
+    # gui=None there lets pywebview pick the right one.
+    gui_backend = "gtk" if sys.platform.startswith("linux") else None
     webview.start(
         debug=True,
         private_mode=False,
         storage_path=str(storage_path),
+        gui=gui_backend,
     )
     logger.info("webview.start() returned — window closed, exiting")
 

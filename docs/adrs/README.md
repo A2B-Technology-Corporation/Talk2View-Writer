@@ -55,6 +55,7 @@ applied.
 | [0031](0031-e2e-via-playwright-against-browser-bundle.md) | E2E via Playwright against the browser-bundle in Chromium, not pywebview | G | Accepted |
 | [0033](0033-streaming-sse-proxy-via-polled-queue.md) | Streaming SSE proxy via a polled per-stream queue | G | Accepted |
 | [0034](0034-reuse-word-partner-key-with-writer-system-prompt.md) | Reuse Word's partner key + override system prompt for Writer | G | Accepted |
+| [0035](0035-track-changes-default-for-ai-edits.md) | Track changes by default for AI edits (per-call envelope, user preference) | G | Accepted |
 
 ## Writing a new ADR
 

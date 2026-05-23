@@ -42,7 +42,7 @@ def fake_talk2view(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_all_tools_includes_expected_phase_d_groups_1_to_6(
     fake_talk2view: None,
 ) -> None:
-    """Phase D complete: reading + writing + formatting + search + structure + commenting."""
+    """All Phase D groups plus the ADR-0035 preferences tool."""
     from talk2view_writer.tools import all_tools
 
     names = {fn.__name__ for fn in all_tools()}
@@ -73,6 +73,8 @@ def test_all_tools_includes_expected_phase_d_groups_1_to_6(
         "get_comments",
         "add_comment",
         "manage_comment",
+        # Preferences (1) — ADR-0035
+        "manage_preferences",
     }
     assert expected.issubset(names)
     assert len(names) == len(expected)

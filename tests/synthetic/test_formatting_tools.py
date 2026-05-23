@@ -26,6 +26,65 @@ class TestFormatText:
         result = json.loads(format_text())
         assert "error" in result
 
+    def test_accepts_every_schema_kwarg(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Schema-vs-signature contract: every TS schema kwarg must work.
+
+        ``src/web/src/tools.ts`` declares the format_text schema the
+        engine sees. Each property name there MUST exist as a Python
+        kwarg here. Investigation #35 (the cats/cars debugging trip)
+        showed how silently the two can drift apart — this test fires
+        an alarm before a real engine call would TypeError.
+
+        We exercise the happy path with ``query`` so the body actually
+        runs end-to-end, then assert no kwarg name was rejected.
+        """
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("hello world"))
+        result = json.loads(
+            format_text(
+                query="hello",
+                bold=True,
+                italic=False,
+                underline=True,
+                underline_style="single",
+                strikethrough=False,
+                superscript=False,
+                subscript=False,
+                color="FF0000",
+                highlight="Yellow",
+                size=12.0,
+                font="Arial",
+                match_index=0,
+            )
+        )
+        assert isinstance(result, dict)
+        assert "error" not in result, result
+
+    def test_font_param_applies_charfontname(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Asking for a different font family sets CharFontName on the cursor.
+
+        Regression for the chat log on 2026-05-23 where AI said "I
+        cannot change the font type (like Arial or Times New Roman)"
+        — the schema wasn't exposing ``font`` to the engine. The
+        Python ``font`` kwarg has always worked; the missing piece
+        was the TS schema (fixed in src/web/src/tools.ts).
+        """
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("Pip the penguin"))
+        result = json.loads(
+            format_text(query="Pip the penguin", font="Times New Roman")
+        )
+        assert "error" not in result, result
+        assert result.get("success") is True
+
     def test_invalid_color_returns_error(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
     ) -> None:
