@@ -20,7 +20,11 @@ from typing import Any
 from talk2view import tool  # type: ignore[import-not-found]
 
 from talk2view_writer.extension import get_extension_or_raise
-from talk2view_writer.tools._base import get_writer_document, ui_thread_tool
+from talk2view_writer.tools._base import (
+    get_writer_document,
+    suspend_record_changes,
+    ui_thread_tool,
+)
 from talk2view_writer.tools._constants import (
     HIGHLIGHT_COLOR_RGB,
     HIGHLIGHT_COLORS,
@@ -574,7 +578,8 @@ def format_paragraph(
             continue
         p = paragraphs[idx]
         if style is not None:
-            p.ParaStyleName = word_to_libreoffice_style(style)
+            with suspend_record_changes(doc):
+                p.ParaStyleName = word_to_libreoffice_style(style)
         _apply_paragraph_format(
             p,
             alignment=alignment,
@@ -728,13 +733,15 @@ def manage_list(
         p = paragraphs[idx]
         if action == "add":
             style_name = "List Bullet" if list_type == "bullet" else "List Number"
-            p.ParaStyleName = style_name
+            with suspend_record_changes(doc):
+                p.ParaStyleName = style_name
             try:
                 p.NumberingLevel = level
             except Exception:
                 logger.debug("NumberingLevel not settable on this build")
         else:
-            p.ParaStyleName = "Default Paragraph Style"
+            with suspend_record_changes(doc):
+                p.ParaStyleName = "Default Paragraph Style"
             try:
                 p.NumberingIsNumber = False
             except Exception:

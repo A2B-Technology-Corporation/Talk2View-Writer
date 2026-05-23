@@ -20,9 +20,10 @@ persistent track-changes setting. Gated by the
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
@@ -140,6 +141,55 @@ def ui_thread_tool(fn: _F) -> _F:
         return result
 
     return wrapper  # type: ignore[return-value]
+
+
+@contextlib.contextmanager
+def suspend_record_changes(doc: Any) -> Iterator[None]:
+    """Briefly disable ``doc.RecordChanges`` for a single UNO write.
+
+    LibreOffice raises ``com.sun.star.uno.RuntimeException`` when you set
+    ``ParaStyleName`` (or other paragraph-metadata properties) on a
+    paragraph whose content is itself part of an active redline. The
+    track-changes envelope in :func:`_run_with_track_changes` puts every
+    fresh insert under exactly that condition, so any tool that follows
+    up an ``insertString`` with a paragraph-style assignment crashes.
+
+    Wrap just the style-assignment site in ``with suspend_record_changes(doc):``
+    — the surrounding text insert is still tracked as a redline (the
+    user-visible "change"), and only the paragraph-metadata write slips
+    through. Style is part of the same logical edit the user already
+    sees in the redline view; it doesn't deserve its own redline entry.
+
+    No-op when ``RecordChanges`` is already False or unreadable —
+    cheaper than the alternative of probing first and a clear signal
+    that this context manager is harmless to apply unconditionally.
+    """
+    try:
+        prior = doc.getPropertyValue("RecordChanges")
+    except Exception:
+        # Older LO builds / headless contexts may refuse. Just pass through.
+        yield
+        return
+    if not prior:
+        yield
+        return
+    try:
+        doc.setPropertyValue("RecordChanges", False)
+    except Exception:
+        logger.exception(
+            "Could not suspend RecordChanges; ParaStyleName may fail"
+        )
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            doc.setPropertyValue("RecordChanges", True)
+        except Exception:
+            logger.exception(
+                "Could not restore RecordChanges after suspend block"
+            )
 
 
 def _run_with_track_changes(

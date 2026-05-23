@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import logging
 import os
@@ -104,11 +105,18 @@ def _insert_paragraph_at_cursor(
     paragraph_text: str,
     *,
     style: str | None,
+    doc: Any | None = None,
 ) -> Any:
     """Insert one paragraph at ``cursor`` and return the new paragraph object.
 
     The cursor advances past the inserted paragraph so subsequent
     insertions land after it.
+
+    Pass ``doc`` so the paragraph-style assignment can suspend
+    ``RecordChanges`` for that single write — LibreOffice rejects
+    ``ParaStyleName`` mutations on a paragraph still inside an active
+    redline, which is exactly the state our track-changes envelope
+    puts every fresh insert in.
     """
     # First emit a paragraph break (so the new paragraph is its own unit),
     # then write the text into that paragraph.
@@ -120,7 +128,11 @@ def _insert_paragraph_at_cursor(
     para_cursor.gotoStartOfParagraph(False)
     para_cursor.gotoEndOfParagraph(True)
     if style:
-        para_cursor.ParaStyleName = word_to_libreoffice_style(style)
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        ctx = suspend_record_changes(doc) if doc is not None else contextlib.nullcontext()
+        with ctx:
+            para_cursor.ParaStyleName = word_to_libreoffice_style(style)
     return para_cursor
 
 
@@ -365,7 +377,9 @@ def insert_content(
     for item in items:
         item_text = item["text"] or ""
         item_style = item.get("style")
-        para = _insert_paragraph_at_cursor(text_obj, cursor, item_text, style=item_style)
+        para = _insert_paragraph_at_cursor(
+            text_obj, cursor, item_text, style=item_style, doc=doc
+        )
         paragraphs_to_format.append(para)
         total_chars += len(item_text)
         previews.append(
