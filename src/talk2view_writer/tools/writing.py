@@ -282,6 +282,16 @@ def insert_content(
                     "recovery": "Provide at least one block with a text property.",
                 }
             )
+        # Engine LLMs sometimes emit blocks as plain strings instead of
+        # {text, style?} dicts (observed 2026-05-22 with gemini-3-pro).
+        # Coerce in place so the rest of the function can assume dicts.
+        normalised: list[dict[str, str | None]] = []
+        for block in blocks:
+            if isinstance(block, str):
+                normalised.append({"text": block, "style": None})
+            else:
+                normalised.append(block)
+        blocks = normalised
         for i, block in enumerate(blocks):
             if not block.get("text", "").strip():
                 return json.dumps(

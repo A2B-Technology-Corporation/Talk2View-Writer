@@ -24,10 +24,12 @@ import { rememberEmail, installEmailAutofill } from './remember_email';
 // Repo-root SYSTEM_PROMPT.md — webpack's asset/source loader inlines
 // the file's contents as a string at build time. Single source of
 // truth: the Python side reads the same file via setup_logging.
-// Writer-specific partner key. System prompt + skills are configured
-// in the engine dashboard for this key; we do NOT override the
-// systemPrompt prop here (it would shadow the dashboard config).
-const PARTNER_KEY = 'pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7';
+// Route-around: using Word's partner key while the Writer partner
+// (pk_live_…17540bc7) is unprovisioned on the engine. See ADR-0034
+// and Talk2View-Platform issue #61 for the engine-side fix.
+// Revert to the Writer key once the engine team resolves #61:
+//   pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7
+const PARTNER_KEY = 'pk_live_45c878caa500cdf6ea1a72f3e9a4ad324df061b7ec2c70d7';
 // E2E tests set window.__T2V_BASE_URL_OVERRIDE so the SDK fetches from
 // the per-test mock engine instead of the production engine. The
 // override is only honored when the value looks like a localhost URL

@@ -166,3 +166,56 @@ class TestInsertContent:
         # The tool may either accept empty text (no-op) or return an error.
         result = json.loads(insert_content(text=""))
         assert isinstance(result, dict)
+
+    def test_blocks_as_plain_strings_is_normalised(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Coerce string-shaped blocks to ``{text, style?}`` dicts.
+
+        Engine LLMs sometimes emit ``blocks`` as an array of strings
+        rather than ``{text, style?}`` dicts (observed with
+        gemini-3-pro on 2026-05-22 — caused AttributeError at
+        tools/writing.py:286). Coerce strings to dicts before
+        validation runs.
+        """
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                blocks=[
+                    "The Majesty of Trees",
+                    "Trees are vital to the health of our planet.",
+                    "Beyond their ecological importance, ...",
+                ],
+                location="end",
+            )
+        )
+        assert isinstance(result, dict)
+        assert "error" not in result, result
+        assert result.get("success") is True
+        assert result.get("blocks_inserted") == 3
+
+    def test_blocks_mixed_strings_and_dicts(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Heterogeneous block list: mix of strings and dicts.
+
+        A heterogeneous list (some strings, some dicts) is the
+        worst case for the coercion — make sure each block keeps its
+        intended style when supplied.
+        """
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                blocks=[
+                    {"text": "Section 1", "style": "Heading1"},
+                    "Body paragraph one.",
+                    {"text": "Section 2", "style": "Heading1"},
+                ],
+                location="end",
+            )
+        )
+        assert isinstance(result, dict)
+        assert "error" not in result, result
+        assert result.get("blocks_inserted") == 3

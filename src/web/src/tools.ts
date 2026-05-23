@@ -195,33 +195,52 @@ export const writerTools: ClientTool[] = [
   buildWriterTool({
     name: 'search_document',
     description:
-      'Find or find-and-replace text in the document body. Use ' +
-      "action='find' to count matches + see the first match's context, " +
-      "action='replace' to substitute. Doesn't change formatting; for " +
-      'formatting changes use format_text.',
+      'Find or find-and-replace text in the document body. Omit ' +
+      '``replace_with`` to count matches and return context; pass ' +
+      '``replace_with`` (use ``""`` to delete) to substitute all matches. ' +
+      'To replace AND style the new text, pass ``replace_format``. ' +
+      "Doesn't change formatting of unrelated text; for that use format_text.",
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'Text to find.',
+          description: 'Text to search for. <=255 characters.',
         },
-        action: {
+        replace_with: {
           type: 'string',
-          enum: ['find', 'replace'],
-          description: "Default 'find'.",
+          description:
+            'If provided, replaces ALL matches with this text. Use ``""`` ' +
+            'to delete all matches.',
         },
-        replacement: {
-          type: 'string',
-          description: "Required when action='replace'.",
+        replace_format: {
+          type: 'object',
+          description:
+            'Inline formatting applied to the replaced text. Fields: ' +
+            'bold, italic, underline, color (hex RGB), highlight ' +
+            "(colour name), size (points). Only with replace_with.",
         },
-        case_sensitive: {
+        match_case: {
           type: 'boolean',
-          description: 'Default false.',
+          description: 'Case-sensitive search. Default false.',
         },
-        whole_word: {
+        match_whole_word: {
           type: 'boolean',
-          description: 'Match whole words only. Default false.',
+          description: 'Whole-word match. Default false.',
+        },
+        match_wildcards: {
+          type: 'boolean',
+          description:
+            'Treat ``query`` as a regex (Writer-equivalent to Word ' +
+            'wildcards). Default false.',
+        },
+        match_prefix: {
+          type: 'boolean',
+          description: 'Match only at start of words. Default false.',
+        },
+        match_suffix: {
+          type: 'boolean',
+          description: 'Match only at end of words. Default false.',
         },
       },
     },

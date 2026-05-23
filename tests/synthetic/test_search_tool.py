@@ -80,3 +80,41 @@ class TestSearchDocument:
         assert "hello" in json.dumps(result).lower() or "match" in json.dumps(
             result
         ).lower()
+
+    def test_accepts_every_schema_kwarg(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Schema-vs-signature contract: every TS schema kwarg must work.
+
+        The schema we register with the engine
+        (src/web/src/tools.ts ``search_document``) MUST be a subset
+        of the Python function's keyword args. Regression: on
+        2026-05-22 the schema drifted to use ``action``/``replacement``/
+        ``case_sensitive``/``whole_word`` while the Python function
+        used ``replace_with``/``match_case``/``match_whole_word`` —
+        every call from the engine raised TypeError.
+
+        This test exercises the function with the exact kwarg names
+        the schema declares. If a future schema change introduces a
+        new property name, add it here AND to the Python signature.
+        """
+        from talk2view_writer.tools.search import search_document
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("hello world"))
+        result = json.loads(
+            search_document(
+                query="hello",
+                replace_with="goodbye",
+                replace_format=None,
+                match_case=True,
+                match_whole_word=True,
+                match_wildcards=False,
+                match_prefix=False,
+                match_suffix=False,
+            )
+        )
+        assert isinstance(result, dict)
+        assert "error" not in result, result

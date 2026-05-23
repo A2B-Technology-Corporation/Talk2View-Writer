@@ -1092,3 +1092,74 @@ partner metrics on the engine.
 swap one variable at a time. The partner-key swap is a cheap and
 informative bisection — if it fixes the issue, the client is fine
 and the backend's per-partner config is the problem.
+
+
+## #35 — Engine bug masked two real client-side bugs (2026-05-22)
+
+**What:** As soon as the partner-key swap (Investigation #34) let
+chat completions succeed and the engine started invoking tools, two
+client-side bugs that had been hidden behind the catch-all engine
+error fired immediately:
+
+1. ``AttributeError: 'str' object has no attribute 'get'`` in
+   ``tools/writing.py:286`` — ``insert_content(blocks=[...])``
+   assumed each block was a ``{text, style?}`` dict, but
+   gemini-3.1-pro emitted ``blocks=[str, str, str]`` (plain
+   strings) for "write something about trees".
+
+2. ``TypeError: search_document() got an unexpected keyword
+   argument 'action'`` — the schema we register with the engine
+   (src/web/src/tools.ts ``search_document``) declared
+   ``action``/``replacement``/``case_sensitive``/``whole_word``;
+   the Python function (src/talk2view_writer/tools/search.py)
+   accepts ``replace_with``/``match_case``/``match_whole_word`` and
+   has no ``action`` parameter. **The schema and the function had
+   drifted apart.** Every call from the engine raised TypeError.
+
+The engine's retry-on-tool-error logic absorbed both: insert_content
+fell back to single-paragraph ``target_query`` insertions (so the
+document got "Plants" appended at end-of-doc instead of replacing
+existing text), and search_document never executed at all.
+
+**Where:** ``src/talk2view_writer/tools/writing.py`` (validation
+loop assumed dict shape) and ``src/web/src/tools.ts`` (schema for
+search_document).
+
+**Why it matters:** Both bugs would have surfaced on day one of
+chat working, but the engine error (#34) hid them. **Don't trust
+"the chat is broken upstream, our client is fine" — once the
+upstream unblocks, you may discover client-side gremlins.** The
+unit + synthetic tests passed throughout because none of them
+exercised the schema-versus-signature contract or the
+blocks-as-strings call shape.
+
+**How we found it:** User test in soffice with the Word key. Chat
+"hi" returned a real reply; "write something about trees" caused
+the engine to call insert_content with array-of-strings blocks
+which crashed; "replace trees with plants" caused the engine to
+call search_document with the registered schema's kwarg names
+which TypeError'd.
+
+**Fix (this commit):**
+
+- ``tools/writing.py`` — coerce string blocks to ``{text,
+  style?}`` dicts at the start of the blocks-validation loop;
+  validation + insertion are unchanged downstream. Test:
+  ``test_blocks_as_plain_strings_is_normalised`` and
+  ``test_blocks_mixed_strings_and_dicts``.
+
+- ``src/web/src/tools.ts`` — rewrote ``search_document`` schema
+  to mirror the Python signature: ``query``, ``replace_with``,
+  ``replace_format``, ``match_case``, ``match_whole_word``,
+  ``match_wildcards``, ``match_prefix``, ``match_suffix``. Removed
+  the bogus ``action``/``replacement``/``case_sensitive``/
+  ``whole_word`` names. Test:
+  ``test_accepts_every_schema_kwarg`` exercises the Python
+  function with the exact kwarg names the schema now declares —
+  regression alarm if either side drifts again.
+
+**Lesson:** Schemas and function signatures are a contract — drift
+between them is invisible until the engine actually drives them.
+Add a contract test on Day 1 of any new tool ("the schema's
+properties are a subset of the Python signature's kwargs"), don't
+wait for an engine bug to mask the missing test.
