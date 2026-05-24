@@ -133,6 +133,52 @@ After `make install-oxt`, restart LibreOffice Writer and pick
 **Talk2View → Open Talk2View Chat** from the menu bar. A floating chat
 window backed by pywebview opens with the bundled React UI.
 
+### Tests
+
+Four layers, each runs by default in CI:
+
+  - `tests/unit/` — pure-Python helpers + mocked-UNO unit tests.
+    `make test-unit` runs these locally.
+  - `tests/synthetic/` — tool bodies against an in-process synthetic
+    UNO model. No soffice. Same `make test-unit` runs these too.
+  - `tests/integration/` — pytest against a real soffice via the UNO
+    bridge. `pytest -m integration` after starting soffice with
+    `--accept=...`.
+  - `tests/e2e/` — Playwright specs against the chat-UI bundle in
+    Chromium + WebKit. `npx playwright test`. Two flavours:
+      - **Mock-engine specs** (default) — bundle plus a per-test
+        `MockEngine` fixture; no secrets, no soffice. Fast and
+        deterministic. See ADR-0031.
+      - **Live specs** (`tests/e2e/specs/live-*.spec.ts`) — drive
+        the bundle in Chromium against a **real soffice + extension
+        + bridge_server + engine.talk2view.com**. See ADR-0036.
+        Captures per-step screenshots + transcripts as artifacts.
+
+### Running the live E2E suite locally
+
+```bash
+make build install-oxt          # OXT must be installed in user profile
+T2V_WRITER_HEADLESS_BRIDGE=1 \
+  soffice --headless --norestore --nologo --nodefault \
+  --accept="socket,host=127.0.0.1,port=2002;urp;" &
+
+# Bridge-smoke spec (no engine creds needed):
+T2V_E2E_LIVE_SOFFICE_PORT=2002 \
+  npx playwright test tests/e2e/specs/live-bridge-smoke.spec.ts
+
+# Penguin-story scenario (needs real T2V account):
+T2V_E2E_LIVE_SOFFICE_PORT=2002 \
+T2V_TEST_USER_EMAIL=you@example.com \
+T2V_TEST_USER_PASSWORD=… \
+  npx playwright test tests/e2e/specs/live-penguin-story.spec.ts
+```
+
+Artifacts land under `tests/e2e/test-results/` (Playwright traces +
+screenshots) and `tests/e2e/test-results/live-penguin-story/`
+(per-step pre/post screenshots, transcript JSON, expected-vs-actual
+digest). In CI these are uploaded by the `e2e-live` job, downloadable
+with `gh run download <run-id>`.
+
 ## Project Layout
 
 ```

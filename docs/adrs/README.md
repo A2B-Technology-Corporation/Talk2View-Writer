@@ -56,6 +56,7 @@ applied.
 | [0033](0033-streaming-sse-proxy-via-polled-queue.md) | Streaming SSE proxy via a polled per-stream queue | G | Accepted |
 | [0034](0034-reuse-word-partner-key-with-writer-system-prompt.md) | Reuse Word's partner key + override system prompt for Writer | G | Accepted |
 | [0035](0035-track-changes-default-for-ai-edits.md) | Track changes by default for AI edits (per-call envelope, user preference) | G | Accepted |
+| [0036](0036-live-e2e-via-playwright-real-soffice.md) | Live E2E via Playwright + bridge-routed shim + real soffice + real engine | G | Accepted |
 
 ## Writing a new ADR
 
