@@ -43,6 +43,20 @@ pytestmark = [
         sys.platform != "linux",
         reason="dogtail/AT-SPI is Linux-only; macOS/Windows GUI smoke deferred",
     ),
+    # The whole file tests the now-removed sidebar deck. ADR-0029
+    # pivoted to a floating non-modal chat window (DialogProvider2);
+    # there is no "Talk2View" deck tab to click. These tests must
+    # be rewritten against the new flow (open chat → drive composer
+    # → assert reply renders) — tracked as a follow-up. Skipping
+    # rather than deleting so the AT-SPI infrastructure (writer_window
+    # fixture, retry helpers) remains in place for the rewrite.
+    pytest.mark.skip(
+        reason=(
+            "Sidebar deck removed in ADR-0029 — these tests target a UI "
+            "surface that no longer exists. Rewrite for the floating "
+            "chat window flow is a TODO."
+        )
+    ),
 ]
 
 

@@ -163,24 +163,24 @@ def desktop(uno_context: Any) -> Any:
 def oxt_installed(uno_context: Any) -> Any:
     """Assert the Talk2View-Writer .oxt is installed by querying its services.
 
-    The .oxt registers two UNO components:
+    Post-ADR-0029, the .oxt registers one UNO component:
 
       - ``com.talk2view.writer.ProtocolHandler`` (XDispatchProvider +
         XDispatch) — handles menu commands via the
         ``vnd.com.talk2view.writer:`` URL scheme.
-      - ``com.talk2view.writer.ChatPanelFactory`` (XUIElementFactory)
-        — builds the sidebar panel.
 
-    If either fails to instantiate, the install failed — fail fast
-    with a clear message that tells the operator to re-run
-    ``unopkg add --force``. This is the canary the rest of the suite
-    relies on.
+    (The previous ``ChatPanelFactory`` UIElementFactory for the
+    sidebar deck was removed; the chat window now opens via a
+    pywebview subprocess driven by the protocol handler. See
+    ``extension/talk2view_writer.py``.)
+
+    If the protocol handler fails to instantiate, the install failed
+    — fail fast with a clear message that tells the operator to
+    re-run ``unopkg add --force``. This is the canary the rest of
+    the suite relies on.
     """
     service_mgr = uno_context.ServiceManager
-    expected = (
-        "com.talk2view.writer.ProtocolHandler",
-        "com.talk2view.writer.ChatPanelFactory",
-    )
+    expected = ("com.talk2view.writer.ProtocolHandler",)
     missing = []
     for service in expected:
         instance = service_mgr.createInstanceWithContext(service, uno_context)
