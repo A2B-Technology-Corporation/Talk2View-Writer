@@ -16,6 +16,13 @@ import { MockBridge, BridgeRequest } from '../fixtures/mock-bridge';
 import { BridgeProxy } from '../fixtures/bridge-proxy';
 import { installLivePywebviewShim } from '../fixtures/live-pywebview-shim';
 
+// Windows skip: see bridge-proxy.spec.ts. AF_UNIX MockBridge can't
+// bind on Windows runners.
+test.skip(
+  process.platform === 'win32',
+  "Python BridgeServer is AF_UNIX-only; live E2E doesn't apply on Windows",
+);
+
 test.describe('bridge-proxy streaming ↔ mock-bridge', () => {
   let mock: MockBridge;
   let proxy: BridgeProxy;

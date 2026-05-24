@@ -13,6 +13,16 @@ import { test, expect } from '@playwright/test';
 import { MockBridge } from '../fixtures/mock-bridge';
 import { BridgeProxy } from '../fixtures/bridge-proxy';
 
+// Windows skip: the Python BridgeServer is AF_UNIX-only (see
+// src/talk2view_writer/bridge_server.py — `socket.AF_UNIX`), so the
+// MockBridge fixture mirrors that. The live E2E architecture
+// inherently doesn't apply on Windows; skipping these specs there
+// matches the production constraint, it isn't softening the test.
+test.skip(
+  process.platform === 'win32',
+  "Python BridgeServer is AF_UNIX-only; live E2E doesn't apply on Windows",
+);
+
 test.describe('bridge-proxy ↔ mock-bridge round-trip', () => {
   let mock: MockBridge;
   let proxy: BridgeProxy;

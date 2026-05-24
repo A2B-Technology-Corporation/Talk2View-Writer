@@ -69,6 +69,12 @@ export class BridgeProxy {
 
   async stop(): Promise<void> {
     if (this.http) {
+      // closeAllConnections() force-closes the in-flight SSE long-polls
+      // that ``handleStreamEvents`` may have left open. Without this,
+      // server.close() blocks forever waiting for them to drain — bites
+      // hardest on WebKit, where EventSource holds the connection open
+      // past test teardown.
+      this.http.closeAllConnections?.();
       await new Promise<void>((resolve) => this.http!.close(() => resolve()));
       this.http = null;
     }
