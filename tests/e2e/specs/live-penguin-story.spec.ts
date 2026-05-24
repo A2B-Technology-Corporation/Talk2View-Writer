@@ -118,32 +118,20 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
         () => window.__t2vToolCalls?.length ?? 0,
       );
 
+      // Composer is enabled here (previous step waited for re-enable
+      // OR this is step 1 right after mount).
+      await expect(composer).toBeEnabled({ timeout: 60_000 });
       await composer.fill(step.prompt);
       await composer.press('Enter');
 
-      // Wait for assistant reply. The bundle marks loading=false in
-      // its logs when streaming ends; poll that.
-      //
-      // expect.poll() rather than page.waitForFunction so the timeout
-      // is unambiguously the option (waitForFunction's second
-      // positional is the function arg — passing an options object
-      // there silently falls back to the default 5s timeout).
-      await expect
-        .poll(
-          async () => {
-            return await page.evaluate(() => {
-              const logs = window.__t2vTestLogs ?? [];
-              for (let i = logs.length - 1; i >= 0; i--) {
-                const msg = logs[i].message;
-                if (msg === '[chat:loading] false') return 'done';
-                if (msg === '[chat:loading] true') return 'streaming';
-              }
-              return 'unknown';
-            });
-          },
-          { timeout: 120_000, intervals: [500, 1000, 2000] },
-        )
-        .toBe('done');
+      // Bundle disables the composer while the SDK is streaming a
+      // response. Wait for that transition (proves the prompt was
+      // accepted), then wait for the re-enable when streaming ends
+      // (proves the assistant reply finished). More direct than
+      // polling logs, and exactly the user-visible signal — the
+      // composer is unusable while a response is in flight.
+      await expect(composer).toBeDisabled({ timeout: 10_000 });
+      await expect(composer).toBeEnabled({ timeout: 120_000 });
 
       await page.screenshot({
         path: join(ARTIFACTS_DIR, `${stepLabel}_post.png`),
