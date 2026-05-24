@@ -774,3 +774,171 @@ jobs:
             tests/e2e/junit-results.xml
           if-no-files-found: warn
           retention-days: 30
+
+  # -----------------------------------------------------------------
+  # 5. Live E2E — Playwright drives the chat UI bundle through the
+  #    Node bridge-proxy → Python BridgeServer → real soffice +
+  #    extension chain. Real Python tools mutate a real Writer
+  #    document. The bridge_server is AF_UNIX-only so this job is
+  #    Linux-only (Windows and macOS skip the underlying specs
+  #    via test.skip on win32 / via skip-when-no-env).
+  #
+  #    See ADR-0036 (forthcoming) for the architecture. Smoke specs
+  #    today; will host the penguin-story scenario once #45/#46
+  #    land.
+  # -----------------------------------------------------------------
+  e2e-live:
+    name: Live E2E (Linux, real soffice + bridge)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install 3.13
+
+      - name: Install dev dependencies
+        run: make dev
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            src/web/package-lock.json
+
+      - name: Install root npm deps (Playwright)
+        run: npm ci
+
+      - name: Install bundle npm deps
+        working-directory: src/web
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-Linux-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Install Playwright browser native deps
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium webkit
+
+      - name: Build chat-UI bundle
+        working-directory: src/web
+        run: npm run build
+
+      # LibreOffice + python3-uno: same install path as the noble
+      # apt entry in the Integration matrix.
+      - name: Install LibreOffice + python3-uno
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libreoffice libreoffice-script-provider-python \
+            python3-uno xvfb at-spi2-core x11-utils imagemagick
+          lo_version="$(/usr/bin/soffice --version 2>/dev/null || echo unknown)"
+          echo "Installed LibreOffice: $lo_version"
+          {
+            echo "### LibreOffice version (Live E2E job)"
+            echo ""
+            echo '```'
+            echo "$lo_version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wire PyUNO into the venv
+        run: |
+          VENV_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+          ln -sf /usr/lib/python3/dist-packages/uno.py "$VENV_SITE/uno.py"
+          ln -sf /usr/lib/python3/dist-packages/unohelper.py "$VENV_SITE/unohelper.py"
+
+      - name: Download .oxt artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: oxt-${{ github.sha }}
+          path: dist/
+
+      - name: Install Talk2View-Writer .oxt
+        run: bash scripts/install_oxt.sh dist/Talk2ViewWriter.oxt
+
+      # Start soffice under Xvfb with T2V_WRITER_HEADLESS_BRIDGE=1 so
+      # the extension starts the bridge but does NOT spawn pywebview
+      # — the Node BridgeProxy will own the single bridge socket
+      # connection. Periodic screenshot loop captures the Xvfb display
+      # so we always have a visual record of what soffice was showing.
+      - name: Start soffice (Xvfb + headless bridge)
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 &
+          sleep 1
+          mkdir -p _diag/xvfb
+          (
+            for t in 5 15 30 60; do
+              sleep 5
+              DISPLAY=:99 import -window root \
+                "_diag/xvfb/screenshot_${t}s.png" 2>/dev/null || true
+            done
+          ) &
+          T2V_WRITER_HEADLESS_BRIDGE=1 T2V_WRITER_DEBUG=1 \
+            dbus-run-session -- /usr/bin/soffice \
+              --headless --norestore --nologo --nodefault \
+              --accept="socket,host=127.0.0.1,port=2002;urp;" \
+              >soffice.stdout.log 2>soffice.stderr.log &
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      - name: Run live Playwright specs
+        env:
+          DISPLAY: ':99'
+          T2V_E2E_LIVE_SOFFICE_PORT: '2002'
+          T2V_E2E_PYTHON: /usr/bin/python3
+        # Restrict to the live-* specs. The mock-engine specs are
+        # already covered in the e2e job; running them again here
+        # would just duplicate work.
+        run: npx playwright test tests/e2e/specs/live-
+
+      # Always grab diagnostic logs so a CI failure has the soffice
+      # state, the bridge log, and the per-step Xvfb screenshots
+      # ready to inspect.
+      - name: Collect diagnostic logs
+        if: always()
+        run: |
+          mkdir -p _diag
+          for p in \
+              "$HOME/.cache/talk2view-writer/talk2view.log" \
+              "soffice.stdout.log" \
+              "soffice.stderr.log"; do
+            if [ -f "$p" ]; then
+              cp "$p" "_diag/$(echo "$p" | tr '/\\' '__')"
+            fi
+          done
+          ls -la _diag || true
+
+      - name: Upload Live E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-live-${{ github.sha }}
+          path: |
+            _diag
+            tests/e2e/screenshots
+            tests/e2e/test-results
+            tests/e2e/playwright-report
+            tests/e2e/junit-results.xml
+          if-no-files-found: warn
+          retention-days: 30
