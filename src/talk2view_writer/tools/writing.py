@@ -112,15 +112,21 @@ def _insert_paragraph_at_cursor(
     The cursor advances past the inserted paragraph so subsequent
     insertions land after it.
 
+    Skips the leading PARAGRAPH_BREAK when the cursor's host paragraph
+    is already empty — otherwise the break would split that empty
+    paragraph into two, leaving a phantom blank above the just-written
+    text. Common at location="start" / "end" on a fresh doc (single
+    empty p0) and after ``target_query`` / ``replace_selection`` has
+    cleared its matched range.
+
     Pass ``doc`` so the paragraph-style assignment can suspend
     ``RecordChanges`` for that single write — LibreOffice rejects
     ``ParaStyleName`` mutations on a paragraph still inside an active
     redline, which is exactly the state our track-changes envelope
     puts every fresh insert in.
     """
-    # First emit a paragraph break (so the new paragraph is its own unit),
-    # then write the text into that paragraph.
-    text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
+    if not _cursor_at_empty_paragraph(text_obj, cursor):
+        text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
     text_obj.insertString(cursor, paragraph_text, False)
     # Re-find the just-written paragraph via the cursor's current paragraph.
     # The XParagraphCursor interface gives us gotoStartOfParagraph / range.
@@ -134,6 +140,21 @@ def _insert_paragraph_at_cursor(
         with ctx:
             para_cursor.ParaStyleName = word_to_libreoffice_style(style)
     return para_cursor
+
+
+def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
+    """``True`` when ``cursor`` sits inside a paragraph with no text.
+
+    Uses the canonical UNO XParagraphCursor selection trick: copy the
+    cursor, snap to the start of the host paragraph, then extend to
+    the end. The selected string is the paragraph's full text — empty
+    means the cursor is in an empty paragraph that can host the next
+    write without a phantom break above it.
+    """
+    probe = text_obj.createTextCursorByRange(cursor.getStart())
+    probe.gotoStartOfParagraph(False)
+    probe.gotoEndOfParagraph(True)
+    return probe.getString() == ""
 
 
 # com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK == 0.
