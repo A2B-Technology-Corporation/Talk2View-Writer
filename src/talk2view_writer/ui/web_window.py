@@ -87,6 +87,21 @@ class WebWindow:
         no-ops for now. Cross-platform refocus is TBD.
         """
         logger.info("WebWindow.show: subprocess_alive=%s", self._is_alive())
+        # Headless-bridge mode: the live E2E test starts soffice + the
+        # extension with this env var set, triggers the chat menu
+        # command, and then drives the bundle from Playwright-Chromium
+        # via a Node bridge-proxy that owns the bridge_server's single
+        # Unix-socket connection. Spawning pywebview here would consume
+        # that connection itself. The env var lets us start (or reuse)
+        # the bridge and skip the subprocess spawn.
+        if os.environ.get("T2V_WRITER_HEADLESS_BRIDGE"):
+            socket_path = self._ensure_bridge()
+            logger.info(
+                "WebWindow.show: T2V_WRITER_HEADLESS_BRIDGE set — "
+                "bridge ready at %s, pywebview spawn skipped",
+                socket_path,
+            )
+            return
         if self._is_alive() and self._proc is not None:
             if sys.platform == "win32":
                 logger.info(

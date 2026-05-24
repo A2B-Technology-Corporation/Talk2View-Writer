@@ -186,3 +186,68 @@ class TestWebWindowRefocus:
         assert spawn_calls == [True], (
             "ProcessLookupError on SIGUSR2 should trigger a respawn"
         )
+
+
+@pytest.mark.unit
+class TestHeadlessBridgeMode:
+    """``T2V_WRITER_HEADLESS_BRIDGE=1`` starts the bridge without pywebview.
+
+    The live E2E test suite (Playwright + Node bridge-proxy + real
+    soffice + real engine, per the live-spec architecture) needs to
+    own the bridge_server's single Unix-socket connection. Spawning
+    pywebview would consume that connection itself. The env var lets
+    the test set up soffice + the extension, trigger the chat menu
+    command (which initialises the bridge), and skip the subprocess
+    spawn so the Node bridge-proxy can be the sole connection.
+    """
+
+    def _make_window(self) -> Any:
+        from talk2view_writer.ui.web_window import WebWindow
+
+        return WebWindow(ctx=MagicMock(name="ctx"))
+
+    def test_env_var_unset_runs_normal_spawn_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Default behaviour: env var absent → ``_spawn_subprocess`` fires."""
+        monkeypatch.delenv("T2V_WRITER_HEADLESS_BRIDGE", raising=False)
+        win = self._make_window()
+
+        with patch.object(win, "_spawn_subprocess") as spawn_mock:
+            win.show()
+
+        spawn_mock.assert_called_once()
+
+    def test_env_var_set_skips_spawn_starts_bridge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``T2V_WRITER_HEADLESS_BRIDGE=1`` → bridge starts, no Popen."""
+        monkeypatch.setenv("T2V_WRITER_HEADLESS_BRIDGE", "1")
+        win = self._make_window()
+
+        with (
+            patch.object(win, "_spawn_subprocess") as spawn_mock,
+            patch.object(win, "_ensure_bridge") as bridge_mock,
+        ):
+            bridge_mock.return_value = "/tmp/talk2view-bridge-test/sock"
+            win.show()
+
+        spawn_mock.assert_not_called()
+        bridge_mock.assert_called_once()
+
+    def test_env_var_set_to_zero_does_not_skip_spawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Empty-string value treated as unset; spawn proceeds.
+
+        Uses the standard 'any truthy non-empty string' rule the rest
+        of the codebase follows for debug toggles. A genuinely-off
+        path uses ``delenv``.
+        """
+        monkeypatch.setenv("T2V_WRITER_HEADLESS_BRIDGE", "")
+        win = self._make_window()
+
+        with patch.object(win, "_spawn_subprocess") as spawn_mock:
+            win.show()
+
+        spawn_mock.assert_called_once()
