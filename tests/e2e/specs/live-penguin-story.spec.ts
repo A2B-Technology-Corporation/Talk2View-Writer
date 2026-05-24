@@ -58,6 +58,11 @@ test.skip(
 test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
   test.describe.configure({ retries: 0 }); // retries are misleading on LLM-driven assertions
 
+  // Each scenario step can take ~30-60s of real LLM streaming. Three
+  // steps + auth + bridge startup easily blows past Playwright's
+  // default 30s test timeout.
+  test.setTimeout(10 * 60 * 1000);
+
   test('walks the scripted scenario; loose assertions; full artifact dump', async ({
     browser,
     liveBridgeProxy,
