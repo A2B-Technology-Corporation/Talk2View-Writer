@@ -221,6 +221,24 @@ export class BridgeProxy {
         respondBridge(res, out);
         return;
       }
+      if (req.method === 'POST' && req.url === '/proxy_stream/open') {
+        const body = await readJson<{
+          url: string;
+          method: string;
+          headers: Record<string, string>;
+          body: string | null;
+        }>(req);
+        const out = await this.sendBridgeRequest('proxy_stream_open', body);
+        respondBridge(res, out);
+        return;
+      }
+      const streamEventsMatch =
+        req.method === 'GET' && /^\/proxy_stream\/([^/]+)\/events$/.exec(req.url ?? '');
+      if (streamEventsMatch) {
+        const streamId = streamEventsMatch[1];
+        await this.handleStreamEvents(req, res, streamId);
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { type: 'NotFound', message: req.url ?? '' } }));
     } catch (err) {
@@ -231,6 +249,49 @@ export class BridgeProxy {
           error: { type: (err as Error).name, message: (err as Error).message },
         }),
       );
+    }
+  }
+
+  /**
+   * SSE long-poll: in a loop, ``proxy_stream_next(streamId)`` the
+   * bridge and write each event as one ``data: <json>\n\n`` frame.
+   * Exits on ``done`` or when the client disconnects.
+   */
+  private async handleStreamEvents(
+    req: IncomingMessage,
+    res: ServerResponse,
+    streamId: string,
+  ): Promise<void> {
+    res.setHeader('content-type', 'text/event-stream');
+    res.setHeader('cache-control', 'no-cache');
+    res.setHeader('connection', 'keep-alive');
+    res.statusCode = 200;
+    res.flushHeaders?.();
+
+    let clientGone = false;
+    req.on('close', () => {
+      clientGone = true;
+    });
+
+    while (!clientGone) {
+      const out = await this.sendBridgeRequest('proxy_stream_next', {
+        stream_id: streamId,
+      });
+      if (out.error) {
+        // Surface as an SSE error event so the shim can route it
+        // through its proxy_stream_next "error" path.
+        const errEvt = { type: 'error', message: out.error.message };
+        res.write(`data: ${JSON.stringify(errEvt)}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
+        res.end();
+        return;
+      }
+      const ev = out.result as { type: string; [k: string]: unknown };
+      res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      if (ev.type === 'done') {
+        res.end();
+        return;
+      }
     }
   }
 }
