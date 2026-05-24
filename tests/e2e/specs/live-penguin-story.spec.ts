@@ -122,21 +122,28 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
       await composer.press('Enter');
 
       // Wait for assistant reply. The bundle marks loading=false in
-      // its logs when streaming ends; poll that, fall back to a
-      // reasonable text-presence wait.
-      await page.waitForFunction(
-        () => {
-          const logs = window.__t2vTestLogs ?? [];
-          // Find most recent [chat:loading] log; true while streaming.
-          for (let i = logs.length - 1; i >= 0; i--) {
-            const msg = logs[i].message;
-            if (msg === '[chat:loading] false') return true;
-            if (msg === '[chat:loading] true') return false;
-          }
-          return false;
-        },
-        { timeout: 120_000 },
-      );
+      // its logs when streaming ends; poll that.
+      //
+      // expect.poll() rather than page.waitForFunction so the timeout
+      // is unambiguously the option (waitForFunction's second
+      // positional is the function arg — passing an options object
+      // there silently falls back to the default 5s timeout).
+      await expect
+        .poll(
+          async () => {
+            return await page.evaluate(() => {
+              const logs = window.__t2vTestLogs ?? [];
+              for (let i = logs.length - 1; i >= 0; i--) {
+                const msg = logs[i].message;
+                if (msg === '[chat:loading] false') return 'done';
+                if (msg === '[chat:loading] true') return 'streaming';
+              }
+              return 'unknown';
+            });
+          },
+          { timeout: 120_000, intervals: [500, 1000, 2000] },
+        )
+        .toBe('done');
 
       await page.screenshot({
         path: join(ARTIFACTS_DIR, `${stepLabel}_post.png`),
