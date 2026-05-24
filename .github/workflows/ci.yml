@@ -907,6 +907,12 @@ jobs:
           DISPLAY: ':99'
           T2V_E2E_LIVE_SOFFICE_PORT: '2002'
           T2V_E2E_PYTHON: /usr/bin/python3
+          # Real engine credentials. live-penguin-story.spec.ts skips
+          # cleanly when either is missing (e.g. PRs from forks that
+          # can't read repo secrets). Required for the scenario test;
+          # the bridge-smoke spec doesn't need them.
+          T2V_TEST_USER_EMAIL: ${{ secrets.T2V_TEST_USER_EMAIL }}
+          T2V_TEST_USER_PASSWORD: ${{ secrets.T2V_TEST_USER_PASSWORD }}
         # Restrict to the live-* specs. The mock-engine specs are
         # already covered in the e2e job; running them again here
         # would just duplicate work.
