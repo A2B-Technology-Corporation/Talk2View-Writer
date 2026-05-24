@@ -30,7 +30,7 @@ import socket
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 logger = logging.getLogger("talk2view_writer.web_runner")
 
@@ -65,7 +65,7 @@ class _BridgeClient:
         return self._call("invoke_tool", {"name": name, "args": args})
 
     def list_tools(self) -> list[str]:
-        return self._call("list_tools", {})
+        return cast(list[str], self._call("list_tools", {}))
 
     def log(self, level: str, message: str, context: Any | None) -> None:
         # No need to round-trip the response; fire-and-forget the
@@ -80,14 +80,17 @@ class _BridgeClient:
         headers: dict[str, str],
         body: str | None,
     ) -> dict[str, Any]:
-        return self._call(
-            "proxy_fetch",
-            {
-                "url": url,
-                "method": method,
-                "headers": headers,
-                "body": body,
-            },
+        return cast(
+            dict[str, Any],
+            self._call(
+                "proxy_fetch",
+                {
+                    "url": url,
+                    "method": method,
+                    "headers": headers,
+                    "body": body,
+                },
+            ),
         )
 
     def proxy_stream_open(
@@ -97,18 +100,24 @@ class _BridgeClient:
         headers: dict[str, str],
         body: str | None,
     ) -> dict[str, Any]:
-        return self._call(
-            "proxy_stream_open",
-            {
-                "url": url,
-                "method": method,
-                "headers": headers,
-                "body": body,
-            },
+        return cast(
+            dict[str, Any],
+            self._call(
+                "proxy_stream_open",
+                {
+                    "url": url,
+                    "method": method,
+                    "headers": headers,
+                    "body": body,
+                },
+            ),
         )
 
     def proxy_stream_next(self, stream_id: str) -> dict[str, Any]:
-        return self._call("proxy_stream_next", {"stream_id": stream_id})
+        return cast(
+            dict[str, Any],
+            self._call("proxy_stream_next", {"stream_id": stream_id}),
+        )
 
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
@@ -349,7 +358,9 @@ def main() -> None:
     # what we want and it works fine. On macOS pywebview's only
     # backend is Cocoa, on Windows it's EdgeChromium — passing
     # gui=None there lets pywebview pick the right one.
-    gui_backend = "gtk" if sys.platform.startswith("linux") else None
+    gui_backend: Literal["gtk"] | None = (
+        "gtk" if sys.platform.startswith("linux") else None
+    )
     webview.start(
         debug=True,
         private_mode=False,
@@ -426,8 +437,11 @@ def _patch_webkitgtk_cors_settings() -> None:
                 "engine.talk2view.com will be silently dropped"
             )
 
-    gtk_backend.BrowserView.__init__ = patched_init
-    gtk_backend.BrowserView._t2v_cors_patched = True
+    # Intentional monkey-patch — pywebview's gtk backend doesn't expose
+    # the CORS-relaxing settings any other way. The sentinel attribute
+    # guards re-application.
+    gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
+    gtk_backend.BrowserView._t2v_cors_patched = True  # type: ignore[attr-defined]
     logger.info("WebKitGTK patch: BrowserView.__init__ wrapped")
 
 

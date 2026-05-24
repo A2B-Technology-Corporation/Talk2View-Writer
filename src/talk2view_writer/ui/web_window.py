@@ -33,6 +33,8 @@ from urllib.parse import unquote, urlparse
 if TYPE_CHECKING:
     from com.sun.star.uno import XComponentContext
 
+    from talk2view_writer.bridge_server import BridgeServer
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,7 +63,7 @@ class WebWindow:
         self.ctx = ctx
         self._proc: subprocess.Popen | None = None
         self._stderr_pump: threading.Thread | None = None
-        self._bridge: Any = None  # BridgeServer, lazy-imported
+        self._bridge: BridgeServer | None = None  # lazy-imported
         logger.info("WebWindow instantiated (ctx=%s)", _ru(ctx))
 
     def show(self) -> None:
@@ -247,6 +249,10 @@ class WebWindow:
     def _ensure_bridge(self) -> str:
         """Lazily start the Unix-socket JSON-RPC bridge. Returns its path."""
         if self._bridge is not None:
+            # BridgeServer.start() always sets socket_path before returning,
+            # so by the time we have a non-None _bridge here socket_path
+            # is guaranteed non-None. mypy can't infer that invariant.
+            assert self._bridge.socket_path is not None
             return self._bridge.socket_path
         from talk2view_writer.bridge_server import BridgeServer
 

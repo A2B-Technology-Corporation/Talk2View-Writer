@@ -154,7 +154,9 @@ def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
     probe = text_obj.createTextCursorByRange(cursor.getStart())
     probe.gotoStartOfParagraph(False)
     probe.gotoEndOfParagraph(True)
-    return probe.getString() == ""
+    # bool() because probe.getString() is Any (UNO proxy); the equality
+    # result is Any too, which mypy rejects from a -> bool function.
+    return bool(probe.getString() == "")
 
 
 # com.sun.star.text.ControlCharacter.PARAGRAPH_BREAK == 0.
@@ -181,7 +183,11 @@ def _is_uniform_table(table: Any) -> bool:
 @ui_thread_tool
 def insert_content(
     text: str | None = None,
-    blocks: list[dict[str, str]] | None = None,
+    # ``blocks`` accepts ``{text, style?}`` dicts at runtime, but engine
+    # LLMs sometimes emit plain strings (gemini-3-pro, 2026-05-22).
+    # Typed wide so the coercion below is honest about what the runtime
+    # accepts; the normalisation produces a clean dict shape internally.
+    blocks: list[Any] | None = None,
     style: str | None = None,
     location: str | None = None,
     target_query: str | None = None,
@@ -318,15 +324,20 @@ def insert_content(
         # Engine LLMs sometimes emit blocks as plain strings instead of
         # {text, style?} dicts (observed 2026-05-22 with gemini-3-pro).
         # Coerce in place so the rest of the function can assume dicts.
+        # Fresh-dict construction makes the value-type widening explicit
+        # rather than relying on dict invariance.
         normalised: list[dict[str, str | None]] = []
         for block in blocks:
             if isinstance(block, str):
                 normalised.append({"text": block, "style": None})
             else:
-                normalised.append(block)
+                normalised.append(
+                    {"text": block.get("text", ""), "style": block.get("style")}
+                )
         blocks = normalised
         for i, block in enumerate(blocks):
-            if not block.get("text", "").strip():
+            block_text = block.get("text") or ""
+            if not block_text.strip():
                 return json.dumps(
                     {
                         "error": f"blocks[{i}].text is empty.",
