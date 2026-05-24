@@ -162,7 +162,28 @@ export class BridgeProxy {
   // ----- HTTP handlers -----------------------------------------------------
 
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Permissive CORS so the chat-UI bundle (served from any localhost
+    // origin) can hit us. Production has the bundle and the proxy on
+    // the same host:port pair, but tests routinely cross origins.
+    res.setHeader('access-control-allow-origin', '*');
+    res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+    res.setHeader('access-control-allow-headers', 'content-type');
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
     try {
+      if (req.method === 'GET' && req.url === '/') {
+        // Same-origin probe page for unit tests of the live shim — a
+        // Playwright test can navigate here and then fetch our other
+        // endpoints without crossing origins. The bundle never uses
+        // this in production.
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.statusCode = 200;
+        res.end('<!doctype html><meta charset="utf-8"><title>bridge-proxy</title>');
+        return;
+      }
       if (req.method === 'POST' && req.url === '/invoke_tool') {
         const body = await readJson<{ name: string; args: Record<string, unknown> }>(req);
         const out = await this.sendBridgeRequest('invoke_tool', body);
