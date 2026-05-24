@@ -116,6 +116,19 @@ is a worse default than one whose edits are visible and reviewable.
   unnecessarily — harmless but slightly wasteful (two extra UNO
   property writes per call). If this matters we can refine the
   decision per-call.
+- LibreOffice rejects ``ParaStyleName`` mutations on paragraphs
+  whose content is itself inside an active redline — exactly the
+  state every fresh insert under this envelope is in. Tools that
+  insert text and then set a paragraph style must briefly suspend
+  the envelope for the style-write site only, via
+  ``_base.py::suspend_record_changes(doc)``. Applied at four call
+  sites today (``writing.py::_insert_paragraph_at_cursor``,
+  ``formatting.py::format_paragraph``, two branches in
+  ``formatting.py::manage_list``). The text insert stays tracked;
+  only the paragraph-metadata write slips through, which is the
+  right granularity — style is part of the same logical edit the
+  user already sees in the redline view, not a separate change
+  deserving its own redline entry.
 - The preference is process-wide, not per-document. A user who wants
   redlines for some docs and not others has to toggle every time.
   Likely acceptable for v1; revisit if real users ask for

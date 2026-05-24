@@ -84,6 +84,9 @@ documenting `pip install` for native deps.
 
 ## #4 — Sidebar deck IconURL borrows a LibreOffice internal icon
 
+**Status:** Superseded by ADR-0029 / ADR-0030 — sidebar deck removed,
+chat moved to a floating pywebview window. No deck icon to brand.
+
 **What:** `extension/Sidebar.xcu` sets the deck icon to
 `private:graphicrepository/sw/res/sidebar-mode.png` — a graphic
 resource from LibreOffice's own Writer module.
@@ -239,6 +242,11 @@ invoked.
 
 ## #11 — Chat history `UnoControlEdit` has no built-in length cap
 
+**Status:** Superseded by ADR-0029 / ADR-0030 — chat history is now
+rendered by the React `<ChatPanel />` in the pywebview subprocess,
+not a `UnoControlEdit`. Buffer-trimming concerns are now an SDK / web
+UI question, not an extension one.
+
 **What:** The Phase B chat panel renders history into a
 `UnoControlEdit` and appends by concatenating the new chunk to the
 current `Text` property. There is no automatic trim when the history
@@ -263,6 +271,11 @@ memory.
 ---
 
 ## #12 — `solar_mutex` from PyUNO — Phase B spike outcome TBD
+
+**Status:** Superseded by ADR-0030 — chat UI moved to a pywebview
+subprocess that doesn't touch UNO from background threads at all,
+so the `solar_mutex` question no longer blocks anything we ship.
+Tool calls still marshal onto the UI thread via `ui_thread_tool`.
 
 **What:** ADR-0017 ships cross-thread widget writes from the chat
 worker as a calculated risk, predicated on the assumption that
@@ -660,6 +673,10 @@ must run in CI.
 
 ## #26 — `format_paragraph` silently dropped unknown alignment values
 
+**Status:** Fixed — explicit allow-list checks added in
+`format_paragraph` and `set_page_setup`. Audit of other `_*_MAP[arg]`
+lookups is still open as a follow-up.
+
 **What:** Before this PR, `format_paragraph(alignment="diagonal")`
 raised `KeyError` from inside `_ALIGNMENT_MAP` instead of returning a
 structured error. `set_page_setup(orientation="rotated")` ignored the
@@ -686,6 +703,11 @@ flow in code review.
 ---
 
 ## #27 — Integration tests after sidebar-dock dispatch hang the next doc-load
+
+**Status:** Superseded by ADR-0029 / ADR-0030 — sidebar deck removed;
+the `test_sidebar_dock` suite that triggered the hang no longer
+exists. The pytest-timeout + test-ordering mitigations landed and
+are still useful for any future integration tests.
 
 **What:** Run `pytest -m integration` against a real headless soffice
 where the suite contains `test_sidebar_dock` (which dispatches
@@ -749,6 +771,11 @@ linger. Track the panel's lifecycle and explicitly null out
 ---
 
 ## #28 — Integration tests have always been silently mocked, never running against real soffice
+
+**Status:** Fixed — stub-eviction + `uno.__file__` sanity check landed
+in `tests/integration/conftest.py`. The specific sidebar-dock tests
+this enabled are gone (see #27 / ADR-0029) but the eviction itself
+remains correct for any future real-soffice integration tests.
 
 **What:** Every "passing" integration run in CI history has run against
 the unit-test conftest's UNO stub, not the real PyUNO bridge — and
