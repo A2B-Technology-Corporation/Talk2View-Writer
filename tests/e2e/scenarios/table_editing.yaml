@@ -31,7 +31,8 @@ steps:
       tool_calls:
         must_invoke:
           - insert_table
-        max_count: 4
+        # Observed-stable: 1 call (header + data populated in one insert_table).
+        max_count: 2
         no_duplicate_with: insert_table
 
   - prompt: add a row to the table with values Banana, 12, 0.50
@@ -51,13 +52,12 @@ steps:
         must_invoke:
           - edit_table
         # If the model uses values=[["Banana","12","0.50"]] with
-        # add_rows, this is 2 calls (get_document + add_rows). If it
-        # splits into add_rows + 3 edit_cell calls (cell-by-cell),
-        # this is 5. Both are valid; bump to 6 for headroom. Schema
-        # was updated to document the values shortcut — over time
-        # the model should converge to the 2-call path and we can
-        # tighten back.
-        max_count: 6
+        # Observed-stable (with values schema documented): 2 calls
+        # (get_document + edit_table.add_rows with values=[[...]]).
+        # Tighten to 3 — if the model regresses to the cell-by-cell
+        # path (5 calls), the test catches it; we'd investigate why
+        # the values shortcut isn't being used.
+        max_count: 3
 
   - prompt: >
       change the Apple quantity to 7 (it's in the row immediately
@@ -76,5 +76,6 @@ steps:
       tool_calls:
         must_invoke:
           - edit_table
-        max_count: 4
+        # Observed-stable: 1 call (edit_table.edit_cell).
+        max_count: 2
         no_duplicate_with: edit_table

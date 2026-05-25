@@ -19,7 +19,8 @@ steps:
       tool_calls:
         must_invoke:
           - insert_content
-        max_count: 3
+        # Observed-stable: 1 call (both paragraphs in one insert_content).
+        max_count: 2
         no_duplicate_with: insert_content
 
   - prompt: delete the second paragraph
@@ -36,7 +37,8 @@ steps:
       tool_calls:
         # Model may use delete_content OR
         # search_document(replace_with="") — both achieve the delete.
-        max_count: 5
+        # Observed-stable: 2 calls (get_document + delete_content).
+        max_count: 3
 
   - prompt: undo that deletion
     expect:
@@ -54,4 +56,5 @@ steps:
       tool_calls:
         # Model sometimes uses undo_redo, sometimes re-inserts via
         # insert_content. Both achieve the doc outcome.
-        max_count: 5
+        # Observed-stable: 1 call (undo_redo).
+        max_count: 2

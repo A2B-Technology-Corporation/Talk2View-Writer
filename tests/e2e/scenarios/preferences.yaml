@@ -14,7 +14,10 @@ steps:
       tool_calls:
         must_invoke:
           - manage_preferences
-        max_count: 3
+        # Observed-stable: 1 call. Cap at 2 — one tool call should
+        # be enough; if the model loops, the duplicate guard or
+        # max_count catches it.
+        max_count: 2
         no_duplicate_with: manage_preferences
 
   - prompt: turn AI track changes back on
@@ -25,5 +28,8 @@ steps:
       tool_calls:
         must_invoke:
           - manage_preferences
-        max_count: 3
+        # Observed-stable: 1 call. Cap at 2 — one tool call should
+        # be enough; if the model loops, the duplicate guard or
+        # max_count catches it.
+        max_count: 2
         no_duplicate_with: manage_preferences

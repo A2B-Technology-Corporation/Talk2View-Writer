@@ -26,7 +26,8 @@ steps:
       tool_calls:
         must_invoke:
           - insert_content
-        max_count: 4
+        # Observed-stable: 1 call (3 blocks in one insert_content).
+        max_count: 2
         no_duplicate_with: insert_content
 
   - prompt: >
@@ -43,9 +44,11 @@ steps:
         # Don't pin must_invoke: model sometimes calls manage_list,
         # sometimes format_paragraph(style="ListBullet") + search_document.
         # Both produce a bulleted list. The outcome assertion is what
-        # matters; tool path is a model choice. Observed runs have
-        # gone as high as 11 calls when the model retries per-paragraph.
-        max_count: 14
+        # matters; tool path is a model choice. Observed-stable: 6
+        # calls (1 get_document + 2 manage_list + 3 search_document
+        # — the search_document calls add bullet glyphs when manage_list
+        # doesn't take). Cap at 8 for headroom.
+        max_count: 8
 
   - prompt: insert a page break at the end of the document
     expect:
@@ -58,6 +61,7 @@ steps:
         # break property; either way total_paragraphs may bump by 1.
         min_paragraphs: 3
       tool_calls:
-        # Model may use insert_break OR
-        # insert_content + format_paragraph(page_break_before=true).
-        max_count: 8
+        # Model may use insert_break OR insert_content +
+        # format_paragraph(page_break_before=true). Observed-stable:
+        # 1 call (insert_break).
+        max_count: 3

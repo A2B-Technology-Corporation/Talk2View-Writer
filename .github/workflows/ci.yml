@@ -759,14 +759,52 @@ jobs:
         working-directory: src/web
         run: npm run build
 
-      - name: Run Playwright specs
-        # --workers=1 on Windows only: the multi-worker Playwright
-        # teardown reliably orphans worker-2 for ~5 min on Windows
-        # runners, force-killing it and marking the job red even
-        # when every test passed (Investigation #36). With 1 worker
-        # there's no worker-2 to orphan. Linux + macOS keep the
-        # default parallelism for speed.
-        run: npx playwright test ${{ runner.os == 'Windows' && '--workers=1' || '' }}
+      - name: Run Playwright specs (Linux + macOS)
+        if: runner.os != 'Windows'
+        run: npx playwright test
+
+      - name: Run Playwright specs (Windows — junit-result-aware)
+        # Investigation #36 v3: --workers=1 + globalTeardown didn't
+        # fix the worker-stop hang. The Playwright runner force-kills
+        # a stuck worker after 5 min and exits non-zero EVEN when
+        # every test passed. Capture the playwright exit, then read
+        # junit-results.xml: if it reports 0 failures/errors, the
+        # job is green regardless of the runner's exit code. Real
+        # test failures still exit non-zero — we only override the
+        # exit-on-worker-hang case.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $playwrightExit = 0
+          try {
+            npx playwright test --workers=1
+            $playwrightExit = $LASTEXITCODE
+          } catch {
+            $playwrightExit = 1
+          }
+          Write-Host "playwright runner exited with code $playwrightExit"
+          $junit = 'tests/e2e/junit-results.xml'
+          if (-not (Test-Path $junit)) {
+            Write-Host "junit-results.xml missing — treating as failure"
+            exit 1
+          }
+          [xml]$xml = Get-Content $junit
+          $totalFail = 0
+          $totalErr = 0
+          foreach ($suite in $xml.SelectNodes('//testsuite')) {
+            $totalFail += [int]$suite.failures
+            $totalErr += [int]$suite.errors
+          }
+          Write-Host "junit totals: failures=$totalFail errors=$totalErr"
+          if ($totalFail -gt 0 -or $totalErr -gt 0) {
+            Write-Host "Real test failures present — exiting 1"
+            exit 1
+          }
+          if ($playwrightExit -ne 0) {
+            Write-Host "Playwright exited non-zero but junit has no failures — overriding to 0 (Investigation #36 v3)"
+            exit 0
+          }
+          exit 0
 
       - name: Upload Playwright artifacts
         if: always()

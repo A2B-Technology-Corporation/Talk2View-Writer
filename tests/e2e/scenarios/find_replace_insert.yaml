@@ -1,0 +1,48 @@
+name: find-replace-insert
+description: >
+  Exercises insert_content with target_query (find-and-replace
+  insertion) — one of the documented "do it in one call" patterns
+  from SYSTEM_PROMPT.md. Two steps: insert a template paragraph,
+  then replace the [TOKEN] placeholder with real content.
+
+steps:
+  - prompt: >
+      Insert this paragraph: "Dear [NAME], thank you for your message
+      dated [DATE]. We will respond within five business days."
+    expect:
+      assistant_contains:
+        - inserted
+        - added
+        - paragraph
+      doc:
+        min_paragraphs: 1
+        any_text_contains:
+          - "[NAME]"
+          - "[DATE]"
+      tool_calls:
+        must_invoke:
+          - insert_content
+        max_count: 2
+        no_duplicate_with: insert_content
+
+  - prompt: >
+      Replace "[NAME]" with "Jordan" and "[DATE]" with "May 25".
+    expect:
+      assistant_contains:
+        - replac
+        - jordan
+        - may
+      doc:
+        any_text_contains:
+          - jordan
+          - may 25
+        # Placeholders should be gone after replacement.
+        # (We don't have a negative-contains assertion, but the
+        # any_text_contains above proves the replacements landed.)
+      tool_calls:
+        # Either search_document (one call per replacement) or
+        # search_document with two queries / two calls. Both are
+        # valid. Observed-stable upper bound: 2 calls.
+        must_invoke:
+          - search_document
+        max_count: 3

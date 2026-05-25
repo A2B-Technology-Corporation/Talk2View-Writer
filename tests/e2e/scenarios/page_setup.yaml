@@ -14,7 +14,8 @@ steps:
       tool_calls:
         must_invoke:
           - set_header_footer
-        max_count: 4
+        # Observed-stable: 1 call.
+        max_count: 2
         no_duplicate_with: set_header_footer
 
   - prompt: insert page numbers in the footer, centered
@@ -33,7 +34,11 @@ steps:
       tool_calls:
         must_invoke:
           - insert_page_numbers
-        max_count: 8
+        # Observed-stable: 1 call (insert_page_numbers). Engine
+        # non-determinism (Investigation #40) can push it higher;
+        # cap at 4 to catch loops while tolerating the occasional
+        # duplicate the engine emits.
+        max_count: 4
 
   - prompt: change the page orientation to landscape
     expect:
@@ -48,4 +53,6 @@ steps:
       tool_calls:
         must_invoke:
           - set_page_setup
-        max_count: 6
+        # Observed-stable: 1 call. Engine #40 can emit a duplicate
+        # set_page_setup with identical args; cap at 4 to tolerate.
+        max_count: 4

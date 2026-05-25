@@ -1225,13 +1225,24 @@ CI 26390977263 showed ``worker-1 process did not exit`` (the lone
 worker hung). So the worker count isn't the trigger — Windows just
 fails to exit a Playwright worker regardless of count.
 
-**Mitigation v2 (CI 26391xxx onwards):** Playwright ``globalTeardown``
-in ``tests/e2e/fixtures/global-teardown.ts`` schedules
-``process.exit(process.exitCode ?? 0)`` 5 s after globalTeardown
-runs, **only on Windows**. The exit code is whatever Playwright
-already set from test outcomes — so a real test failure still
-exits non-zero (NEVER masking real failures). Linux + macOS path
-unchanged, so any new lingering-handle bug there surfaces loudly.
+**Mitigation v2 (CI 26392795070):** Playwright ``globalTeardown``
+attempting to schedule ``process.exit()`` 5 s after teardown ran.
+Did NOT work — CI showed the same ``worker-1 process did not exit``
+hang and the globalTeardown's ``console.log`` never fired. Root
+cause: globalTeardown only runs AFTER all workers exit cleanly; a
+hung worker blocks the entire teardown chain so globalTeardown is
+never reached. The fixture file was removed when v3 landed.
+
+**Mitigation v3 (CI 26393xxx onwards):** Move the override out of
+Playwright entirely into the GitHub Actions step itself. Windows
+runs Playwright, then post-processes ``tests/e2e/junit-results.xml``
+in PowerShell: if every ``<testsuite>`` reports ``failures=0`` and
+``errors=0``, the step exits 0 regardless of Playwright's runner
+exit code. If junit reports any real failure, we exit 1 like
+normal. This ONLY masks the worker-hang case — a real failing test
+still goes red. Linux + macOS keep the simple
+``npx playwright test`` invocation so any new lingering-handle bug
+there surfaces loudly.
 
 **Remaining next steps (root cause):**
 1. Confirm with Playwright maintainers whether multi-worker teardown
