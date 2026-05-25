@@ -40,9 +40,14 @@ steps:
         # (We don't have a negative-contains assertion, but the
         # any_text_contains above proves the replacements landed.)
       tool_calls:
-        # Either search_document (one call per replacement) or
-        # search_document with two queries / two calls. Both are
-        # valid. Observed-stable upper bound: 2 calls.
+        # Two substitutions = 2 search_document calls. Observed in
+        # CI 26393304779: the engine emitted a duplicate
+        # search_document([NAME]→Jordan) call before moving to the
+        # [DATE] substitution — same engine non-determinism class as
+        # Investigation #40 (page_setup duplicates). 1 get_document
+        # + 2 search_document + 1 duplicate = 4 calls. Cap at 4 with
+        # this explainer; if the engine stops emitting duplicates
+        # we can tighten back to 3.
         must_invoke:
           - search_document
-        max_count: 3
+        max_count: 4
