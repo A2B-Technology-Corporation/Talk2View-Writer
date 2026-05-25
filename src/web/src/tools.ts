@@ -249,7 +249,8 @@ export const writerTools: ClientTool[] = [
         },
         paragraph_indices: {
           type: 'array',
-          description: 'List of zero-based indices to format.',
+          description:
+            'List of zero-based integer indices (NOT strings) to format.',
         },
         style: {
           type: 'string',
@@ -460,8 +461,9 @@ export const writerTools: ClientTool[] = [
         data: {
           type: 'array',
           description:
-            '2D string array of cell values. First inner array is the ' +
-            'header row. e.g. [["Item","Qty"],["Apple","5"]].',
+            '2D string array of cell values (array of arrays of ' +
+            'strings). First inner array is the header row. e.g. ' +
+            '[["Item","Qty"],["Apple","5"]].',
         },
       },
       required: ['rows', 'columns', 'location'],
@@ -637,7 +639,8 @@ export const writerTools: ClientTool[] = [
         paragraph_indices: {
           type: 'array',
           description:
-            'Zero-based paragraph indices to apply the action to. Required.',
+            'Zero-based integer paragraph indices (NOT strings) to ' +
+            'apply the action to. Required.',
         },
         list_type: {
           type: 'string',
@@ -710,8 +713,8 @@ export const writerTools: ClientTool[] = [
         section_indices: {
           type: 'array',
           description:
-            'Apply to multiple sections in one call. Mutually exclusive ' +
-            'with section_index.',
+            'Apply to multiple sections in one call (integer indices, ' +
+            'NOT strings). Mutually exclusive with section_index.',
         },
         header_footer_type: {
           type: 'string',
@@ -766,7 +769,8 @@ export const writerTools: ClientTool[] = [
         },
         section_indices: {
           type: 'array',
-          description: 'Apply to multiple sections in one call.',
+          description:
+            'Apply to multiple sections in one call (integer indices, NOT strings).',
         },
       },
     },

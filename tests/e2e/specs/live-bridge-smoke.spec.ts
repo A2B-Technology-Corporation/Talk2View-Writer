@@ -24,18 +24,41 @@ test.skip(
 );
 
 test.describe('live bridge smoke (real soffice + extension + bridge)', () => {
-  test('list_tools returns the seven MVP tools', async ({ liveBridgeProxy }) => {
+  test('list_tools returns the full 21-tool MVP allowlist', async ({
+    liveBridgeProxy,
+  }) => {
     const resp = await fetch(`${liveBridgeProxy.url()}/list_tools`);
     expect(resp.status).toBe(200);
     const body = (await resp.json()) as { result: string[] };
     // _MVP_TOOL_NAMES in bridge_server.py — keep this set in lockstep.
     const expected = new Set([
+      // Reading
       'get_document',
       'get_selection',
+      'select_text',
+      // Writing
       'insert_content',
+      'insert_table',
+      'edit_table',
+      'insert_image',
+      'undo_redo',
+      'delete_content',
+      // Formatting
       'format_text',
       'format_paragraph',
+      'manage_list',
+      // Search
       'search_document',
+      // Structure
+      'insert_break',
+      'set_header_footer',
+      'insert_page_numbers',
+      'set_page_setup',
+      // Commenting
+      'get_comments',
+      'add_comment',
+      'manage_comment',
+      // Preferences
       'manage_preferences',
     ]);
     expect(new Set(body.result)).toEqual(expected);

@@ -1225,3 +1225,70 @@ noise. Five-minute cliff also balloons CI wall-clock.
    'win32'` and file an upstream Playwright issue — the test
    itself isn't Windows-specific (it tests bridge log behaviour
    not OS behaviour) so skipping on Windows is acceptable.
+
+## #37 — `manage_list` throws `RuntimeException` setting `ParaStyleName = "List Bullet"` (2026-05-25)
+
+**What:** With ``manage_list`` now exposed to the engine, the live
+scenario ``lists_and_breaks`` step 2 (convert three paragraphs to a
+bulleted list) consistently triggers a LibreOffice C++ RuntimeException
+at ``./sw/source/core/unocore/unoobj.cxx:259``. The Python tool
+attempts ``p.ParaStyleName = "List Bullet"`` (formatting.py:737)
+and LO rejects the assignment without a descriptive error.
+
+The model retries 4+ times across the 120s scenario window — each
+attempt errors the same way. Composer never re-enables; test hard-fails.
+
+**Where:** ``src/talk2view_writer/tools/formatting.py:735`` hardcodes
+``"List Bullet"`` / ``"List Number"`` as the LibreOffice paragraph
+style names to apply. Observed against the Ubuntu 24.04 apt LO build
+used by CI's Live E2E job (CI run 26384724316).
+
+**Why it matters:** ``manage_list`` is dead-on-arrival on the build
+matrix we test against. Synthetic tests pass because the fake
+paragraph accepts any string for ``ParaStyleName``; the real LO
+rejects ``"List Bullet"`` for paragraphs whose current style stack
+doesn't admit it (or simply because the style isn't registered on
+this build).
+
+**Next step:**
+1. Reproduce locally with LO 24.x and confirm which built-in style
+   name(s) are valid for the apt build — likely ``"List Bullet 1"``,
+   ``"Numbered List"``, or the actual internal name surfaced via
+   ``StyleFamilies.PageStyles.ElementNames``.
+2. Replace the hardcoded ``"List Bullet"`` lookup with a runtime
+   resolver: ``doc.StyleFamilies.getByName("ParagraphStyles")`` →
+   pick the first style whose name matches one of the known
+   bullet-list aliases.
+3. Once fixed, tighten the ``lists_and_breaks`` scenario to assert
+   the paragraphs' ``style`` field actually contains a bullet-list
+   style name after step 2.
+
+## #38 — `add_comment` throws `no SwTextAttr inserted` on Ubuntu 24.04 LO (2026-05-25)
+
+**What:** ``add_comment`` consistently throws
+``uno.com.sun.star.uno.RuntimeException: no SwTextAttr inserted? at
+./sw/source/core/unocore/unofield.cxx:1976`` when called against the
+Ubuntu 24.04 apt LO build. Reproduced 4+ times in CI run
+26384724316 with different anchor texts (``lazy``, ``lazy dog``,
+``fox``) — failure mode is identical.
+
+**Where:** Bug is inside LO's Writer ``unofield.cxx`` — our
+``add_comment`` implementation looks correct, the C++ side rejects
+the operation. Triggered via the commenting scenario step 2.
+
+**Why it matters:** ``add_comment`` is dead on this build matrix
+too. The model retries the call several times, eventually gives up
+and writes the "comment" as inline document text (which is what the
+loose ``commenting`` scenario assertion still accepts). Marred UX
+even when the test passes.
+
+**Next step:**
+1. Reproduce locally; check whether the issue is anchor-text-specific
+   (some texts may be inside table cells or non-body containers
+   where comment anchors aren't legal) or universal.
+2. If universal: file an LO issue and add a fallback path in
+   ``add_comment`` that detects the failure and returns a
+   user-actionable error rather than burning model retries.
+3. If anchor-specific: precondition the input — call ``get_document``
+   inside ``add_comment`` to verify the anchor resolves to a body
+   paragraph before attempting the UNO call.

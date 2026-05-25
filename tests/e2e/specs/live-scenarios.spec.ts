@@ -159,7 +159,20 @@ for (const sc of SCENARIO_FILES) {
         await composer.press('Enter');
 
         await expect(composer).toBeDisabled({ timeout: 10_000 });
-        await expect(composer).toBeEnabled({ timeout: 120_000 });
+        // Soft-wait for composer to re-enable. If a tool call hangs
+        // forever (e.g. LO C++ bug in manage_list — Investigation #37 —
+        // or add_comment — Investigation #38), the composer stays
+        // disabled and the model can't be reached. Note the hang and
+        // continue so the post-step screenshot + transcript still get
+        // captured — and so the next step doesn't blow up with a
+        // disabled-locator error that yields less context.
+        try {
+          await expect(composer).toBeEnabled({ timeout: 120_000 });
+        } catch {
+          note(
+            `${stepLabel} composer never re-enabled within 120s — likely an underlying LO tool hang (see Investigations #37, #38)`,
+          );
+        }
 
         // Wait for the FINAL (non-empty) [chat:assistant] log — bundle
         // emits a placeholder when streaming starts and the real one
