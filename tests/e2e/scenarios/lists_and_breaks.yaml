@@ -43,8 +43,9 @@ steps:
         # Don't pin must_invoke: model sometimes calls manage_list,
         # sometimes format_paragraph(style="ListBullet") + search_document.
         # Both produce a bulleted list. The outcome assertion is what
-        # matters; tool path is a model choice.
-        max_count: 8
+        # matters; tool path is a model choice. Observed runs have
+        # gone as high as 11 calls when the model retries per-paragraph.
+        max_count: 14
 
   - prompt: insert a page break at the end of the document
     expect:

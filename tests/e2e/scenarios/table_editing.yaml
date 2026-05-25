@@ -60,7 +60,7 @@ steps:
       assistant_contains:
         - apple
         - quantity
-        - 7
+        - "7"
       doc:
         exact_tables: 1
         # Same shape — only a cell value changed.

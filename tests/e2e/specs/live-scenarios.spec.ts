@@ -242,12 +242,13 @@ for (const sc of SCENARIO_FILES) {
 
         if (exp.assistant_contains) {
           const lc = assistantText.toLowerCase();
-          const matched = exp.assistant_contains.some((n) =>
-            lc.includes(n.toLowerCase()),
-          );
+          // Coerce to string — YAML scalars like `- 7` parse as
+          // numbers, which would crash on .toLowerCase().
+          const needles = exp.assistant_contains.map((n) => String(n));
+          const matched = needles.some((n) => lc.includes(n.toLowerCase()));
           if (!matched) {
             note(
-              `${prefix} assistant reply matched none of [${exp.assistant_contains.join(', ')}]. Got: ${assistantText.slice(0, 240)}`,
+              `${prefix} assistant reply matched none of [${needles.join(', ')}]. Got: ${assistantText.slice(0, 240)}`,
             );
           }
         }
