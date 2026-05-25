@@ -99,9 +99,18 @@ export class MockEngine {
     });
   }
 
-  /** Tear down the server. Safe to call multiple times. */
+  /** Tear down the server. Safe to call multiple times.
+   *
+   * ``server.close()`` alone waits for in-flight SSE long-polls — if
+   * a chat stream is mid-iteration when the test ends, the connection
+   * keeps the server alive past Playwright's 30s teardown timeout,
+   * marking the test failed on macOS Chromium (Investigation #39).
+   * ``closeAllConnections()`` forcibly closes every open socket
+   * first so ``close()`` returns immediately.
+   */
   async stop(): Promise<void> {
     if (!this.server) return;
+    this.server.closeAllConnections();
     await new Promise<void>((resolve) => this.server!.close(() => resolve()));
     this.server = null;
   }

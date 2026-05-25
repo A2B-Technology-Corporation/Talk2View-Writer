@@ -1294,3 +1294,38 @@ even when the test passes.
 3. If anchor-specific: precondition the input — call ``get_document``
    inside ``add_comment`` to verify the anchor resolves to a body
    paragraph before attempting the UNO call.
+
+## #39 — macOS Chromium Playwright `mockEngine` teardown timeout (2026-05-25)
+
+**What:** ``Playwright E2E (macos-14)`` job has 1 failed + 2 flaky
+tests with identical error: ``Tearing down "mockEngine" exceeded the
+test timeout of 30000ms``. Triggered tests: ``smoke.spec.ts``,
+``streaming-chat.spec.ts``, ``bridge-log-flush.spec.ts``. The
+teardown hang is intermittent on macOS Chromium specifically; Linux
++ Windows runners don't reproduce.
+
+**Where:** ``tests/e2e/fixtures/mock-engine.ts:stop()`` previously
+called only ``server.close()``. The Node ``http.Server.close()``
+contract is "stop accepting new connections, then wait for all
+existing ones to finish". If a test ends mid-SSE-stream (chromium's
+in-flight chat completion long-poll), the connection holds the
+server alive past Playwright's 30s fixture-teardown limit and the
+test fails with a teardown timeout.
+
+**Why it matters:** Spurious red on macOS masks real failures. Same
+class of bug as the WebKit SSE teardown hang fixed earlier this
+sprint for a different fixture.
+
+**Mitigation (this commit):** ``mock-engine.ts::stop`` now calls
+``this.server.closeAllConnections()`` before ``close()`` to force-
+drain hanging sockets immediately. Node 18.2+ supports this — CI
+runs Node 20+ so no version gate needed.
+
+**Remaining next steps (root cause):**
+1. Inspect WHY chromium occasionally leaves an SSE connection
+   open through the test body — Playwright's network teardown
+   should close everything. Could be a bundle leak (an open
+   ``EventSource``) not closed on unmount.
+2. If so, fix in ``src/web/src/`` to close the EventSource on
+   ``useEffect`` cleanup; the force-drain becomes a belt-and-
+   braces safety net rather than the primary fix.
