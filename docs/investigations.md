@@ -1418,3 +1418,99 @@ because its prompts are short single-step plans; the bug only surfaces
 on multi-step plans that hit the slow LLM path. Plain unit + synthetic
 tests still pass (no test path exercised proxy_fetch with a real engine
 slowdown).
+
+## #42 — Bundle's bridge routed `/resume` through non-streaming `proxy_fetch` (FIXED 2026-05-26)
+
+**What:** Investigation #41 noted the `/resume` POST timed out at 30 s.
+Bumping the Python-side `proxy_fetch` read timeout to 300 s "fixed" it,
+but a deeper look at `Talk2View-Platform/packages/server/src/t2v/api/sessions.py:181`
+shows `/resume` returns a `StreamingResponse(media_type="text/event-stream")`
+— it's an SSE endpoint same shape as `/messages`. The bundle's bridge
+regex (`bridge.ts:429`) only routed `/messages` through `proxy_stream_open`;
+`/resume` fell through to `proxy_fetch`, which buffers the whole body.
+For a fast `/resume` that ships its SSE in <30 s (single-step plan)
+this happened to work; for a slow one (multi-step plan, gpt-5.5
+thinking) it surfaced as `httpx.ReadTimeout` mid-conversation.
+
+**Fix (this commit):** Broaden the streaming-endpoint regex to
+match `messages|resume`. The Writer bundle now opens the resume
+SSE through `proxy_stream_open` just like `/messages`, so streamed
+chunks reach the UI as the engine emits them — and there's no
+buffered read to time out.
+
+**Why the v1 timeout-bump fix in #41 is still valuable:** Other
+fetch paths (`/v1/config`, `/v1/auth/refresh`, `/v1/tools/register`,
+`/v1/sessions`) still go through `proxy_fetch`. A long network blip
+would have still surfaced as a 30 s timeout. The longer read timeout
+is the belt; the streaming-path fix is the braces.
+
+## #43 — Platform engine: `default_temperature = 1.0` for tool-calling agent (NEW 2026-05-26)
+
+**What:** `Talk2View-Platform/packages/server/src/t2v/config.py:21`
+sets `default_temperature: float = 1.0`. The agent in `agent.py:218`
+binds this directly to `ChatOpenAI(temperature=settings.default_temperature)`.
+A temperature of 1.0 on a tool-calling agent guarantees the model
+emits different tool-call shapes across runs of the same prompt.
+
+**Where:** Talk2View-Platform (not Writer). Symptoms observed in
+Writer's Live E2E:
+- Investigation #40: `set_page_setup` called twice with identical
+  args on the same step (engine "decides" to retry without a tool
+  error to motivate it — high-temp variance is the simplest
+  explanation).
+- `lists_and_breaks` step 02 sometimes uses `manage_list`,
+  sometimes falls back to `search_document` with a bullet glyph
+  prefix — different prompts, same model, same tool surface.
+- `page_setup` step 02 sometimes returns no tool call + empty
+  assistant text (model went off-distribution).
+
+**Why it matters:** Every "engine non-determinism" we've tagged
+against page_setup, lists_and_breaks, and find_replace_insert
+traces back to this single config value. Tool-calling agents want
+0.0–0.3 max.
+
+**Next step (Platform):**
+1. Drop the default to 0.2 (still gives the LLM enough latitude
+   for natural-language phrasing while keeping the tool-call path
+   deterministic).
+2. Optionally accept a `temperature` query/body param on
+   `/v1/sessions/{id}/messages` so chatty product use cases can
+   raise it on demand.
+
+## #44 — Platform `/resume` ignores `tool_call_id` (NEW 2026-05-26)
+
+**What:** `Talk2View-Platform/packages/server/src/t2v/api/sessions.py:213`
+constructs `resume_value = {"result": body.result, "is_error": body.is_error}`
+— it drops `body.tool_call_id`. The schema (`schemas/tools.py:97`)
+declares `tool_call_id` as required and the SDK
+(`packages/sdk/src/sessions.ts:67`) sends it, but the server doesn't
+validate that the id matches the pending tool call the LangGraph
+state is waiting on.
+
+**Why it matters:** A retried `/resume` from a network blip (e.g.
+Investigation #41 timeout + client retry) hits the server with a
+stale tool_call_id — and is applied verbatim. Same shape for a
+double-fire from any client. Latent silent-corruption class.
+
+**Next step (Platform):**
+1. Look up the pending interrupt for the thread.
+2. Reject the resume with 409 Conflict if `body.tool_call_id`
+   doesn't match the pending tool_call.
+3. The SDK already passes the id, no client work required.
+
+## #45 — Platform engine uses in-memory checkpointer (NEW 2026-05-26)
+
+**What:** `Talk2View-Platform/packages/server/src/t2v/core/agent.py:226`
+uses `self.checkpointer = MemorySaver()`. Session/thread state
+lives only in the engine process's RAM.
+
+**Why it matters:** Any engine restart (deploy, OOM kill, autoscaling
+event, k8s rolling update) drops every in-flight session. Users
+mid-conversation see their chat history evaporate. Not a bug in
+the engineering sense — explicit choice — but a production-readiness
+gap.
+
+**Next step (Platform):** Swap to a persistent checkpointer
+(`SqliteSaver`, `PostgresSaver`, or one of LangGraph's
+serverless-friendly options). Trade-off: persistent checkpointers
+add per-step latency. Worth profiling.

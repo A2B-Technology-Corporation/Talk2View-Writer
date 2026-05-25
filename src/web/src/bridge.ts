@@ -419,14 +419,20 @@ export function installHostLogging(): void {
       // Routes that stream (chat completion is SSE) need chunk-by-chunk
       // delivery so the UI sees text as the model emits it. We pick
       // the streaming path when the caller declared
-      // ``Accept: text/event-stream`` OR when the URL is the chat
-      // messages endpoint (which is SSE even without an explicit
-      // Accept). Everything else uses the non-streaming proxy_fetch.
+      // ``Accept: text/event-stream`` OR when the URL is one of the
+      // SDK's known streaming endpoints. The platform streams both
+      // ``/v1/sessions/{id}/messages`` AND ``/v1/sessions/{id}/resume``
+      // — both return a long-lived SSE response. Routing /resume
+      // through proxy_fetch made the LLM-thinking pause on a
+      // multi-step plan look like an httpx.ReadTimeout (Investigation
+      // #41). Everything else uses the non-streaming proxy_fetch.
       const hdrs = await _headersToObj(init);
       const accept = (hdrs.Accept || hdrs.accept || '').toLowerCase();
+      const sessionStreamPath =
+        /\/v1\/sessions\/[^/]+\/(messages|resume)$/;
       const isStreaming =
         accept.includes('text/event-stream') ||
-        /\/v1\/sessions\/[^/]+\/messages$/.test(new URL(url).pathname);
+        sessionStreamPath.test(new URL(url).pathname);
       try {
         const api = await whenBridgeReady();
         const bodyStr = await _bodyToString(init);
