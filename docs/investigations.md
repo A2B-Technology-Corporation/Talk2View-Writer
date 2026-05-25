@@ -1219,11 +1219,19 @@ runners do not reproduce, even with the same test set.
 real Windows regressions because "red on Windows" becomes noise.
 Five-minute cliff also balloons CI wall-clock.
 
-**Mitigation (CI 26387198xxx onwards):** Force ``--workers=1`` on
-the Windows runner only — eliminates worker-2 since there is no
-worker-2. Linux + macOS keep parallel workers for speed. The fix
-lands in ``.github/workflows/ci.yml`` next to the "Run Playwright
-specs" step.
+**Mitigation v1 (CI 26387198xxx):** Force ``--workers=1`` on
+Windows only — eliminates worker-2. Worked for one run, then
+CI 26390977263 showed ``worker-1 process did not exit`` (the lone
+worker hung). So the worker count isn't the trigger — Windows just
+fails to exit a Playwright worker regardless of count.
+
+**Mitigation v2 (CI 26391xxx onwards):** Playwright ``globalTeardown``
+in ``tests/e2e/fixtures/global-teardown.ts`` schedules
+``process.exit(process.exitCode ?? 0)`` 5 s after globalTeardown
+runs, **only on Windows**. The exit code is whatever Playwright
+already set from test outcomes — so a real test failure still
+exits non-zero (NEVER masking real failures). Linux + macOS path
+unchanged, so any new lingering-handle bug there surfaces loudly.
 
 **Remaining next steps (root cause):**
 1. Confirm with Playwright maintainers whether multi-worker teardown

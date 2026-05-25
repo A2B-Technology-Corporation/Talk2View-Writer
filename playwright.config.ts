@@ -12,6 +12,9 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/e2e/specs',
+  // Windows-only forced-exit safety net for the worker-hang
+  // observed in Investigation #36. No-op on Linux + macOS.
+  globalTeardown: require.resolve('./tests/e2e/fixtures/global-teardown.ts'),
   // 30s default; SSE streams shouldn't take longer than that in tests
   // (the mock engine emits final chunks within 100 ms).
   timeout: 30_000,
