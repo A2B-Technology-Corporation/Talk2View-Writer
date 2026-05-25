@@ -105,7 +105,16 @@ def _dispatch_show_panel(ctx) -> None:  # type: ignore[no-untyped-def]
 
 
 _SOCKET_LINE_RE = re.compile(
-    r"BridgeServer\.start: listening on (?P<path>\S+)"
+    # Matches any of the three log lines that mention the bridge
+    # socket path:
+    #   - "BridgeServer.start: listening on <path>"  (bridge_server.py, first start)
+    #   - "WebWindow: bridge listening on <path>"    (web_window.py, _ensure_bridge)
+    #   - "bridge ready at <path>,"                  (web_window.py, headless-mode return)
+    # The third is the only one that survives subsequent dispatches
+    # in headless mode, so we accept all three. Captures the /tmp/...
+    # socket path generically.
+    r"(?:BridgeServer\.start: listening on|bridge listening on|bridge ready at) "
+    r"(?P<path>/[^\s,]+)"
 )
 
 

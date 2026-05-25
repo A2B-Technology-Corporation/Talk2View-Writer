@@ -1,0 +1,38 @@
+name: search-replace
+description: >
+  Exercises search_document end-to-end: insert seed content, search
+  for a word, replace all instances. Assertions verify count of
+  replacements via doc state.
+
+steps:
+  - prompt: >
+      Insert a paragraph that says exactly: "The cat sat on the mat.
+      The cat watched the bird. A cat is a small animal."
+    expect:
+      assistant_contains:
+        - cat
+        - inserted
+      doc:
+        # Could be 1 paragraph (long string) or split — model varies.
+        min_paragraphs: 1
+        any_text_contains:
+          - cat
+      tool_calls:
+        must_invoke:
+          - insert_content
+        max_count: 3
+        no_duplicate_with: insert_content
+
+  - prompt: replace every occurrence of "cat" with "dog"
+    expect:
+      assistant_contains:
+        - replac
+        - dog
+      doc:
+        any_text_contains:
+          - dog
+      tool_calls:
+        must_invoke:
+          - search_document
+        max_count: 3
+        no_duplicate_with: search_document

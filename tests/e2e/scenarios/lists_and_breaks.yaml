@@ -1,0 +1,61 @@
+name: lists-and-breaks
+description: >
+  Exercises manage_list (bulleted lists) + insert_break (page break).
+  Three steps: insert 3 items, convert to bullets, insert page break.
+
+steps:
+  - prompt: >
+      Insert three short paragraphs: "Apples", "Bananas", "Cherries".
+    expect:
+      assistant_contains:
+        - apple
+        - banan
+        - cherr
+      doc:
+        # Three new paragraphs at minimum.
+        min_paragraphs: 3
+        any_text_contains:
+          - apples
+          - bananas
+          - cherries
+        paragraph_text_contains_at:
+          # Exact ordering not guaranteed across paragraphs, but
+          # the doc must contain all three terms (covered by
+          # any_text_contains above).
+          []
+      tool_calls:
+        must_invoke:
+          - insert_content
+        max_count: 4
+        no_duplicate_with: insert_content
+
+  - prompt: >
+      Convert those three fruit paragraphs into a bulleted list.
+    expect:
+      assistant_contains:
+        - bullet
+        - list
+      doc:
+        # Same paragraph count — manage_list changes paragraph
+        # style to "List Bullet", doesn't add/remove paragraphs.
+        min_paragraphs: 3
+      tool_calls:
+        must_invoke:
+          - manage_list
+        max_count: 4
+        no_duplicate_with: manage_list
+
+  - prompt: insert a page break at the end of the document
+    expect:
+      assistant_contains:
+        - page break
+        - inserted
+      doc:
+        # Page break adds either a paragraph or a paragraph-level
+        # break property; either way total_paragraphs may bump by 1.
+        min_paragraphs: 3
+      tool_calls:
+        must_invoke:
+          - insert_break
+        max_count: 4
+        no_duplicate_with: insert_break
