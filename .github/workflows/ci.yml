@@ -916,7 +916,14 @@ jobs:
         # Restrict to the live-* specs. The mock-engine specs are
         # already covered in the e2e job; running them again here
         # would just duplicate work.
-        run: npx playwright test tests/e2e/specs/live-
+        #
+        # --workers=1: the Python BridgeServer accepts a single
+        # connection at a time (bridge_server.py line ~105:
+        # self._sock.listen(1)). Two parallel tests fight over the
+        # socket and one of them hangs. Serial execution makes the
+        # whole suite ~3-4 minutes instead of ~2 but eliminates the
+        # bridge-contention class of flake entirely.
+        run: npx playwright test tests/e2e/specs/live- --workers=1
 
       # Always grab diagnostic logs so a CI failure has the soffice
       # state, the bridge log, and the per-step Xvfb screenshots
