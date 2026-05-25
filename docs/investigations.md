@@ -1190,3 +1190,38 @@ between them is invisible until the engine actually drives them.
 Add a contract test on Day 1 of any new tool ("the schema's
 properties are a subset of the Python signature's kwargs"), don't
 wait for an engine bug to mask the missing test.
+
+## #36 — Windows Playwright `worker-2 process did not exit` after flaky retry (2026-05-25)
+
+**What:** Windows-only Playwright job (`Playwright E2E (windows-latest)`)
+intermittently exits with code 1 even when every test ultimately
+passes. The trailing line is
+``Error: worker-2 process did not exit within 300000ms after stop,
+force-killed it``. Reliably triggered when `bridge-log-flush.spec.ts`
+is marked "flaky" — i.e. it fails on the first attempt and passes
+on retry. The retry leaves a worker process in a state where
+`worker.stop()` never returns; Playwright force-kills after 5
+minutes and reports the kill as a test-run-level error.
+
+**Where:** `tests/e2e/specs/bridge-log-flush.spec.ts:19` reliably
+triggers it on Windows runners; observed in CI run 26384308737
+(2026-05-25) and likely earlier. Linux + macOS runners do not
+reproduce.
+
+**Why it matters:** Job goes red even though no test failed.
+Masks real Windows regressions because "red on Windows" becomes
+noise. Five-minute cliff also balloons CI wall-clock.
+
+**Next step:**
+1. Reproduce locally on Windows or in a Windows GitHub Actions
+   `act-like` runner to confirm it's specifically the
+   `bridge-log-flush` retry that orphans the chromium worker
+   (the retry runs in worker-2 the second time, hence the name).
+2. Try adding `test.afterEach` cleanup that explicitly closes
+   any lingering bridge mock connections to see if a dangling
+   socket is what's keeping the worker thread alive on Windows.
+3. If the orphan is intrinsic to Playwright + Windows worker
+   teardown, mark this spec `test.fixme` on `process.platform ===
+   'win32'` and file an upstream Playwright issue — the test
+   itself isn't Windows-specific (it tests bridge log behaviour
+   not OS behaviour) so skipping on Windows is acceptable.
