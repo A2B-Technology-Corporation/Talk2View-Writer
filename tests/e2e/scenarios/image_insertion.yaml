@@ -1,0 +1,31 @@
+name: image-insertion
+description: >
+  Exercises insert_image. The model can't synthesise PNG bytes, so the
+  prompt supplies a fixed 1x1 PNG in raw base64 (no data: prefix) and
+  asks the model to dispatch insert_image with it. Production users
+  attach images via a UI affordance; this test verifies the tool path
+  end-to-end with a known-good payload.
+
+  The PNG is a 1x1 fully-transparent pixel — smallest valid PNG bytes:
+    iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=
+
+steps:
+  - prompt: >
+      Insert this image into the document using the insert_image tool.
+      The base64 PNG data is exactly:
+      iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=
+      Use location "end" and dimensions width=72, height=72 (one inch
+      each). Do NOT modify or re-encode the base64 string — pass it
+      through verbatim to insert_image.
+    expect:
+      assistant_contains:
+        - image
+      tool_calls:
+        must_invoke:
+          - insert_image
+        # Loose: model occasionally calls get_document first before
+        # insert_image, or calls insert_image then format_paragraph
+        # for positioning. Both produce the image; we just guard
+        # against runaway loops.
+        max_count: 4
+        no_duplicate_with: insert_image
