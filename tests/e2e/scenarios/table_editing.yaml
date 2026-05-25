@@ -1,0 +1,74 @@
+name: table-editing
+description: >
+  Exercises insert_table + edit_table end-to-end. Three steps: create
+  a small table with headers + data, add a row, change a cell value.
+  Assertions verify table shape (rows, cols, first-row headers) and
+  total table count.
+
+steps:
+  - prompt: >
+      Insert a 2x3 table with column headers "Item", "Quantity",
+      "Price" in the first row, and one data row with "Apple", "5",
+      "1.00".
+    expect:
+      assistant_contains:
+        - table
+        - item
+        - quantity
+        - price
+        - apple
+      doc:
+        exact_tables: 1
+        tables_must_contain:
+          - index: 0
+            cols: 3
+            rows_min: 2
+            rows_max: 3
+            first_row_contains:
+              - Item
+              - Quantity
+              - Price
+      tool_calls:
+        must_invoke:
+          - insert_table
+        max_count: 4
+        no_duplicate_with: insert_table
+
+  - prompt: add a row to the table with values Banana, 12, 0.50
+    expect:
+      assistant_contains:
+        - row
+        - banana
+        - added
+      doc:
+        exact_tables: 1
+        tables_must_contain:
+          - index: 0
+            cols: 3
+            rows_min: 3
+            rows_max: 4
+      tool_calls:
+        must_invoke:
+          - edit_table
+        max_count: 4
+        no_duplicate_with: edit_table
+
+  - prompt: >
+      change the Apple quantity to 7 (it's in the row immediately
+      after the header)
+    expect:
+      assistant_contains:
+        - apple
+        - quantity
+        - 7
+      doc:
+        exact_tables: 1
+        # Same shape — only a cell value changed.
+        tables_must_contain:
+          - index: 0
+            cols: 3
+      tool_calls:
+        must_invoke:
+          - edit_table
+        max_count: 4
+        no_duplicate_with: edit_table
