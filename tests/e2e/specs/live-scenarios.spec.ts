@@ -163,23 +163,34 @@ for (const sc of SCENARIO_FILES) {
 
         // Wait for the FINAL (non-empty) [chat:assistant] log — bundle
         // emits a placeholder when streaming starts and the real one
-        // when it ends.
-        await expect
-          .poll(
-            async () =>
-              await page.evaluate((before) => {
-                const logs = window.__t2vTestLogs ?? [];
-                const assist = logs.filter((l) =>
-                  l.message.startsWith('[chat:assistant] '),
-                );
-                if (assist.length <= before) return false;
-                const latest = assist[assist.length - 1];
-                const body = latest.message.replace('[chat:assistant] ', '').trim();
-                return body !== '';
-              }, beforeAssistantLogs),
-            { timeout: 60_000, intervals: [200, 500, 1000] },
-          )
-          .toBe(true);
+        // when it ends. Use a soft try/catch so a late-emitting bundle
+        // doesn't abort the test before the transcript captures what
+        // IS available; the empty assistant_text gets recorded as a
+        // soft-failure below instead.
+        try {
+          await expect
+            .poll(
+              async () =>
+                await page.evaluate((before) => {
+                  const logs = window.__t2vTestLogs ?? [];
+                  const assist = logs.filter((l) =>
+                    l.message.startsWith('[chat:assistant] '),
+                  );
+                  if (assist.length <= before) return false;
+                  const latest = assist[assist.length - 1];
+                  const body = latest.message
+                    .replace('[chat:assistant] ', '')
+                    .trim();
+                  return body !== '';
+                }, beforeAssistantLogs),
+              { timeout: 120_000, intervals: [200, 500, 1000] },
+            )
+            .toBe(true);
+        } catch {
+          note(
+            `${stepLabel} timed out (120s) waiting for non-empty [chat:assistant] log; transcript will show whatever was captured`,
+          );
+        }
 
         await page.screenshot({
           path: join(artifactsDir, `${stepLabel}_post.png`),

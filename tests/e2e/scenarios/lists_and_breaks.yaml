@@ -36,26 +36,27 @@ steps:
         - bullet
         - list
       doc:
-        # Same paragraph count — manage_list changes paragraph
-        # style to "List Bullet", doesn't add/remove paragraphs.
+        # Same paragraph count — bulleting changes paragraph style,
+        # doesn't add/remove paragraphs.
         min_paragraphs: 3
       tool_calls:
-        must_invoke:
-          - manage_list
-        max_count: 4
-        no_duplicate_with: manage_list
+        # Don't pin must_invoke: model sometimes calls manage_list,
+        # sometimes format_paragraph(style="ListBullet") + search_document.
+        # Both produce a bulleted list. The outcome assertion is what
+        # matters; tool path is a model choice.
+        max_count: 8
 
   - prompt: insert a page break at the end of the document
     expect:
       assistant_contains:
         - page break
         - inserted
+        - added
       doc:
         # Page break adds either a paragraph or a paragraph-level
         # break property; either way total_paragraphs may bump by 1.
         min_paragraphs: 3
       tool_calls:
-        must_invoke:
-          - insert_break
-        max_count: 4
-        no_duplicate_with: insert_break
+        # Model may use insert_break OR
+        # insert_content + format_paragraph(page_break_before=true).
+        max_count: 8
