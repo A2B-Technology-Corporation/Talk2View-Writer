@@ -148,22 +148,30 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
       await expect(composer).toBeDisabled({ timeout: 10_000 });
       await expect(composer).toBeEnabled({ timeout: 120_000 });
 
-      // The bundle emits [chat:assistant] in a separate useEffect
-      // that fires AFTER composer re-enable — without this wait the
-      // transcript captures the PREVIOUS step's reply. Observed in
-      // run 26364542144 (commit 08a66c5) before this fix.
+      // The bundle emits [chat:assistant] TWICE per response: an
+      // empty placeholder when streaming starts (isStreaming=true,
+      // content_length=0), and the final filled-in version when the
+      // stream completes. Wait until we see a NEW non-empty one
+      // (count > before AND latest message body is non-empty)
+      // before capturing the transcript. Observed in artifact run
+      // 26377562042 — without the non-empty check we'd capture the
+      // placeholder and the transcript would show assistant_text="".
       await expect
         .poll(
           async () =>
-            await page.evaluate(
-              () =>
-                (window.__t2vTestLogs ?? []).filter((l) =>
-                  l.message.startsWith('[chat:assistant] '),
-                ).length,
-            ),
-          { timeout: 30_000, intervals: [200, 500, 1000] },
+            await page.evaluate((before) => {
+              const logs = window.__t2vTestLogs ?? [];
+              const assist = logs.filter((l) =>
+                l.message.startsWith('[chat:assistant] '),
+              );
+              if (assist.length <= before) return false;
+              const latest = assist[assist.length - 1];
+              const body = latest.message.replace('[chat:assistant] ', '').trim();
+              return body !== '';
+            }, beforeAssistantLogs),
+          { timeout: 60_000, intervals: [200, 500, 1000] },
         )
-        .toBeGreaterThan(beforeAssistantLogs);
+        .toBe(true);
 
       await page.screenshot({
         path: join(ARTIFACTS_DIR, `${stepLabel}_post.png`),

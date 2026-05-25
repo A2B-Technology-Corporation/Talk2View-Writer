@@ -48,27 +48,33 @@ steps:
     expect:
       assistant_contains:
         - penguin
+        - story
+        - antarctica
+        - frosty
+        - title
       doc:
         exact_paragraphs: 4
         any_text_contains:
           - penguin
         paragraph_style_at:
           # Title style on paragraph 0 (model may emit Title or
-          # Heading1 — both render as a title). Body uses Standard
-          # (LO's name for Word's Normal).
+          # Heading1 — both render as a title). Body paragraphs:
+          # "Standard" when model uses explicit style="Normal" or
+          # "Default Paragraph Style"; "Text body" when model inserts
+          # plain strings and LO applies the Title's next-style
+          # cascade. Both are valid body styles in LO.
           - { index: 0, style_in: ["Title", "Heading1"] }
-          - { index: 1, style_in: ["Standard"] }
-          - { index: 2, style_in: ["Standard"] }
-          - { index: 3, style_in: ["Standard"] }
+          - { index: 1, style_in: ["Standard", "Text body"] }
+          - { index: 2, style_in: ["Standard", "Text body"] }
+          - { index: 3, style_in: ["Standard", "Text body"] }
         paragraph_text_contains_at:
           - { index: 0, contains: "frosty march" }
       tool_calls:
         # gemini-3.1-pro sometimes inserts plain-string blocks then
-        # back-fills styles with format_paragraph — observed 5 calls
-        # (get_document + insert_content + get_document +
-        # format_paragraph×2). Other runs do it optimally in 2 calls.
-        # Cap at 6 to accept variance; no_duplicate_with guards still
-        # catch the actual Platform #62 symptom.
+        # back-fills styles with format_paragraph — observed up to 5
+        # calls. Other runs do it optimally in 2 calls. Cap at 6 to
+        # accept variance; no_duplicate_with still catches the actual
+        # Platform #62 symptom (identical args repeated).
         must_invoke:
           - insert_content
         max_count: 6
@@ -78,6 +84,9 @@ steps:
     expect:
       assistant_contains:
         - heading
+        - title
+        - format
+        - center
       doc:
         exact_paragraphs: 4
         paragraph_style_at:
@@ -93,10 +102,13 @@ steps:
     expect:
       assistant_contains:
         - add
+        - conclusion
+        - paragraph
+        - end
       doc:
         exact_paragraphs: 5
         paragraph_style_at:
-          - { index: 4, style_in: ["Standard"] }
+          - { index: 4, style_in: ["Standard", "Text body"] }
       tool_calls:
         must_invoke:
           - insert_content
