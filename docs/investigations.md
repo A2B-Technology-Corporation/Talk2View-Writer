@@ -1389,3 +1389,32 @@ non-determinism in a deterministic-test framework.
    with the Platform team to add observability.
 3. If the issue is the specific prompt shape, rewrite the scenario
    prompts to be more deterministic (more explicit tool guidance).
+
+## #41 — `/resume` engine call timed out at 30 s in local smoke test (FIXED 2026-05-25)
+
+**What:** Manual smoke test (`make install-oxt && soffice --writer`) sent the
+prompt "write me a scope of work for a 3d slicer custom app for medlytic
+that takes stl file, creates centerlines with vmtk, computes ffr with
+medlytic's custom ffr solver and displays the results." After the engine's
+first ``get_document`` tool call returned its result, the follow-up
+``POST /v1/sessions/.../resume`` to feed the result back to the LLM hung
+exactly 30 s, then ``httpx.ReadTimeout`` raised and the bundle showed
+``[chat:error] Request failed``. The next user message ("hello?") recovered
+because the engine's session state had moved on without the tool result.
+
+**Where:** ``src/talk2view_writer/bridge_server.py:354`` was hardcoded
+``httpx.Client(timeout=30.0, …)``. Real ``/resume`` latency on a complex
+multi-tool plan is 60–120 s while the LLM thinks; 30 s is far too tight.
+
+**Why it matters:** Production users would see every complex chat fail
+mid-plan with no recovery path. The fix is mandatory before the next
+demo / release.
+
+**Fix (this commit):** Use ``httpx.Timeout(connect=10.0, read=300.0,
+write=10.0, pool=10.0)`` — keep connect/write tight so a dead engine
+fails fast, but allow long reads for the engine-thinking endpoints
+(``/resume``, ``/messages``). Linux-only live-E2E doesn't trigger this
+because its prompts are short single-step plans; the bug only surfaces
+on multi-step plans that hit the slow LLM path. Plain unit + synthetic
+tests still pass (no test path exercised proxy_fetch with a real engine
+slowdown).

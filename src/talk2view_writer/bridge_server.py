@@ -350,8 +350,15 @@ class BridgeServer:
             len(clean_headers),
             len(content) if content is not None else None,
         )
+        # /resume can take 60-120 s when the engine runs the next LLM
+        # turn on a tool result (multi-step plans + slow models). Pre-2026-05-25
+        # this was 30 s which surfaced as ``httpx.ReadTimeout`` mid-conversation
+        # — the local "scope of work" smoke test caught it. Use httpx.Timeout
+        # to keep connect+write tight (10 s — network-level should fail fast)
+        # but allow long reads (300 s) for the SSE / engine-thinking endpoints.
+        timeout = httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0)
         try:
-            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
                 resp = client.request(
                     method=method,
                     url=url,
