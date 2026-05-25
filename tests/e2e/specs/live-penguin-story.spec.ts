@@ -26,14 +26,20 @@ import { load as yamlLoad } from 'js-yaml';
 const SCENARIO_PATH = resolve(__dirname, '../scenarios/penguin_story.yaml');
 const ARTIFACTS_DIR = resolve(__dirname, '../test-results/live-penguin-story');
 
+type ParagraphStyleAt = { index: number; style_in: string[] };
+type ParagraphTextContainsAt = { index: number; contains: string };
+
 type ScenarioStep = {
   prompt: string;
   expect: {
     assistant_contains?: string[];
     doc?: {
+      exact_paragraphs?: number;
       min_paragraphs?: number;
       max_paragraphs?: number;
       any_text_contains?: string[];
+      paragraph_style_at?: ParagraphStyleAt[];
+      paragraph_text_contains_at?: ParagraphTextContainsAt[];
     };
     tool_calls?: {
       must_invoke?: string[];
@@ -122,6 +128,12 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
       const beforeToolCalls = await page.evaluate(
         () => window.__t2vToolCalls?.length ?? 0,
       );
+      const beforeAssistantLogs = await page.evaluate(
+        () =>
+          (window.__t2vTestLogs ?? []).filter((l) =>
+            l.message.startsWith('[chat:assistant] '),
+          ).length,
+      );
 
       // Composer is enabled here (previous step waited for re-enable
       // OR this is step 1 right after mount).
@@ -132,11 +144,26 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
       // Bundle disables the composer while the SDK is streaming a
       // response. Wait for that transition (proves the prompt was
       // accepted), then wait for the re-enable when streaming ends
-      // (proves the assistant reply finished). More direct than
-      // polling logs, and exactly the user-visible signal — the
-      // composer is unusable while a response is in flight.
+      // (proves the assistant reply finished).
       await expect(composer).toBeDisabled({ timeout: 10_000 });
       await expect(composer).toBeEnabled({ timeout: 120_000 });
+
+      // The bundle emits [chat:assistant] in a separate useEffect
+      // that fires AFTER composer re-enable — without this wait the
+      // transcript captures the PREVIOUS step's reply. Observed in
+      // run 26364542144 (commit 08a66c5) before this fix.
+      await expect
+        .poll(
+          async () =>
+            await page.evaluate(
+              () =>
+                (window.__t2vTestLogs ?? []).filter((l) =>
+                  l.message.startsWith('[chat:assistant] '),
+                ).length,
+            ),
+          { timeout: 30_000, intervals: [200, 500, 1000] },
+        )
+        .toBeGreaterThan(beforeAssistantLogs);
 
       await page.screenshot({
         path: join(ARTIFACTS_DIR, `${stepLabel}_post.png`),
@@ -195,12 +222,21 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
         softFailures.push(`[${stepLabel}] ${msg}`);
 
       if (exp.assistant_contains) {
-        for (const needle of exp.assistant_contains) {
-          if (!assistantText.toLowerCase().includes(needle.toLowerCase())) {
-            note(
-              `assistant reply did not contain '${needle}'. Got: ${assistantText.slice(0, 200)}`,
-            );
-          }
+        const lc = assistantText.toLowerCase();
+        const matched = exp.assistant_contains.some((n) =>
+          lc.includes(n.toLowerCase()),
+        );
+        if (!matched) {
+          note(
+            `assistant reply matched none of [${exp.assistant_contains.join(', ')}]. Got: ${assistantText.slice(0, 240)}`,
+          );
+        }
+      }
+      if (exp.doc?.exact_paragraphs !== undefined) {
+        if (docState.total_paragraphs !== exp.doc.exact_paragraphs) {
+          note(
+            `doc has ${docState.total_paragraphs} paragraphs, expected exactly ${exp.doc.exact_paragraphs}`,
+          );
         }
       }
       if (exp.doc?.min_paragraphs !== undefined) {
@@ -222,6 +258,38 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
         for (const needle of exp.doc.any_text_contains) {
           if (!flat.includes(needle.toLowerCase())) {
             note(`doc body did not contain '${needle}'`);
+          }
+        }
+      }
+      if (exp.doc?.paragraph_style_at) {
+        for (const styleCheck of exp.doc.paragraph_style_at) {
+          const para = docState.paragraphs[styleCheck.index];
+          if (!para) {
+            note(
+              `paragraph_style_at[${styleCheck.index}]: doc has only ${docState.paragraphs.length} paragraphs`,
+            );
+            continue;
+          }
+          if (!styleCheck.style_in.includes(para.style)) {
+            note(
+              `paragraph[${styleCheck.index}] style='${para.style}', expected one of [${styleCheck.style_in.join(', ')}]`,
+            );
+          }
+        }
+      }
+      if (exp.doc?.paragraph_text_contains_at) {
+        for (const textCheck of exp.doc.paragraph_text_contains_at) {
+          const para = docState.paragraphs[textCheck.index];
+          if (!para) {
+            note(
+              `paragraph_text_contains_at[${textCheck.index}]: doc has only ${docState.paragraphs.length} paragraphs`,
+            );
+            continue;
+          }
+          if (!para.text.toLowerCase().includes(textCheck.contains.toLowerCase())) {
+            note(
+              `paragraph[${textCheck.index}] did not contain '${textCheck.contains}'. Got: ${para.text.slice(0, 120)}`,
+            );
           }
         }
       }
@@ -272,21 +340,26 @@ test.describe('penguin story scenario (real engine + bundle + soffice)', () => {
       JSON.stringify(digest, null, 2),
     );
 
-    // 7. Final hard assertion BEFORE closing the context — at least
-    //    one tool was invoked (proves the bridge wired up). Soft
-    //    failures get attached as test annotations rather than
-    //    failing the test; the artifact dump is the load-bearing
-    //    output here.
+    // 7. Hard assertions BEFORE closing the context. "Soft" failures
+    //    are now hard: each scenario assertion was tightened to
+    //    reflect observed-perfect behaviour from artifact-reviewed
+    //    runs, so any drift is a real regression that should fail.
+    //    Loosen only with a documented reason in the YAML.
     const totalToolCalls = await page
       .evaluate(() => window.__t2vToolCalls?.length ?? 0)
       .catch(() => 0);
     for (const sf of softFailures) {
-      testInfo.annotations.push({ type: 'soft-failure', description: sf });
+      testInfo.annotations.push({ type: 'scenario-failure', description: sf });
     }
 
     await context.close();
 
     expect(scenario.steps.length).toBeGreaterThan(0);
     expect(totalToolCalls).toBeGreaterThanOrEqual(1);
+    expect(
+      softFailures,
+      `${softFailures.length} scenario-failures; see expected_vs_actual.json + ` +
+        `per-step transcripts + annotations for details:\n${softFailures.map((s) => '  - ' + s).join('\n')}`,
+    ).toEqual([]);
   });
 });

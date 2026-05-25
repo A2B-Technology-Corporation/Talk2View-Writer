@@ -1,73 +1,98 @@
 name: penguin-story
 description: >
   A scripted user session that exercises the chat-driven document
-  creation + formatting workflow. Each step lists the user prompt
-  and what we expect to see afterwards. Assertions are intentionally
-  loose because LLM output varies — we fail only on obvious model
-  misbehaviour (errors, infinite tool loops, completely-unchanged
-  doc when the prompt should have edited). Full transcript per step
-  is captured as an artifact so Claude / a reviewer can read what
-  actually happened and tighten the expectations as patterns emerge.
+  creation + formatting + extension workflow. Expectations are tight
+  — every assertion either reflects observed behaviour from green
+  runs or encodes an invariant we want to enforce (no tool-call
+  loops, correct heading style, etc.). Any soft-failure fails the
+  test so regressions surface immediately. Loosen only with a
+  documented reason.
 
 # Per-step shape:
 #
 #   prompt:                user text typed into the composer
 #   expect:
-#     assistant_contains:  list of substrings the assistant reply
-#                          must contain (case-insensitive); loose.
+#     assistant_contains:  substrings the assistant reply must
+#                          contain (case-insensitive). At least one
+#                          must match.
 #     doc:
-#       min_paragraphs:    minimum total paragraph count after the
-#                          step (loose — model may produce more or
-#                          fewer paragraphs).
-#       max_paragraphs:    maximum (optional — set when the prompt
-#                          should NOT keep growing the doc).
-#       any_text_contains: list of substrings that must appear
-#                          somewhere in the doc body (case-insens).
+#       exact_paragraphs:  exact total paragraph count after the
+#                          step. Use min/max_paragraphs only when
+#                          legitimate LLM variance applies.
+#       min_paragraphs:    inclusive lower bound (alt. to exact).
+#       max_paragraphs:    inclusive upper bound.
+#       any_text_contains: substrings that must appear somewhere
+#                          in the doc body (case-insensitive).
+#       paragraph_style_at:
+#         - {index: N, style_in: ["Heading1", "Title"]}
+#                          paragraph N's style must be in the list
+#                          (lets us tolerate Title vs Heading1).
+#       paragraph_text_contains_at:
+#         - {index: N, contains: "…"}
+#                          paragraph N's text must contain the
+#                          substring (case-insensitive).
 #     tool_calls:
-#       must_invoke:       list of tool names the engine should call
-#                          (any order). E.g. ["insert_content"].
-#       max_count:         total tool calls upper bound — catches
-#                          loops like Platform #62.
-#       no_duplicate_with: tool name that must not be repeated with
-#                          identical args (catches Platform #62
-#                          symptom directly).
+#       must_invoke:       list of tool names the engine must call
+#                          (any order, any count >= 1).
+#       max_count:         total tool-call upper bound per step.
+#                          Catches Platform #62 loops.
+#       no_duplicate_with: tool name that must not be called twice
+#                          with identical args. Catches the exact
+#                          symptom of Platform #62.
 
 steps:
-  - prompt: |
-      Write a short story about penguins in Antarctica. Title it
-      and split into paragraphs.
+  - prompt: >
+      Write a short story about penguins in Antarctica titled
+      "The Frosty March". Use a Title style for the title and
+      split the body into three Normal paragraphs.
     expect:
       assistant_contains:
         - penguin
       doc:
-        min_paragraphs: 3
+        exact_paragraphs: 4
         any_text_contains:
           - penguin
+        paragraph_style_at:
+          # Title style on paragraph 0 (model may emit Title or
+          # Heading1 — both render as a title). Body uses Standard
+          # (LO's name for Word's Normal).
+          - { index: 0, style_in: ["Title", "Heading1"] }
+          - { index: 1, style_in: ["Standard"] }
+          - { index: 2, style_in: ["Standard"] }
+          - { index: 3, style_in: ["Standard"] }
+        paragraph_text_contains_at:
+          - { index: 0, contains: "frosty march" }
       tool_calls:
         must_invoke:
           - insert_content
-        max_count: 5
+        max_count: 3
+        no_duplicate_with: insert_content
 
   - prompt: format the title as Heading 1 and centre it
     expect:
       assistant_contains:
-        - format
+        - heading
       doc:
-        # Same paragraph count — formatting doesn't add paragraphs.
-        min_paragraphs: 3
+        exact_paragraphs: 4
+        paragraph_style_at:
+          # Title is now Heading1 (the canonical LO style name).
+          - { index: 0, style_in: ["Heading1", "Heading 1"] }
       tool_calls:
         must_invoke:
           - format_paragraph
-        max_count: 4
+        max_count: 3
         no_duplicate_with: format_paragraph
 
   - prompt: add a one-paragraph conclusion at the end of the story
     expect:
       assistant_contains:
-        - conclusion
+        - add
       doc:
-        min_paragraphs: 4
+        exact_paragraphs: 5
+        paragraph_style_at:
+          - { index: 4, style_in: ["Standard"] }
       tool_calls:
         must_invoke:
           - insert_content
-        max_count: 4
+        max_count: 3
+        no_duplicate_with: insert_content
