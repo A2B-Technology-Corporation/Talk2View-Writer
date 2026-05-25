@@ -40,8 +40,10 @@ def stub_tool(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]
         return _stub
 
     fake_tools = [_make(n) for n in _MVP_TOOL_NAMES]
-    # Plus one non-MVP tool so we can test the allowlist gate.
-    extra = _make("undo_redo")
+    # Plus one synthetic non-MVP tool so we can test the allowlist gate.
+    # All 21 real Writer tools are now exposed, so this is a fake name
+    # purely for asserting the allowlist still blocks unknown tools.
+    extra = _make("hypothetical_future_tool")
     fake_tools.append(extra)
 
     def fake_all_tools() -> list[Any]:
@@ -103,13 +105,13 @@ class TestDispatchLine:
             {
                 "id": 2,
                 "method": "invoke_tool",
-                "params": {"name": "undo_redo", "args": {}},
+                "params": {"name": "hypothetical_future_tool", "args": {}},
             }
         )
         resp = json.loads(srv._dispatch_line(req))
         assert resp["id"] == 2
         assert "error" in resp
-        assert "undo_redo" in resp["error"]["message"]
+        assert "hypothetical_future_tool" in resp["error"]["message"]
         assert resp["error"]["type"] == "ValueError"
         # The tool was NOT invoked.
         assert stub_tool == []

@@ -58,12 +58,33 @@ logger = logging.getLogger(__name__)
 # src/web/src/tools.ts so the schema the engine sees and the function
 # the bridge dispatches to stay in lockstep (Investigation #35).
 _MVP_TOOL_NAMES: tuple[str, ...] = (
+    # Reading
     "get_document",
     "get_selection",
+    "select_text",
+    # Writing
     "insert_content",
+    "insert_table",
+    "edit_table",
+    "insert_image",
+    "undo_redo",
+    "delete_content",
+    # Formatting
     "format_text",
     "format_paragraph",
+    "manage_list",
+    # Search
     "search_document",
+    # Structure
+    "insert_break",
+    "set_header_footer",
+    "insert_page_numbers",
+    "set_page_setup",
+    # Commenting
+    "get_comments",
+    "add_comment",
+    "manage_comment",
+    # Preferences
     "manage_preferences",
 )
 

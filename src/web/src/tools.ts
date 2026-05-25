@@ -398,4 +398,498 @@ export const writerTools: ClientTool[] = [
       },
     },
   }),
+
+  // ---- Reading: select_text ----------------------------------------------
+  buildWriterTool({
+    name: 'select_text',
+    description:
+      'NICHE. Highlight a range visually for the user. For any actual ' +
+      'operation, direct-targeting tools are better (insert_content ' +
+      'target_query, format_text query/queries, search_document). Only ' +
+      'use when the user explicitly asks for a visible selection.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description:
+            'Text to find and select. Mutually exclusive with ' +
+            'paragraph_index.',
+        },
+        match_index: {
+          type: 'number',
+          description:
+            'When the query matches multiple places, pick the n-th ' +
+            '(0-based). Defaults to 0.',
+        },
+        paragraph_index: {
+          type: 'number',
+          description:
+            'Select the entire paragraph at this zero-based index. ' +
+            'Mutually exclusive with query.',
+        },
+      },
+    },
+  }),
+
+  // ---- Writing: insert_table --------------------------------------------
+  buildWriterTool({
+    name: 'insert_table',
+    description:
+      'Insert a new table at the start or end of the document. Pass ' +
+      "``data`` (2D string array, first row = header) in the same call so " +
+      'cells are populated up front. For modifying existing tables use ' +
+      'edit_table.',
+    parameters: {
+      type: 'object',
+      properties: {
+        rows: {
+          type: 'number',
+          description: 'Total number of rows including header. >= 1.',
+        },
+        columns: {
+          type: 'number',
+          description: 'Number of columns. >= 1.',
+        },
+        location: {
+          type: 'string',
+          enum: ['start', 'end'],
+          description:
+            "Where to insert. 'start' = before all content; 'end' = after.",
+        },
+        data: {
+          type: 'array',
+          description:
+            '2D string array of cell values. First inner array is the ' +
+            'header row. e.g. [["Item","Qty"],["Apple","5"]].',
+        },
+      },
+      required: ['rows', 'columns', 'location'],
+    },
+  }),
+
+  // ---- Writing: edit_table ----------------------------------------------
+  buildWriterTool({
+    name: 'edit_table',
+    description:
+      'Modify an existing table. Actions: edit_cell, add_rows, ' +
+      'delete_rows, add_columns, delete_columns. Call get_document first ' +
+      'to get table_index + current row/column counts.',
+    parameters: {
+      type: 'object',
+      properties: {
+        table_index: {
+          type: 'number',
+          description: 'Zero-based table index from get_document.',
+        },
+        action: {
+          type: 'string',
+          enum: [
+            'edit_cell',
+            'add_rows',
+            'delete_rows',
+            'add_columns',
+            'delete_columns',
+          ],
+          description: 'Operation to perform.',
+        },
+        row: {
+          type: 'number',
+          description:
+            'Zero-based row index. Required for edit_cell and delete_rows.',
+        },
+        column: {
+          type: 'number',
+          description:
+            'Zero-based column index. Required for edit_cell and delete_columns.',
+        },
+        value: {
+          type: 'string',
+          description: 'New cell text for edit_cell.',
+        },
+        count: {
+          type: 'number',
+          description: 'Number of rows/columns to add or delete. Default 1.',
+        },
+        insert_location: {
+          type: 'string',
+          enum: ['start', 'end'],
+          description: "Required for add_rows / add_columns. 'start' or 'end'.",
+        },
+      },
+      required: ['table_index', 'action'],
+    },
+  }),
+
+  // ---- Writing: insert_image --------------------------------------------
+  buildWriterTool({
+    name: 'insert_image',
+    description:
+      'Insert a base64-encoded image (PNG/JPEG/GIF). base64_data must be ' +
+      "raw — no 'data:image/...;base64,' prefix. Set both width and " +
+      'height (in points, 72pt = 1in) for size control, or omit both for ' +
+      'original dimensions.',
+    parameters: {
+      type: 'object',
+      properties: {
+        base64_data: {
+          type: 'string',
+          description: 'Raw base64-encoded image bytes (no data URI prefix).',
+        },
+        location: {
+          type: 'string',
+          enum: ['start', 'end', 'after_selection'],
+          description: 'Where to insert the image.',
+        },
+        width: {
+          type: 'number',
+          description: 'Width in points. > 0. Pair with height.',
+        },
+        height: {
+          type: 'number',
+          description: 'Height in points. > 0. Pair with width.',
+        },
+      },
+      required: ['base64_data', 'location'],
+    },
+  }),
+
+  // ---- Writing: undo_redo -----------------------------------------------
+  buildWriterTool({
+    name: 'undo_redo',
+    description:
+      'Undo or redo the last N document-level operations from the ' +
+      "document's undo stack. Use when the user asks to revert a recent " +
+      'change. NOT a substitute for delete_content — undo reverses the ' +
+      'last edit (yours or theirs); delete_content removes specific text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['undo', 'redo'],
+          description: "'undo' reverses the last edit; 'redo' replays it.",
+        },
+        count: {
+          type: 'number',
+          description: 'How many steps to undo/redo. Defaults to 1.',
+        },
+      },
+      required: ['action'],
+    },
+  }),
+
+  // ---- Writing: delete_content ------------------------------------------
+  buildWriterTool({
+    name: 'delete_content',
+    description:
+      'Delete WHOLE paragraphs by index, range, or text query. For ' +
+      'deleting inline text within paragraphs (keeping the paragraph), ' +
+      'prefer search_document(query, replace_with=""). For removing list ' +
+      "formatting without deleting text, use manage_list(action='remove').",
+    parameters: {
+      type: 'object',
+      properties: {
+        paragraph_index: {
+          type: 'number',
+          description: 'Zero-based index of a single paragraph to delete.',
+        },
+        start_index: {
+          type: 'number',
+          description:
+            'Inclusive start of paragraph range. Requires end_index.',
+        },
+        end_index: {
+          type: 'number',
+          description: 'Inclusive end of paragraph range. >= start_index.',
+        },
+        query: {
+          type: 'string',
+          description:
+            'Text to match and delete (preserving paragraph structure). ' +
+            'Kept for back-compat — prefer search_document(query, ' +
+            'replace_with="") for inline text.',
+        },
+        match_case: {
+          type: 'boolean',
+          description: 'Case-sensitive query. Defaults to false.',
+        },
+      },
+    },
+  }),
+
+  // ---- Formatting: manage_list ------------------------------------------
+  buildWriterTool({
+    name: 'manage_list',
+    description:
+      'Apply or remove bullet / numbered list formatting on paragraphs. ' +
+      "action='add' converts paragraphs to list items (style 'List Bullet' " +
+      "for bullet, 'List Number' for number). action='remove' reverts to " +
+      "'Default Paragraph Style'. Indent levels are supported via level.",
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['add', 'remove'],
+          description: "'add' to bullet/number paragraphs; 'remove' to revert.",
+        },
+        paragraph_indices: {
+          type: 'array',
+          description:
+            'Zero-based paragraph indices to apply the action to. Required.',
+        },
+        list_type: {
+          type: 'string',
+          enum: ['bullet', 'number'],
+          description: "Required for action='add'. 'bullet' or 'number'.",
+        },
+        level: {
+          type: 'number',
+          description: 'Indent level (0 = top-level). Default 0.',
+        },
+      },
+      required: ['action', 'paragraph_indices'],
+    },
+  }),
+
+  // ---- Structure: insert_break ------------------------------------------
+  buildWriterTool({
+    name: 'insert_break',
+    description:
+      'Insert a page break or section break. ' +
+      "type='page' = simple new-page break. " +
+      "type='section_next_page' = closest LO equivalent to a Word section " +
+      "break (forces next paragraph onto a new page-style boundary). " +
+      "type='section_continuous' degrades to a plain paragraph break in " +
+      "LibreOffice. location is 'start' or 'end' of the document.",
+    parameters: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['page', 'section_next_page', 'section_continuous'],
+          description: 'Break type.',
+        },
+        location: {
+          type: 'string',
+          enum: ['start', 'end'],
+          description: 'Where to insert.',
+        },
+      },
+      required: ['type', 'location'],
+    },
+  }),
+
+  // ---- Structure: set_header_footer -------------------------------------
+  buildWriterTool({
+    name: 'set_header_footer',
+    description:
+      'Set the content of a page header or footer. REPLACES existing ' +
+      'content. For page numbers prefer insert_page_numbers (it can ' +
+      'include surrounding text via prefix_text/suffix_text).',
+    parameters: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          enum: ['header', 'footer'],
+          description: "'header' (top of page) or 'footer' (bottom).",
+        },
+        text: {
+          type: 'string',
+          description:
+            "New content. Cannot be empty — pass ' ' to clear.",
+        },
+        section_index: {
+          type: 'number',
+          description:
+            'Single section (0-based). Defaults to 0. Mutually exclusive ' +
+            'with section_indices.',
+        },
+        section_indices: {
+          type: 'array',
+          description:
+            'Apply to multiple sections in one call. Mutually exclusive ' +
+            'with section_index.',
+        },
+        header_footer_type: {
+          type: 'string',
+          enum: ['primary', 'firstPage', 'evenPages'],
+          description:
+            "Defaults to 'primary'. firstPage/evenPages need LO to be " +
+            'configured for those variants.',
+        },
+      },
+      required: ['type', 'text'],
+    },
+  }),
+
+  // ---- Structure: insert_page_numbers -----------------------------------
+  buildWriterTool({
+    name: 'insert_page_numbers',
+    description:
+      'Insert automatic page-number fields into a header or footer. ' +
+      'Each call CLEARS the target h/f first. To combine page numbers ' +
+      'with brand text in the same h/f, use prefix_text / suffix_text ' +
+      'rather than chaining with set_header_footer.',
+    parameters: {
+      type: 'object',
+      properties: {
+        location: {
+          type: 'string',
+          enum: ['header', 'footer'],
+          description: "Defaults to 'footer'.",
+        },
+        alignment: {
+          type: 'string',
+          enum: ['left', 'center', 'right'],
+          description: "Defaults to 'center'.",
+        },
+        format: {
+          type: 'string',
+          description:
+            "Page-number template. One of: '{PAGE}', 'Page {PAGE}', " +
+            "'Page {PAGE} of {NUMPAGES}', '{PAGE} of {NUMPAGES}'.",
+        },
+        prefix_text: {
+          type: 'string',
+          description: 'Text inserted before the page-number field.',
+        },
+        suffix_text: {
+          type: 'string',
+          description: 'Text inserted after the page-number field.',
+        },
+        section_index: {
+          type: 'number',
+          description: 'Single section (0-based). Mutually exclusive with section_indices.',
+        },
+        section_indices: {
+          type: 'array',
+          description: 'Apply to multiple sections in one call.',
+        },
+      },
+    },
+  }),
+
+  // ---- Structure: set_page_setup ----------------------------------------
+  buildWriterTool({
+    name: 'set_page_setup',
+    description:
+      'Set page layout (orientation, margins, paper size) for a section. ' +
+      'Only included properties change. section_index = 0 (default) for ' +
+      'single-section documents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        section_index: {
+          type: 'number',
+          description: 'Zero-based section index. Defaults to 0.',
+        },
+        orientation: {
+          type: 'string',
+          enum: ['portrait', 'landscape'],
+          description: 'Page orientation.',
+        },
+        top_margin: {
+          type: 'number',
+          description: 'Top margin in points (72pt = 1 inch). >= 0.',
+        },
+        bottom_margin: {
+          type: 'number',
+          description: 'Bottom margin in points. >= 0.',
+        },
+        left_margin: {
+          type: 'number',
+          description: 'Left margin in points. >= 0.',
+        },
+        right_margin: {
+          type: 'number',
+          description: 'Right margin in points. >= 0.',
+        },
+        paper_size: {
+          type: 'string',
+          description:
+            'Named paper size, e.g. A4, Letter, Legal, A3, A5, Tabloid.',
+        },
+      },
+    },
+  }),
+
+  // ---- Commenting: get_comments -----------------------------------------
+  buildWriterTool({
+    name: 'get_comments',
+    description:
+      'List all comments / annotations in the document. Returns each ' +
+      'comment with its id, anchor text, author, date, content, resolved ' +
+      'state, and reply chain (if supported by the LO version). Use ' +
+      'before add_comment / manage_comment to find specific comments.',
+    parameters: {
+      type: 'object',
+      properties: {},
+    },
+  }),
+
+  // ---- Commenting: add_comment ------------------------------------------
+  buildWriterTool({
+    name: 'add_comment',
+    description:
+      'Anchor a new review comment to a text snippet. anchor is the ' +
+      'text to attach the comment to (exact match in the document body). ' +
+      'comment is the comment content. The comment appears in the ' +
+      "Comments sidebar — NOT inline in the document body.",
+    parameters: {
+      type: 'object',
+      properties: {
+        anchor: {
+          type: 'string',
+          description: 'The text in the document body to anchor the comment to.',
+        },
+        comment: {
+          type: 'string',
+          description: 'The comment content shown in the Comments sidebar.',
+        },
+        match_case: {
+          type: 'boolean',
+          description: 'Case-sensitive anchor match. Defaults to false.',
+        },
+      },
+      required: ['anchor', 'comment'],
+    },
+  }),
+
+  // ---- Commenting: manage_comment ---------------------------------------
+  buildWriterTool({
+    name: 'manage_comment',
+    description:
+      'Resolve / unresolve / reply-to / delete a specific comment by id. ' +
+      'Get the id from get_comments. resolve / unresolve / ' +
+      'resolve_with_reply require LibreOffice 7.4+ — older builds return ' +
+      'a "not supported" error with a clear recovery message.',
+    parameters: {
+      type: 'object',
+      properties: {
+        comment_id: {
+          type: 'string',
+          description: 'Comment id from get_comments.',
+        },
+        action: {
+          type: 'string',
+          enum: [
+            'resolve',
+            'unresolve',
+            'resolve_with_reply',
+            'reply',
+            'delete',
+          ],
+          description: 'Operation to perform on the comment.',
+        },
+        text: {
+          type: 'string',
+          description: "Reply / resolve_with_reply text. Required for those.",
+        },
+      },
+      required: ['comment_id', 'action'],
+    },
+  }),
 ];
