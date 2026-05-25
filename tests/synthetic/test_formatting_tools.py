@@ -211,3 +211,31 @@ class TestManageList:
                 "ParaStyleName"
             )
             assert applied in ("List Bullet", "ListBullet", "List Number")
+
+    def test_add_bullet_returns_structured_error_when_no_alias_available(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Missing bullet-style aliases → structured error, not exception.
+
+        When the LO build has none of the known bullet-style aliases,
+        ``manage_list`` returns a structured error (with ``recovery``)
+        instead of bubbling the LO RuntimeException — regression guard
+        for Investigation #37 (manage_list ParaStyleName runtime
+        resolver).
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
+        # Strip every bullet-style alias from the fake doc's
+        # ParagraphStyles family.
+        for alias in ("List Bullet", "Bulleted List", "List Paragraph", "ListBullet"):
+            synthetic_doc._style_families["ParagraphStyles"].pop(alias, None)
+
+        result = json.loads(
+            manage_list(
+                action="add", list_type="bullet", paragraph_indices=[1]
+            )
+        )
+        assert "error" in result
+        assert "recovery" in result
+        assert "List Bullet" in result["error"]

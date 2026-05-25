@@ -651,6 +651,63 @@ def format_paragraph(
 # ---------------------------------------------------------------------------
 
 
+# Aliases tried in priority order against this LO build's
+# ParagraphStyles family. The first one that actually exists is used
+# for ``p.ParaStyleName = …``. Different builds / localisations ship
+# different names: LO 24.x apt favours "List Bullet" / "List Number";
+# the Word-compat "List Paragraph" exists in some builds. See
+# Investigation #37 for the bug that motivated the resolver.
+_BULLET_STYLE_ALIASES = (
+    "List Bullet",
+    "Bulleted List",
+    "List Paragraph",
+    "ListBullet",  # no-space variant on some 24.x builds
+)
+_NUMBER_STYLE_ALIASES = (
+    "List Number",
+    "Numbered List",
+    "List Paragraph",
+    "ListNumber",
+)
+
+
+class _ListStyleUnavailableError(Exception):
+    """Raised when none of the known list-style aliases exists in the doc.
+
+    Surfaced to the caller as a structured JSON error with a recovery
+    hint, not as a raw exception — manage_list catches and converts.
+    """
+
+
+def _resolve_list_style(doc: Any, list_type: str) -> str:
+    """Pick the first valid LO paragraph style name for a bullet / numbered list.
+
+    Args:
+        doc: Active Writer document.
+        list_type: Either ``bullet`` or ``number``.
+
+    Returns:
+        A style name that exists in ``doc.StyleFamilies['ParagraphStyles']``.
+
+    Raises:
+        _ListStyleUnavailableError: if none of the known aliases exist.
+    """
+    aliases = (
+        _BULLET_STYLE_ALIASES
+        if list_type == "bullet"
+        else _NUMBER_STYLE_ALIASES
+    )
+    families = doc.getStyleFamilies()
+    paragraph_styles = families.getByName("ParagraphStyles")
+    for name in aliases:
+        if paragraph_styles.hasByName(name):
+            return name
+    raise _ListStyleUnavailableError(
+        f"None of the known {list_type} list paragraph styles "
+        f"({', '.join(aliases)}) are registered in this LibreOffice build."
+    )
+
+
 @tool
 @ui_thread_tool
 def manage_list(
@@ -729,10 +786,33 @@ def manage_list(
                 }
             )
 
+    # Resolve the bullet / number style names against this LO build's
+    # actual paragraph-style family. Different LO localisations and
+    # builds ship different aliases ("List Bullet" vs "Bulleted List"
+    # vs "List Paragraph"). The hardcoded "List Bullet" raised a
+    # RuntimeException on Ubuntu 24.04 apt LO — Investigation #37.
+    if action == "add":
+        try:
+            style_name = _resolve_list_style(doc, list_type or "")
+        except _ListStyleUnavailableError as exc:
+            return json.dumps(
+                {
+                    "error": str(exc),
+                    "recovery": (
+                        "This LibreOffice build does not register any of "
+                        "the standard bullet/number paragraph styles. "
+                        "Apply formatting via insert_content(style=...) "
+                        "on the originating call instead, or set the "
+                        "paragraph style by hand."
+                    ),
+                }
+            )
+    else:
+        style_name = ""  # not used in the remove branch
+
     for idx in paragraph_indices:
         p = paragraphs[idx]
         if action == "add":
-            style_name = "List Bullet" if list_type == "bullet" else "List Number"
             with suspend_record_changes(doc):
                 p.ParaStyleName = style_name
             try:

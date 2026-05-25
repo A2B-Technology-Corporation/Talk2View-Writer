@@ -124,6 +124,48 @@ class TestAddComment:
         # "not found" message in the error or recovery text.
         assert "not found" in json.dumps(result).lower()
 
+    def test_swtextattr_exception_translates_to_structured_error(
+        self,
+    ) -> None:
+        """LO 'no SwTextAttr inserted' surfaces as a structured error.
+
+        Regression guard for Investigation #38. When LO raises the
+        C++ RuntimeException at insertTextContent time, the
+        translation helper must return a JSON error with a useful
+        ``recovery`` hint instead of propagating the exception
+        (which would crash the bridge).
+        """
+        from talk2view_writer.tools.commenting import (
+            _structured_error_for_known_lo_bug,
+        )
+
+        exc = RuntimeError("no SwTextAttr inserted? at unofield.cxx:1976")
+        translated = _structured_error_for_known_lo_bug(exc, anchor="fox")
+        assert translated is not None
+        result = json.loads(translated)
+        assert "error" in result
+        assert "recovery" in result
+        assert "Investigation #38" in result["error"]
+
+    def test_non_swtextattr_exception_returns_none_so_caller_can_reraise(
+        self,
+    ) -> None:
+        """Only SwTextAttr is swallowed — other errors must bubble.
+
+        The translation helper must return ``None`` for unrelated
+        exception messages so the caller knows to re-raise.
+        """
+        from talk2view_writer.tools.commenting import (
+            _structured_error_for_known_lo_bug,
+        )
+
+        for unrelated in (
+            RuntimeError("permission denied"),
+            ValueError("bad argument"),
+            RuntimeError("something else entirely"),
+        ):
+            assert _structured_error_for_known_lo_bug(unrelated, anchor="x") is None
+
 
 # ---------------------------------------------------------------------------
 # manage_comment — input validation

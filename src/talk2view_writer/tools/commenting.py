@@ -209,6 +209,44 @@ def get_comments() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _structured_error_for_known_lo_bug(exc: Exception, anchor: str) -> str | None:
+    """Translate a known LO insertion failure into a structured JSON error.
+
+    LO 24.x raises a C++ ``RuntimeException`` with the message
+    ``no SwTextAttr inserted?`` from ``unofield.cxx:1976`` when
+    ``insertTextContent`` is called against certain anchor positions
+    (Investigation #38). The C++ exception isn't a Python-typed class
+    we can catch precisely, so we match on the message text.
+
+    Returns:
+        A JSON-encoded error string if exc matches a known LO bug
+        signature (caller should return it); ``None`` if exc is
+        something else (caller should re-raise).
+    """
+    if "SwTextAttr" not in str(exc):
+        return None
+    logger.warning(
+        "add_comment: insertTextContent raised SwTextAttr error for "
+        "anchor=%r (LO bug — Investigation #38)",
+        preview(anchor, 60),
+    )
+    return json.dumps(
+        {
+            "error": (
+                f'LibreOffice could not attach a comment at "{preview(anchor, 60)}". '
+                "This is a known LO bug for anchors near certain text "
+                "containers (Investigation #38: SwTextAttr insertion failure)."
+            ),
+            "recovery": (
+                "Try a different anchor — pick text from a different "
+                "paragraph, or use 5-15 unique words from the middle "
+                "of a body sentence (not at the very start or end of "
+                "the document)."
+            ),
+        }
+    )
+
+
 @tool
 @ui_thread_tool
 def add_comment(
@@ -292,7 +330,13 @@ def add_comment(
     # ``True`` for the second arg replaces the range with the annotation
     # (anchoring it as a "comment range"). On Writer ≥ 7.x this gives
     # the highlighted-anchor behaviour Word users expect.
-    text_obj.insertTextContent(target_range, annotation, True)
+    try:
+        text_obj.insertTextContent(target_range, annotation, True)
+    except Exception as exc:
+        handled = _structured_error_for_known_lo_bug(exc, anchor)
+        if handled is not None:
+            return handled
+        raise
 
     ann_id = _annotation_id(annotation)
     anchor_preview = preview(anchor, 60)
