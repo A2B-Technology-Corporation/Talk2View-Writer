@@ -1,0 +1,54 @@
+name: undo-delete
+description: >
+  Exercises undo_redo + delete_content. Insert two paragraphs, delete
+  the second, then undo to restore it.
+
+steps:
+  - prompt: >
+      Insert exactly two paragraphs: "First paragraph." and "Second
+      paragraph."
+    expect:
+      assistant_contains:
+        - paragraph
+        - inserted
+      doc:
+        min_paragraphs: 2
+        any_text_contains:
+          - first paragraph
+          - second paragraph
+      tool_calls:
+        must_invoke:
+          - insert_content
+        max_count: 3
+        no_duplicate_with: insert_content
+
+  - prompt: delete the second paragraph
+    expect:
+      assistant_contains:
+        - delet
+        - second
+      doc:
+        min_paragraphs: 1
+        any_text_contains:
+          - first paragraph
+      tool_calls:
+        must_invoke:
+          - delete_content
+        max_count: 4
+        no_duplicate_with: delete_content
+
+  - prompt: undo that deletion
+    expect:
+      assistant_contains:
+        - undone
+        - restored
+        - undo
+      doc:
+        # Second paragraph back.
+        any_text_contains:
+          - second paragraph
+      tool_calls:
+        must_invoke:
+          - undo_redo
+        max_count: 4
+        no_duplicate_with: undo_redo

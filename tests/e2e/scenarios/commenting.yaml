@@ -1,0 +1,34 @@
+name: commenting
+description: >
+  Exercises get_comments / add_comment / manage_comment. Two steps:
+  insert seed content, anchor a comment to a phrase, then list/get
+  the comments to confirm.
+
+steps:
+  - prompt: >
+      Insert a single paragraph that says: "The fox jumped over the
+      lazy dog."
+    expect:
+      assistant_contains:
+        - fox
+        - inserted
+      doc:
+        any_text_contains:
+          - fox
+      tool_calls:
+        must_invoke:
+          - insert_content
+        max_count: 3
+        no_duplicate_with: insert_content
+
+  - prompt: >
+      Add a comment to the word "lazy" that says "Reviewer: is this
+      word fair?"
+    expect:
+      assistant_contains:
+        - comment
+      tool_calls:
+        must_invoke:
+          - add_comment
+        max_count: 4
+        no_duplicate_with: add_comment

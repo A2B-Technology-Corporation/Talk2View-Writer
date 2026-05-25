@@ -1,0 +1,29 @@
+name: preferences
+description: >
+  Exercises manage_preferences. Toggles ai_track_changes_enabled off
+  and back on; the assertion is the assistant text confirms the
+  change. Doc state isn't expected to change (preferences are about
+  HOW future edits land, not about edits themselves).
+
+steps:
+  - prompt: turn off AI track changes
+    expect:
+      assistant_contains:
+        - track changes
+        - off
+      tool_calls:
+        must_invoke:
+          - manage_preferences
+        max_count: 3
+        no_duplicate_with: manage_preferences
+
+  - prompt: turn AI track changes back on
+    expect:
+      assistant_contains:
+        - track changes
+        - on
+      tool_calls:
+        must_invoke:
+          - manage_preferences
+        max_count: 3
+        no_duplicate_with: manage_preferences

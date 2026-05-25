@@ -1,0 +1,39 @@
+name: page-setup
+description: >
+  Exercises set_header_footer / insert_page_numbers / set_page_setup.
+  Three steps: set a header, insert page numbers in the footer, set
+  landscape orientation.
+
+steps:
+  - prompt: >
+      Add a header that says "Talk2View Writer — Confidential".
+    expect:
+      assistant_contains:
+        - header
+        - added
+      tool_calls:
+        must_invoke:
+          - set_header_footer
+        max_count: 4
+        no_duplicate_with: set_header_footer
+
+  - prompt: insert page numbers in the footer, centered
+    expect:
+      assistant_contains:
+        - page
+        - footer
+      tool_calls:
+        must_invoke:
+          - insert_page_numbers
+        max_count: 4
+        no_duplicate_with: insert_page_numbers
+
+  - prompt: change the page orientation to landscape
+    expect:
+      assistant_contains:
+        - landscape
+      tool_calls:
+        must_invoke:
+          - set_page_setup
+        max_count: 4
+        no_duplicate_with: set_page_setup
