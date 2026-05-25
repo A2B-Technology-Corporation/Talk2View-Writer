@@ -10,8 +10,16 @@ steps:
       lazy dog."
     expect:
       assistant_contains:
+        # Either "fox" (the inserted phrase) or any natural-language
+        # confirmation that the paragraph was inserted. Observed
+        # variants: "inserted the paragraph", "added the paragraph",
+        # "written the sentence". Doc assertion below is what
+        # actually verifies the content; this just guards against
+        # the engine returning empty / off-topic text.
         - fox
         - inserted
+        - added
+        - paragraph
       doc:
         any_text_contains:
           - fox

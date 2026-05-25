@@ -219,3 +219,60 @@ class TestInsertContent:
         assert isinstance(result, dict)
         assert "error" not in result, result
         assert result.get("blocks_inserted") == 3
+
+    def test_top_level_style_applies_to_all_string_blocks(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Top-level ``style`` applies to all string blocks without per-block style.
+
+        Regression guard: penguin_story scenario observed the engine
+        call ``insert_content(blocks=['The Frosty March'], style='Title',
+        location='start')`` expecting Title to apply to the single
+        block. Previously the code only honoured per-block ``style``
+        on dict blocks; string blocks lost the top-level style entirely
+        and the preview reported "plain text". CI run 26388503344
+        caught it. We assert on the preview field because the synthetic
+        cursor doesn't propagate ParaStyleName back to the paragraph
+        (production UNO does — the integration tests verify the LO
+        side).
+        """
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                blocks=["The Frosty March"],
+                style="Title",
+                location="start",
+            )
+        )
+        # Style fell through from the top-level arg.
+        assert result["previews"][0]["style"] == "Title", result
+
+    def test_per_block_style_overrides_top_level_style(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Per-block style still wins when both are set.
+
+        Mixed list: per-block styles are explicit; top-level is the
+        default for blocks without one. Assert via the preview field.
+        """
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                blocks=[
+                    {"text": "Heading", "style": "Heading1"},
+                    "Body with inherited Title",
+                ],
+                style="Title",
+                location="start",
+            )
+        )
+        previews = result["previews"]
+        # Per-block "Heading1" wins; second block inherits "Title".
+        assert previews[0]["style"] == "Heading1"
+        assert previews[1]["style"] == "Title"

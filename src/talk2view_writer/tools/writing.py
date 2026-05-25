@@ -385,9 +385,16 @@ def insert_content(
 
     # Normalise both modes to a single list of {text, style?} dicts so the
     # insertion loop below doesn't branch.
+    #
+    # When ``blocks`` is provided alongside the top-level ``style``
+    # argument, the engine LLM means "apply this style to every block
+    # that doesn't override". Common pattern: blocks=['The Frosty
+    # March'], style='Title' — the model intends one Title-styled
+    # paragraph. Falling back to the top-level style here preserves
+    # that intent; per-block styles still win when present.
     items: list[dict[str, str | None]]
     if blocks is not None:
-        items = [{"text": b["text"], "style": b.get("style")} for b in blocks]
+        items = [{"text": b["text"], "style": b.get("style") or style} for b in blocks]
     else:
         items = [{"text": text or "", "style": style}]
 
