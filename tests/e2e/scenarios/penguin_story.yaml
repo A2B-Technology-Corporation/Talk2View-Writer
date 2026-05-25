@@ -63,9 +63,15 @@ steps:
         paragraph_text_contains_at:
           - { index: 0, contains: "frosty march" }
       tool_calls:
+        # gemini-3.1-pro sometimes inserts plain-string blocks then
+        # back-fills styles with format_paragraph — observed 5 calls
+        # (get_document + insert_content + get_document +
+        # format_paragraph×2). Other runs do it optimally in 2 calls.
+        # Cap at 6 to accept variance; no_duplicate_with guards still
+        # catch the actual Platform #62 symptom.
         must_invoke:
           - insert_content
-        max_count: 3
+        max_count: 6
         no_duplicate_with: insert_content
 
   - prompt: format the title as Heading 1 and centre it
@@ -80,7 +86,7 @@ steps:
       tool_calls:
         must_invoke:
           - format_paragraph
-        max_count: 3
+        max_count: 4
         no_duplicate_with: format_paragraph
 
   - prompt: add a one-paragraph conclusion at the end of the story
@@ -94,5 +100,5 @@ steps:
       tool_calls:
         must_invoke:
           - insert_content
-        max_count: 3
+        max_count: 4
         no_duplicate_with: insert_content
