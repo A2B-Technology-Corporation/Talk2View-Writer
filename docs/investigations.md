@@ -1074,7 +1074,11 @@ signal (heh) that this collision is happening — easy to miss
 unless you're scanning the full subprocess stderr.
 
 
-## #34 — Writer partner key broken on engine; reused Word's (2026-05-22)
+## #34 — Writer partner key broken on engine; reused Word's (FIXED 2026-05-25)
+
+**Update 2026-05-25:** Platform #61 resolved upstream (confirmed by Andy).
+The bundle, e2e fixtures, and integration test now use the Writer key
+(`pk_live_…17540bc7`) again. ADR-0034 marked Reverted.
 
 **What:** Every chat completion against engine.talk2view.com using the
 Writer-specific partner key

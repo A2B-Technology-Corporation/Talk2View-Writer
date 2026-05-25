@@ -45,14 +45,13 @@ def test_live_authenticates_against_real_engine() -> None:
 
     from talk2view import Talk2View
 
-    # Writer routes through Word's partner key while Platform #61 is
-    # unresolved (ADR-0034). The Writer-specific system prompt is
-    # dashboard-configured on the Word partner profile (see
-    # Investigation #34 + the d54c666 revert).
-    word_partner_key = (
-        "pk_live_45c878caa500cdf6ea1a72f3e9a4ad324df061b7ec2c70d7"
+    # Use the Writer partner key — Platform #61 resolved upstream
+    # (confirmed 2026-05-25). The Word key was the workaround during
+    # the unprovisioned window per ADR-0034.
+    writer_partner_key = (
+        "pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7"
     )
-    t2v = Talk2View(partner_key=word_partner_key)
+    t2v = Talk2View(partner_key=writer_partner_key)
     user = t2v.auth.login(email, password)
 
     assert user is not None, "auth.login returned None — engine accepted no user"

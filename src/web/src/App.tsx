@@ -24,12 +24,10 @@ import { rememberEmail, installEmailAutofill } from './remember_email';
 // Repo-root SYSTEM_PROMPT.md — webpack's asset/source loader inlines
 // the file's contents as a string at build time. Single source of
 // truth: the Python side reads the same file via setup_logging.
-// Route-around: using Word's partner key while the Writer partner
-// (pk_live_…17540bc7) is unprovisioned on the engine. See ADR-0034
-// and Talk2View-Platform issue #61 for the engine-side fix.
-// Revert to the Writer key once the engine team resolves #61:
-//   pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7
-const PARTNER_KEY = 'pk_live_45c878caa500cdf6ea1a72f3e9a4ad324df061b7ec2c70d7';
+// Writer's own partner key — Platform #61 has been resolved upstream
+// (confirmed by Andy 2026-05-25). Word's key was the workaround
+// during the unprovisioned window per ADR-0034; this is the revert.
+const PARTNER_KEY = 'pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7';
 // E2E tests set window.__T2V_BASE_URL_OVERRIDE so the SDK fetches from
 // the per-test mock engine instead of the production engine. The
 // override is only honored when the value looks like a localhost URL

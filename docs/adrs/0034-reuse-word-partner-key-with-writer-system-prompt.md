@@ -1,6 +1,6 @@
 # ADR-0034: Reuse Word's partner key, override system prompt for Writer
 
-**Status:** Accepted
+**Status:** Reverted 2026-05-25 — Writer partner key now provisioned upstream (Platform #61 resolved). The bundle, e2e fixtures, and integration test all use the Writer key again. See commit history for the switch-back.
 **Date:** 2026-05-22
 **Phase:** G
 **Supersedes:** —

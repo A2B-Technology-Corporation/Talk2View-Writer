@@ -174,11 +174,12 @@ async function startHeadlessBridge(port: number): Promise<string> {
  * password, returning the tokens the bundle expects in localStorage.
  *
  * Hits ``/v1/auth/login`` directly (the same endpoint the SDK calls).
- * Uses Word's partner key per ADR-0034 — Writer's own key is broken
- * upstream (Platform #61) until that's resolved.
+ * Uses the Writer partner key — Platform #61 resolved upstream
+ * (confirmed 2026-05-25). The Word key was the workaround during the
+ * unprovisioned window per ADR-0034.
  */
-const WORD_PARTNER_KEY =
-  'pk_live_45c878caa500cdf6ea1a72f3e9a4ad324df061b7ec2c70d7';
+const WRITER_PARTNER_KEY =
+  'pk_live_474f6f895dfec144a70b841db0d7a3fe1cd1fc7317540bc7';
 
 export type LiveAuthTokens = {
   access_token: string;
@@ -194,7 +195,7 @@ export async function liveEngineLogin(
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-t2v-partner-key': WORD_PARTNER_KEY,
+      'x-t2v-partner-key': WRITER_PARTNER_KEY,
     },
     body: JSON.stringify({ email, password }),
   });
