@@ -50,8 +50,14 @@ steps:
       tool_calls:
         must_invoke:
           - edit_table
-        max_count: 4
-        no_duplicate_with: edit_table
+        # If the model uses values=[["Banana","12","0.50"]] with
+        # add_rows, this is 2 calls (get_document + add_rows). If it
+        # splits into add_rows + 3 edit_cell calls (cell-by-cell),
+        # this is 5. Both are valid; bump to 6 for headroom. Schema
+        # was updated to document the values shortcut — over time
+        # the model should converge to the 2-call path and we can
+        # tighten back.
+        max_count: 6
 
   - prompt: >
       change the Apple quantity to 7 (it's in the row immediately

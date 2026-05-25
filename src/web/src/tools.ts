@@ -518,6 +518,16 @@ export const writerTools: ClientTool[] = [
           enum: ['start', 'end'],
           description: "Required for add_rows / add_columns. 'start' or 'end'.",
         },
+        values: {
+          type: 'array',
+          description:
+            'Optional 2D string array to populate added rows/columns ' +
+            "in the same call as 'add_rows' / 'add_columns'. Pair " +
+            'with count = values.length so each added row/column gets ' +
+            'filled in one tool call — saves several edit_cell follow-ups. ' +
+            'Example for add_rows: values=[["Banana","12","0.50"]] with ' +
+            'count=1.',
+        },
       },
       required: ['table_index', 'action'],
     },

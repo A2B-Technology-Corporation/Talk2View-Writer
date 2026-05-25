@@ -1194,37 +1194,39 @@ wait for an engine bug to mask the missing test.
 ## #36 — Windows Playwright `worker-2 process did not exit` after flaky retry (2026-05-25)
 
 **What:** Windows-only Playwright job (`Playwright E2E (windows-latest)`)
-intermittently exits with code 1 even when every test ultimately
-passes. The trailing line is
+exits with code 1 even when every test passes. The trailing line is
 ``Error: worker-2 process did not exit within 300000ms after stop,
-force-killed it``. Reliably triggered when `bridge-log-flush.spec.ts`
-is marked "flaky" — i.e. it fails on the first attempt and passes
-on retry. The retry leaves a worker process in a state where
-`worker.stop()` never returns; Playwright force-kills after 5
-minutes and reports the kill as a test-run-level error.
+force-killed it``. After all 58 tests in both browser projects
+complete cleanly, ONE worker process (typically worker-2) refuses
+to exit; Playwright force-kills after 5 min and reports the kill
+as a test-run-level error.
 
-**Where:** `tests/e2e/specs/bridge-log-flush.spec.ts:19` reliably
-triggers it on Windows runners; observed in CI run 26384308737
-(2026-05-25) and likely earlier. Linux + macOS runners do not
-reproduce.
+Initial diagnosis (CI 26384308737) suggested the flaky
+``bridge-log-flush.spec.ts`` retry was the trigger; further
+observation (CI 26386115896) shows the hang happens with ALL tests
+passing on first try, no flakes — so the root cause is generic
+multi-worker teardown on Windows runners, not a specific test.
 
-**Why it matters:** Job goes red even though no test failed.
-Masks real Windows regressions because "red on Windows" becomes
-noise. Five-minute cliff also balloons CI wall-clock.
+**Where:** Affects `Playwright E2E (windows-latest)` job. Reproduced
+in CI runs 26384308737 + 26386115896 (2026-05-25). Linux + macOS
+runners do not reproduce, even with the same test set.
 
-**Next step:**
-1. Reproduce locally on Windows or in a Windows GitHub Actions
-   `act-like` runner to confirm it's specifically the
-   `bridge-log-flush` retry that orphans the chromium worker
-   (the retry runs in worker-2 the second time, hence the name).
-2. Try adding `test.afterEach` cleanup that explicitly closes
-   any lingering bridge mock connections to see if a dangling
-   socket is what's keeping the worker thread alive on Windows.
-3. If the orphan is intrinsic to Playwright + Windows worker
-   teardown, mark this spec `test.fixme` on `process.platform ===
-   'win32'` and file an upstream Playwright issue — the test
-   itself isn't Windows-specific (it tests bridge log behaviour
-   not OS behaviour) so skipping on Windows is acceptable.
+**Why it matters:** Job goes red even though no test failed. Masks
+real Windows regressions because "red on Windows" becomes noise.
+Five-minute cliff also balloons CI wall-clock.
+
+**Mitigation (CI 26387198xxx onwards):** Force ``--workers=1`` on
+the Windows runner only — eliminates worker-2 since there is no
+worker-2. Linux + macOS keep parallel workers for speed. The fix
+lands in ``.github/workflows/ci.yml`` next to the "Run Playwright
+specs" step.
+
+**Remaining next steps (root cause):**
+1. Confirm with Playwright maintainers whether multi-worker teardown
+   on Windows is intrinsically lossy or a fixable bug. File an
+   upstream Playwright issue once we have a minimal repro.
+2. Once a fix exists upstream, drop the `--workers=1` Windows
+   override and restore parallel execution.
 
 ## #37 — `manage_list` throws `RuntimeException` setting `ParaStyleName = "List Bullet"` (2026-05-25)
 

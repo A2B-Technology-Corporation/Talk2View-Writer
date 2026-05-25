@@ -760,7 +760,13 @@ jobs:
         run: npm run build
 
       - name: Run Playwright specs
-        run: npx playwright test
+        # --workers=1 on Windows only: the multi-worker Playwright
+        # teardown reliably orphans worker-2 for ~5 min on Windows
+        # runners, force-killing it and marking the job red even
+        # when every test passed (Investigation #36). With 1 worker
+        # there's no worker-2 to orphan. Linux + macOS keep the
+        # default parallelism for speed.
+        run: npx playwright test ${{ runner.os == 'Windows' && '--workers=1' || '' }}
 
       - name: Upload Playwright artifacts
         if: always()
