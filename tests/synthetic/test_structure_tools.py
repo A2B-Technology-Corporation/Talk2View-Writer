@@ -181,9 +181,9 @@ class TestSetPageSetup:
         patched_extension: object,
         synthetic_doc: FakeTextDocument,
     ) -> None:
-        """Title-cased `type` + lowercased camelCase `header_footer_type`
-        normalise cleanly (Writer #5).
+        """Case-insensitive header_footer args normalise cleanly (Writer #5).
 
+        Title-cased ``type`` + lowercased camelCase ``header_footer_type``.
         The synthetic doc doesn't expose the full HeaderText UNO surface
         (same limitation as test_header_text_returns_dict), so the tool
         may fall through to a graceful error — we just confirm the
