@@ -18,6 +18,7 @@ import React, { useEffect, useRef } from 'react';
 // (the window IS the chat). E2E smoke caught the difference in
 // 2026-05-22.
 import { Talk2View, ChatPanel, useChat, useTalk2View } from '@talk2view/sdk/ui';
+import { useT2V, useT2VTools } from '@talk2view/sdk/react';
 import { writerTools } from './tools';
 import { logToHost } from './bridge';
 import { rememberEmail, installEmailAutofill } from './remember_email';
@@ -136,6 +137,26 @@ function LogBridge() {
   return null;
 }
 
+// Registers writerTools once the user is authenticated. The prebuilt
+// `<Talk2View tools={...}>` prop registers in a useEffect keyed on
+// [t2v, tools] (NOT auth), .catch-swallows the pre-login 401, and never
+// retries after login — so a fresh first-login user gets a session with
+// zero tools (Writer #6 / Platform #67). Registering via the headless
+// useT2VTools hook gated on isAuthenticated is the pattern that actually
+// retries after auth. t2v.tools.register() wires both the schema and the
+// inline `execute` handler, so no separate .handle() call is needed.
+function ToolRegistrar() {
+  const { isAuthenticated } = useT2V();
+  const { registerTools, isRegistered } = useT2VTools();
+  useEffect(() => {
+    if (!isAuthenticated || isRegistered) return;
+    registerTools(writerTools).catch((err) => {
+      logToHost('error', '[tools] registration failed', { err: String(err) });
+    });
+  }, [isAuthenticated, isRegistered, registerTools]);
+  return null;
+}
+
 export function App() {
   useEffect(() => {
     logToHost('info', '[app] <App> mounted', {
@@ -149,9 +170,9 @@ export function App() {
     <Talk2View
       partnerKey={PARTNER_KEY}
       baseUrl={BASE_URL}
-      tools={writerTools}
       debug={true}
     >
+      <ToolRegistrar />
       <LogBridge />
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <ChatPanel />
