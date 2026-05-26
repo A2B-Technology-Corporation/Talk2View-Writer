@@ -52,6 +52,19 @@ function LogBridge() {
     const messages = chat.messages;
     while (seenIndex.current < messages.length) {
       const m = messages[seenIndex.current];
+      // Don't "consume" a still-streaming assistant message: wait until
+      // it finalises so the logged [chat:assistant] line carries the
+      // FULL reply, not a mid-stream partial. The live-scenarios E2E
+      // spec reads the latest [chat:assistant] log as the assistant's
+      // reply; before /resume streamed (it was buffered via proxy_fetch
+      // — see Investigation #42) the post-tool segment arrived complete
+      // on first sight, so logging-on-first-appearance captured the full
+      // text. With /resume streaming, the segment first appears partial
+      // ("Undid" instead of "Undid the deletion…"), so we'd log the
+      // partial and never re-log the final. Breaking here defers the
+      // log until isStreaming flips false; streaming growth is still
+      // visible via the :delta debug lines below.
+      if (m.role === 'assistant' && (m.isStreaming ?? false)) break;
       const preview = (m.content ?? '').slice(0, 1000);
       logToHost('info', `[chat:${m.role}] ${preview}`, {
         id: m.id,
