@@ -31,7 +31,12 @@ from talk2view import tool  # type: ignore[import-not-found]
 
 from talk2view_writer.extension import get_extension_or_raise
 from talk2view_writer.tools._base import get_writer_document, ui_thread_tool
-from talk2view_writer.tools._constants import points_to_hmm, preview
+from talk2view_writer.tools._constants import (
+    lower_enum,
+    normalize_header_footer_type,
+    points_to_hmm,
+    preview,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,10 @@ def insert_break(type: str, location: str) -> str:
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum args (schema enums dropped — see Writer #5).
+    type = lower_enum(type) or ""
+    location = lower_enum(location) or ""
+
     allowed = ("page", "section_next_page", "section_continuous")
     if type not in allowed:
         return json.dumps(
@@ -226,6 +235,12 @@ def set_header_footer(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum args (schema enums dropped — see Writer #5).
+    # header_footer_type is camelCase so it needs the canonical map, not
+    # a blind lowercase.
+    type = lower_enum(type) or ""
+    header_footer_type = normalize_header_footer_type(header_footer_type) or "primary"
+
     if type not in ("header", "footer"):
         return json.dumps(
             {"error": f"Unknown type '{type}'.", "recovery": "Use 'header' or 'footer'."}
@@ -377,6 +392,10 @@ def insert_page_numbers(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum args (schema enums dropped — see Writer #5).
+    location = lower_enum(location) or "footer"
+    alignment = lower_enum(alignment) or "center"
+
     if section_index is not None and section_indices is not None:
         return json.dumps(
             {
@@ -550,6 +569,11 @@ def set_page_setup(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    # Normalise before building the args dict below so it captures the
+    # canonical value.
+    orientation = lower_enum(orientation)
+
     args = {
         "orientation": orientation,
         "top_margin": top_margin,

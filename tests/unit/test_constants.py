@@ -14,6 +14,8 @@ from talk2view_writer.tools._constants import (
     UNDERLINE_STYLE_UNO,
     VALID_STYLES,
     hex_to_rgb_int,
+    lower_enum,
+    normalize_header_footer_type,
     points_to_hmm,
     preview,
 )
@@ -112,3 +114,60 @@ class TestConstantsCoverage:
     def test_valid_styles_includes_word_defaults(self) -> None:
         expected = {"Normal", "Heading1", "Heading2", "Heading3", "Title"}
         assert expected.issubset(set(VALID_STYLES))
+
+
+@pytest.mark.unit
+class TestEnumNormalization:
+    """Case-insensitive enum-arg normalisation (Writer #5).
+
+    The tool schemas dropped JSON-Schema ``enum`` constraints because the
+    SDK validates them case-sensitively before the handler runs, so a
+    Title-cased value double-fires. These helpers move the normalisation
+    into the handlers.
+    """
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("Landscape", "landscape"),
+            ("PORTRAIT", "portrait"),
+            ("bullet", "bullet"),
+            ("Add", "add"),
+            ("Resolve_With_Reply", "resolve_with_reply"),
+        ],
+    )
+    def test_lower_enum_lowercases_strings(self, raw: str, expected: str) -> None:
+        assert lower_enum(raw) == expected
+
+    def test_lower_enum_passes_through_none(self) -> None:
+        assert lower_enum(None) is None
+
+    def test_lower_enum_passes_through_non_string(self) -> None:
+        # Defensive: an int slipping through must not crash.
+        assert lower_enum(5) == 5  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("primary", "primary"),
+            ("Primary", "primary"),
+            ("firstPage", "firstPage"),
+            ("firstpage", "firstPage"),
+            ("FIRSTPAGE", "firstPage"),
+            ("evenPages", "evenPages"),
+            ("evenpages", "evenPages"),
+        ],
+    )
+    def test_header_footer_type_maps_to_canonical_camelcase(
+        self, raw: str, expected: str
+    ) -> None:
+        # Unlike lower_enum, this preserves the camelCase the handler
+        # compares against (== "firstPage" / "evenPages").
+        assert normalize_header_footer_type(raw) == expected
+
+    def test_header_footer_type_unknown_passes_through(self) -> None:
+        # Unknown value survives so the handler emits its own error.
+        assert normalize_header_footer_type("sidebar") == "sidebar"
+
+    def test_header_footer_type_none_passes_through(self) -> None:
+        assert normalize_header_footer_type(None) is None

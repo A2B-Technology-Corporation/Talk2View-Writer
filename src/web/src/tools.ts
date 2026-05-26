@@ -110,16 +110,10 @@ export const writerTools: ClientTool[] = [
         },
         location: {
           type: 'string',
-          enum: [
-            'start',
-            'end',
-            'before_paragraph',
-            'after_paragraph',
-            'after_selection',
-            'replace_selection',
-          ],
           description:
-            "Where to insert. Defaults to 'end' if omitted.",
+            'Where to insert. One of: start, end, before_paragraph, ' +
+            "after_paragraph, after_selection, replace_selection. " +
+            "Defaults to 'end' if omitted. Case-insensitive.",
         },
         target_query: {
           type: 'string',
@@ -322,8 +316,8 @@ export const writerTools: ClientTool[] = [
       properties: {
         action: {
           type: 'string',
-          enum: ['list', 'get', 'set', 'reset'],
           description:
+            "One of: list, get, set, reset (case-insensitive). " +
             "'list' returns everything. 'get'/'set'/'reset' need ``key``; " +
             "'set' also needs ``value``.",
         },
@@ -454,9 +448,9 @@ export const writerTools: ClientTool[] = [
         },
         location: {
           type: 'string',
-          enum: ['start', 'end'],
           description:
-            "Where to insert. 'start' = before all content; 'end' = after.",
+            "Where to insert (case-insensitive). One of: start, end. " +
+            "'start' = before all content; 'end' = after.",
         },
         data: {
           type: 'array',
@@ -486,14 +480,9 @@ export const writerTools: ClientTool[] = [
         },
         action: {
           type: 'string',
-          enum: [
-            'edit_cell',
-            'add_rows',
-            'delete_rows',
-            'add_columns',
-            'delete_columns',
-          ],
-          description: 'Operation to perform.',
+          description:
+            'Operation to perform (case-insensitive). One of: edit_cell, ' +
+            'add_rows, delete_rows, add_columns, delete_columns.',
         },
         row: {
           type: 'number',
@@ -515,8 +504,9 @@ export const writerTools: ClientTool[] = [
         },
         insert_location: {
           type: 'string',
-          enum: ['start', 'end'],
-          description: "Required for add_rows / add_columns. 'start' or 'end'.",
+          description:
+            "Required for add_rows / add_columns. One of: start, end " +
+            '(case-insensitive).',
         },
         values: {
           type: 'array',
@@ -550,8 +540,9 @@ export const writerTools: ClientTool[] = [
         },
         location: {
           type: 'string',
-          enum: ['start', 'end', 'after_selection'],
-          description: 'Where to insert the image.',
+          description:
+            'Where to insert the image (case-insensitive). One of: ' +
+            'start, end, after_selection.',
         },
         width: {
           type: 'number',
@@ -579,8 +570,9 @@ export const writerTools: ClientTool[] = [
       properties: {
         action: {
           type: 'string',
-          enum: ['undo', 'redo'],
-          description: "'undo' reverses the last edit; 'redo' replays it.",
+          description:
+            "One of: undo, redo (case-insensitive). 'undo' reverses the " +
+            "last edit; 'redo' replays it.",
         },
         count: {
           type: 'number',
@@ -643,8 +635,9 @@ export const writerTools: ClientTool[] = [
       properties: {
         action: {
           type: 'string',
-          enum: ['add', 'remove'],
-          description: "'add' to bullet/number paragraphs; 'remove' to revert.",
+          description:
+            "One of: add, remove (case-insensitive). 'add' to " +
+            "bullet/number paragraphs; 'remove' to revert.",
         },
         paragraph_indices: {
           type: 'array',
@@ -654,8 +647,9 @@ export const writerTools: ClientTool[] = [
         },
         list_type: {
           type: 'string',
-          enum: ['bullet', 'number'],
-          description: "Required for action='add'. 'bullet' or 'number'.",
+          description:
+            "Required for action='add'. One of: bullet, number " +
+            '(case-insensitive).',
         },
         level: {
           type: 'number',
@@ -681,13 +675,13 @@ export const writerTools: ClientTool[] = [
       properties: {
         type: {
           type: 'string',
-          enum: ['page', 'section_next_page', 'section_continuous'],
-          description: 'Break type.',
+          description:
+            'Break type (case-insensitive). One of: page, ' +
+            'section_next_page, section_continuous.',
         },
         location: {
           type: 'string',
-          enum: ['start', 'end'],
-          description: 'Where to insert.',
+          description: 'Where to insert. One of: start, end (case-insensitive).',
         },
       },
       required: ['type', 'location'],
@@ -706,8 +700,9 @@ export const writerTools: ClientTool[] = [
       properties: {
         type: {
           type: 'string',
-          enum: ['header', 'footer'],
-          description: "'header' (top of page) or 'footer' (bottom).",
+          description:
+            "One of: header, footer (case-insensitive). 'header' (top of " +
+            "page) or 'footer' (bottom).",
         },
         text: {
           type: 'string',
@@ -728,8 +723,8 @@ export const writerTools: ClientTool[] = [
         },
         header_footer_type: {
           type: 'string',
-          enum: ['primary', 'firstPage', 'evenPages'],
           description:
+            "One of: primary, firstPage, evenPages (case-insensitive). " +
             "Defaults to 'primary'. firstPage/evenPages need LO to be " +
             'configured for those variants.',
         },
@@ -751,13 +746,13 @@ export const writerTools: ClientTool[] = [
       properties: {
         location: {
           type: 'string',
-          enum: ['header', 'footer'],
-          description: "Defaults to 'footer'.",
+          description:
+            "One of: header, footer (case-insensitive). Defaults to 'footer'.",
         },
         alignment: {
           type: 'string',
-          enum: ['left', 'center', 'right'],
-          description: "Defaults to 'center'.",
+          description:
+            "One of: left, center, right (case-insensitive). Defaults to 'center'.",
         },
         format: {
           type: 'string',
@@ -802,8 +797,8 @@ export const writerTools: ClientTool[] = [
         },
         orientation: {
           type: 'string',
-          enum: ['portrait', 'landscape'],
-          description: 'Page orientation.',
+          description:
+            'Page orientation. One of: portrait, landscape (case-insensitive).',
         },
         top_margin: {
           type: 'number',
@@ -889,14 +884,9 @@ export const writerTools: ClientTool[] = [
         },
         action: {
           type: 'string',
-          enum: [
-            'resolve',
-            'unresolve',
-            'resolve_with_reply',
-            'reply',
-            'delete',
-          ],
-          description: 'Operation to perform on the comment.',
+          description:
+            'Operation to perform on the comment (case-insensitive). One ' +
+            'of: resolve, unresolve, resolve_with_reply, reply, delete.',
         },
         text: {
           type: 'string',

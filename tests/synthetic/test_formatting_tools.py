@@ -212,6 +212,28 @@ class TestManageList:
             )
             assert applied in ("List Bullet", "ListBullet", "List Number")
 
+    def test_action_and_list_type_are_case_insensitive(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Title-cased action / list_type must not error (Writer #5).
+
+        Pre-fix the SDK rejected "Add" / "Bullet" against the lowercase
+        enums and the model retried. The enums are gone; the handler
+        lowercases, so the Title-cased call reaches the same success
+        path.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
+        result = json.loads(
+            manage_list(action="Add", list_type="Bullet", paragraph_indices=[1])
+        )
+        assert "error" not in result, result
+        applied = synthetic_doc._text._paragraphs[1].getPropertyValue(
+            "ParaStyleName"
+        )
+        assert applied in ("List Bullet", "ListBullet", "List Number")
+
     def test_add_bullet_returns_structured_error_when_no_alias_available(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
     ) -> None:

@@ -31,6 +31,7 @@ from talk2view_writer.extension import get_extension_or_raise
 from talk2view_writer.tools._base import get_writer_document, ui_thread_tool
 from talk2view_writer.tools._constants import (
     VALID_STYLES,
+    lower_enum,
     points_to_hmm,
     preview,
 )
@@ -245,6 +246,9 @@ def insert_content(
         ValueError: For schema violations (empty inputs, mutually
             exclusive args set together, etc.).
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    location = lower_enum(location)
+
     # ----- Validation ------------------------------------------------------
     if text is not None and blocks is not None:
         return json.dumps(
@@ -601,6 +605,9 @@ def insert_table(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    location = lower_enum(location) or ""
+
     if not isinstance(rows, int) or rows < 1:
         return json.dumps(
             {
@@ -712,6 +719,9 @@ def insert_image(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    location = lower_enum(location) or ""
+
     if not base64_data or not base64_data.strip():
         return json.dumps(
             {
@@ -872,6 +882,9 @@ def undo_redo(action: str, count: int = 1) -> str:
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    action = lower_enum(action) or ""
+
     if action not in ("undo", "redo"):
         return json.dumps(
             {
@@ -1188,6 +1201,10 @@ def edit_table(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum args (schema enums dropped — see Writer #5).
+    action = lower_enum(action) or ""
+    insert_location = lower_enum(insert_location)
+
     if not isinstance(table_index, int) or table_index < 0:
         return json.dumps(
             {

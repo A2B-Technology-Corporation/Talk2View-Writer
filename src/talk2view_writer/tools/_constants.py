@@ -97,3 +97,40 @@ UNDERLINE_STYLE_UNO: dict[str, int] = {
     "dashed": 5,
     "wave": 10,
 }
+
+
+def lower_enum(value: str | None) -> str | None:
+    """Lowercase a string-enum argument so handler comparisons are case-insensitive.
+
+    The tool schemas dropped their JSON-Schema ``enum`` constraints
+    because the SDK validates them case-sensitively *before* the handler
+    runs — a Title-cased value from the model (``"Landscape"``) gets
+    rejected client-side and the model retries, producing a phantom
+    "double tool call" (Writer #5 / joy-matrix `a38b8eb`). With the enum
+    gone, normalisation moves here: lowercase the value so the
+    downstream ``== "landscape"`` / ``not in (...)`` checks match
+    regardless of the casing the model emitted. Non-strings (e.g.
+    ``None`` for an optional arg) pass through untouched.
+    """
+    return value.lower() if isinstance(value, str) else value
+
+
+# header_footer_type is the one enum whose canonical values are camelCase
+# (``firstPage`` / ``evenPages``), so a blind ``.lower()`` would break the
+# downstream equality checks. Map the lowercased input back to canonical.
+_HEADER_FOOTER_TYPE_CANONICAL: dict[str, str] = {
+    "primary": "primary",
+    "firstpage": "firstPage",
+    "evenpages": "evenPages",
+}
+
+
+def normalize_header_footer_type(value: str | None) -> str | None:
+    """Case-insensitively map a header/footer-type arg to its canonical camelCase.
+
+    Unknown values pass through unchanged so the handler still emits its
+    own "unknown variant" error with candidates.
+    """
+    if not isinstance(value, str):
+        return value
+    return _HEADER_FOOTER_TYPE_CANONICAL.get(value.lower(), value)

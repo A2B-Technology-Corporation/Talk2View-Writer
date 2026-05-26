@@ -18,6 +18,7 @@ from typing import Any
 from talk2view import tool  # type: ignore[import-not-found]
 
 from talk2view_writer.preferences import DEFAULTS, get_preferences
+from talk2view_writer.tools._constants import lower_enum
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,9 @@ def manage_preferences(
             ``manage_preferences(action="reset",
             key="ai_track_changes_enabled")``
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    action = lower_enum(action) or ""
+
     valid_actions = ("list", "get", "set", "reset")
     if action not in valid_actions:
         return json.dumps({

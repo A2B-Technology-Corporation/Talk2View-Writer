@@ -157,3 +157,45 @@ class TestSetPageSetup:
 
         result = json.loads(set_page_setup(orientation="landscape"))
         assert isinstance(result, dict)
+
+    def test_orientation_is_case_insensitive(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Title-cased orientation must not error (Writer #5).
+
+        Pre-fix, the SDK rejected "Landscape" against the lowercase
+        enum and the model retried — a phantom double-call. The enum
+        is gone; the handler now lowercases, so "Landscape" reaches
+        the same success path as "landscape".
+        """
+        from talk2view_writer.tools.structure import set_page_setup
+
+        result = json.loads(set_page_setup(orientation="Landscape"))
+        assert "error" not in result, result
+        assert result["applied"]["orientation"] == "landscape"
+
+    def test_header_type_camelcase_args_dont_raise(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Title-cased `type` + lowercased camelCase `header_footer_type`
+        normalise cleanly (Writer #5).
+
+        The synthetic doc doesn't expose the full HeaderText UNO surface
+        (same limitation as test_header_text_returns_dict), so the tool
+        may fall through to a graceful error — we just confirm the
+        case-insensitive args don't raise an unhandled exception and the
+        tool returns a structured dict. The exact camelCase mapping is
+        unit-tested in test_constants.py::TestEnumNormalization.
+        """
+        from talk2view_writer.tools.structure import set_header_footer
+
+        result = json.loads(
+            set_header_footer(
+                type="Header", text="Confidential", header_footer_type="firstpage"
+            )
+        )
+        assert isinstance(result, dict)

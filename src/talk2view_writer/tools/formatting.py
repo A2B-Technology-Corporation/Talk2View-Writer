@@ -31,6 +31,7 @@ from talk2view_writer.tools._constants import (
     UNDERLINE_STYLE_UNO,
     VALID_STYLES,
     hex_to_rgb_int,
+    lower_enum,
     points_to_hmm,
     preview,
 )
@@ -742,6 +743,10 @@ def manage_list(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum args (schema enums dropped — see Writer #5).
+    action = lower_enum(action) or ""
+    list_type = lower_enum(list_type)
+
     if not paragraph_indices:
         return json.dumps(
             {

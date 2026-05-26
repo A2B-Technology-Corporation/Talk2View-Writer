@@ -35,7 +35,7 @@ from talk2view import tool  # type: ignore[import-not-found]
 
 from talk2view_writer.extension import get_extension_or_raise
 from talk2view_writer.tools._base import get_writer_document, ui_thread_tool
-from talk2view_writer.tools._constants import preview
+from talk2view_writer.tools._constants import lower_enum, preview
 
 logger = logging.getLogger(__name__)
 
@@ -401,6 +401,9 @@ def manage_comment(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
+    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    action = lower_enum(action) or ""
+
     if action not in _MANAGE_ACTIONS:
         return json.dumps(
             {
