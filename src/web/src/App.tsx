@@ -52,19 +52,13 @@ function LogBridge() {
     const messages = chat.messages;
     while (seenIndex.current < messages.length) {
       const m = messages[seenIndex.current];
-      // Don't "consume" a still-streaming assistant message: wait until
-      // it finalises so the logged [chat:assistant] line carries the
-      // FULL reply, not a mid-stream partial. The live-scenarios E2E
-      // spec reads the latest [chat:assistant] log as the assistant's
-      // reply; before /resume streamed (it was buffered via proxy_fetch
-      // — see Investigation #42) the post-tool segment arrived complete
-      // on first sight, so logging-on-first-appearance captured the full
-      // text. With /resume streaming, the segment first appears partial
-      // ("Undid" instead of "Undid the deletion…"), so we'd log the
-      // partial and never re-log the final. Breaking here defers the
-      // log until isStreaming flips false; streaming growth is still
-      // visible via the :delta debug lines below.
-      if (m.role === 'assistant' && (m.isStreaming ?? false)) break;
+      // Log every message on first appearance (immediate, may be a
+      // mid-stream partial). Keeping this immediate is good forensics —
+      // if a turn hangs mid-stream we still see what arrived. The E2E
+      // spec does NOT read these logs for its assistant-text assertion
+      // (that would be racy under streaming /resume — Investigation
+      // #42); it reads window.__t2vLastAssistantFinal, set below only
+      // when the turn settles.
       const preview = (m.content ?? '').slice(0, 1000);
       logToHost('info', `[chat:${m.role}] ${preview}`, {
         id: m.id,
@@ -96,6 +90,23 @@ function LogBridge() {
       }
     }
   }, [chat.messages]);
+
+  // Expose the SETTLED assistant reply for the live-scenarios E2E spec.
+  // The spec can't reliably read the streamed [chat:assistant] logs:
+  // under streaming /resume the final segment lands just after the
+  // composer re-enables, so a log-timing capture grabs the PREVIOUS
+  // step's reply (off-by-one — observed in CI run 26465834730). When
+  // chat.isLoading flips false the turn is fully settled, so the last
+  // assistant message carries this turn's complete confirmation. We
+  // publish it on window for the spec to read deterministically. This
+  // is test-only plumbing; it has no effect on the chat UI.
+  useEffect(() => {
+    if (chat.isLoading) return;
+    const assistantMsgs = chat.messages.filter((m) => m.role === 'assistant');
+    const last = assistantMsgs[assistantMsgs.length - 1];
+    (window as unknown as { __t2vLastAssistantFinal?: string }).__t2vLastAssistantFinal =
+      last?.content ?? '';
+  }, [chat.messages, chat.isLoading]);
 
   // Log SDK errors verbatim.
   useEffect(() => {

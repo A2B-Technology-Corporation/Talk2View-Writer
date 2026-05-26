@@ -147,11 +147,16 @@ for (const sc of SCENARIO_FILES) {
         const beforeToolCalls = await page.evaluate(
           () => window.__t2vToolCalls?.length ?? 0,
         );
-        const beforeAssistantLogs = await page.evaluate(
+        // Snapshot the prior turn's settled assistant text. After this
+        // step we wait for window.__t2vLastAssistantFinal to CHANGE,
+        // which signals this turn settled (isLoading flipped false in
+        // the bundle). Reading this settled var — rather than parsing
+        // the streamed [chat:assistant] logs — avoids the off-by-one
+        // capture race under streaming /resume (Investigation #42).
+        const beforeAssistantFinal = await page.evaluate(
           () =>
-            (window.__t2vTestLogs ?? []).filter((l) =>
-              l.message.startsWith('[chat:assistant] '),
-            ).length,
+            (window as unknown as { __t2vLastAssistantFinal?: string })
+              .__t2vLastAssistantFinal ?? '',
         );
 
         await expect(composer).toBeEnabled({ timeout: 60_000 });
@@ -174,34 +179,27 @@ for (const sc of SCENARIO_FILES) {
           );
         }
 
-        // Wait for the FINAL (non-empty) [chat:assistant] log — bundle
-        // emits a placeholder when streaming starts and the real one
-        // when it ends. Use a soft try/catch so a late-emitting bundle
-        // doesn't abort the test before the transcript captures what
-        // IS available; the empty assistant_text gets recorded as a
-        // soft-failure below instead.
+        // Wait for this turn's settled assistant text to land — i.e.
+        // window.__t2vLastAssistantFinal changes from the prior turn's
+        // value to a fresh non-empty reply. Soft try/catch so a turn
+        // that never produces text (e.g. a tool hang) records an empty
+        // assistant_text as a soft-failure below rather than aborting.
         try {
           await expect
             .poll(
               async () =>
                 await page.evaluate((before) => {
-                  const logs = window.__t2vTestLogs ?? [];
-                  const assist = logs.filter((l) =>
-                    l.message.startsWith('[chat:assistant] '),
-                  );
-                  if (assist.length <= before) return false;
-                  const latest = assist[assist.length - 1];
-                  const body = latest.message
-                    .replace('[chat:assistant] ', '')
-                    .trim();
-                  return body !== '';
-                }, beforeAssistantLogs),
+                  const cur =
+                    (window as unknown as { __t2vLastAssistantFinal?: string })
+                      .__t2vLastAssistantFinal ?? '';
+                  return cur.trim() !== '' && cur !== before;
+                }, beforeAssistantFinal),
               { timeout: 120_000, intervals: [200, 500, 1000] },
             )
             .toBe(true);
         } catch {
           note(
-            `${stepLabel} timed out (120s) waiting for non-empty [chat:assistant] log; transcript will show whatever was captured`,
+            `${stepLabel} timed out (120s) waiting for the settled assistant reply; transcript will show whatever was captured`,
           );
         }
 
@@ -214,15 +212,12 @@ for (const sc of SCENARIO_FILES) {
           () => window.__t2vToolCalls?.slice() ?? [],
         );
         const stepToolCalls = toolCalls.slice(beforeToolCalls);
-        const allLogs = await page.evaluate(() => window.__t2vTestLogs?.slice() ?? []);
-        const assistantLogs = allLogs.filter((l) =>
-          l.message.startsWith('[chat:assistant] '),
+        const assistantText = await page.evaluate(
+          () =>
+            (
+              window as unknown as { __t2vLastAssistantFinal?: string }
+            ).__t2vLastAssistantFinal?.trim() ?? '',
         );
-        const assistantText = assistantLogs.length > 0
-          ? assistantLogs[assistantLogs.length - 1].message
-              .replace('[chat:assistant] ', '')
-              .trim()
-          : '';
 
         const docResp = await fetch(`${liveBridgeProxy.url()}/invoke_tool`, {
           method: 'POST',
