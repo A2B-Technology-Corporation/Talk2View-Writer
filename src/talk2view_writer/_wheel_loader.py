@@ -268,7 +268,11 @@ def ensure_vendored_pyobjc() -> None:
     _prefer_bundled_pure_python_deps()
 
     try:
-        import objc
+        # ``objc`` ships only inside the bundled pyobjc wheel — not in
+        # the dev venv — so mypy can't resolve it statically. The
+        # runtime import is exactly what this function exists to
+        # provide.
+        import objc  # type: ignore[import-not-found]
 
         logger.debug("objc already importable from %s", getattr(objc, "__file__", "<unknown>"))
         return
@@ -290,7 +294,7 @@ def ensure_vendored_pyobjc() -> None:
         logger.info("Prepended %s to sys.path", candidate)
 
     try:
-        import objc
+        import objc  # type: ignore[import-not-found]
 
         logger.info("objc loaded from %s", getattr(objc, "__file__", candidate))
     except ImportError as exc:
