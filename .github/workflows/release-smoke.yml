@@ -8,10 +8,15 @@ name: Release smoke
 # Per-platform depth (the chat WINDOW cannot open in headless CI on
 # macOS/Windows — no display server on hosted runners — and Windows chat is
 # unimplemented, investigation #48):
-#   - All platforms: install the .oxt, confirm it registers (`unopkg list`)
-#     and that its bundled per-platform wheels are present (`-m release_smoke`).
+#   - All platforms: install the .oxt (unopkg add — a non-zero exit means it
+#     failed to deploy/register) and confirm its bundled per-platform wheels
+#     are present (`-m release_smoke`).
 #   - Linux only: additionally instantiate the extension over the UNO socket
 #     (`-m integration`) and run a live auth/chat round-trip (`-m live`).
+#
+# Note: we deliberately don't re-verify via `unopkg list` — it prompts
+# interactively under --shared (root containers) and exits non-zero on macOS
+# in CI, producing false failures even though `unopkg add` succeeded.
 #
 # Triggers on every published release (incl. prereleases) + manual dispatch.
 
@@ -115,12 +120,11 @@ jobs:
         run: uv run pytest -m release_smoke -v --tb=short
 
       - name: Install the released .oxt
+        # A non-zero exit from `unopkg add` means the extension failed to
+        # deploy/register — so this step succeeding IS the cross-platform
+        # registration gate.
         shell: bash
         run: bash scripts/install_oxt.sh dist/Talk2ViewWriter.oxt
-
-      - name: Verify the extension registered (all platforms)
-        shell: bash
-        run: bash scripts/verify_oxt_installed.sh
 
       - name: Wire PyUNO into the venv (Linux)
         if: runner.os == 'Linux'
