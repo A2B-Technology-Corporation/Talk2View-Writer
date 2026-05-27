@@ -176,6 +176,23 @@ class TestSetPageSetup:
         assert "error" not in result, result
         assert result["applied"]["orientation"] == "landscape"
 
+    def test_paper_size_is_case_insensitive(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """The model commonly emits the US spelling "Letter".
+
+        Pre-fix this hit the lowercase-only allowlist and returned
+        ``Unknown paper_size "Letter"`` — a phantom double-call when the
+        model retried with "letter". The handler now lowercases first.
+        """
+        from talk2view_writer.tools.structure import set_page_setup
+
+        result = json.loads(set_page_setup(paper_size="Letter"))
+        assert "error" not in result, result
+        assert result["applied"]["paper_size"] == "letter"
+
     def test_header_type_camelcase_args_dont_raise(
         self,
         patched_extension: object,

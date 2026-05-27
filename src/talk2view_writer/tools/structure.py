@@ -569,10 +569,11 @@ def set_page_setup(
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
     """
-    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    # Case-insensitive enum args (schema enum dropped — see Writer #5).
     # Normalise before building the args dict below so it captures the
-    # canonical value.
+    # canonical value. The model commonly emits the US spelling "Letter".
     orientation = lower_enum(orientation)
+    paper_size = lower_enum(paper_size)
 
     args = {
         "orientation": orientation,
