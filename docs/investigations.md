@@ -1543,7 +1543,7 @@ because Investigation #38 prevents `add_comment` from attaching at
 all on that LO build; verified by unit tests + a build where comments
 work.
 
-## #47 — Engine `/resume` errors mid tool-loop in the installed `.oxt` (NEW 2026-05-27)
+## #47 — Engine `/resume` errors mid tool-loop in the installed `.oxt` (UPDATED 2026-05-27)
 
 **What:** With the released `.oxt` (`v1.0.0-alpha.1`) against
 production `engine.talk2view.com`, any prompt that drives a multi-step
@@ -1571,3 +1571,20 @@ which doesn't reproduce the real engine's resume bug.
 behind the catch-all, validate `tool_call_id` against the pending
 interrupt, consider a persistent checkpointer + lower agent
 temperature. No Writer-side change available; the client is correct.
+
+**Update 2026-05-27 (Platform #70 resolved, `@talk2view/sdk` 0.5.1):**
+The engine root cause is fixed server-side — `handle_tool_errors=True`
+on the client `ToolNode` now returns Pydantic validation / execution
+errors to the LLM as `ToolMessage`s it can self-correct from, instead
+of letting the `ValidationError` bubble into the `resume()` catch-all
+(Platform commit 2c10bd8, shipped as `@talk2view/sdk` v0.5.1). The
+hallucinated-arg case that triggered this (e.g. `space_before` /
+`space_after` on `insert_content`) no longer kills the tool loop.
+
+Writer-side action: bumped `src/web` `@talk2view/sdk` `^0.5.0` →
+`^0.5.1`. The new SDK emits a structured `error` ChatEvent (with
+`errorType` / `detail`) when the engine sends a real error, rather
+than duplicating the failure string as assistant text. So genuine
+engine errors now surface through `chat.error` (logged by `LogBridge`
+as `[chat:error]`) instead of masquerading as the assistant's reply.
+The deploy of the engine fix is independent of this client bump.
