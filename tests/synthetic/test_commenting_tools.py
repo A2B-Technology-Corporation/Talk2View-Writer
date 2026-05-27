@@ -9,10 +9,15 @@ walks in production.
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
-from tests.synthetic.synthetic_uno import FakeParagraph, FakeTextDocument
+from tests.synthetic.synthetic_uno import (
+    FakeAnnotation,
+    FakeParagraph,
+    FakeTextDocument,
+)
 
 pytestmark = pytest.mark.synthetic
 
@@ -165,6 +170,76 @@ class TestAddComment:
             RuntimeError("something else entirely"),
         ):
             assert _structured_error_for_known_lo_bug(unrelated, anchor="x") is None
+
+
+# ---------------------------------------------------------------------------
+# Authorship stamping (Investigation #46 / ADR-0037)
+# ---------------------------------------------------------------------------
+
+
+def _ctx_with_user(given: str, surname: str) -> MagicMock:
+    """A fake ctx whose UserProfile config resolves to ``given``/``surname``."""
+    access = MagicMock(name="ConfigurationAccess")
+    access.getByName.side_effect = lambda key: {
+        "givenname": given,
+        "sn": surname,
+    }[key]
+    provider = MagicMock(name="ConfigurationProvider")
+    provider.createInstanceWithArguments.return_value = access
+    ctx = MagicMock(name="ctx")
+    ctx.ServiceManager.createInstanceWithContext.return_value = provider
+    return ctx
+
+
+def _ctx_without_config() -> MagicMock:
+    """A fake ctx whose configuration service is unavailable."""
+    ctx = MagicMock(name="ctx")
+    ctx.ServiceManager.createInstanceWithContext.side_effect = RuntimeError(
+        "no configuration service on this build"
+    )
+    return ctx
+
+
+class TestCommentAuthorship:
+    def test_author_includes_lo_user_name(self) -> None:
+        from talk2view_writer.tools.commenting import _comment_author
+
+        author = _comment_author(_ctx_with_user("Ben", "Zwick"))
+        assert author == "Talk2View on behalf of Ben Zwick"
+
+    def test_author_falls_back_when_config_unavailable(self) -> None:
+        """A stripped build → plain 'Talk2View', not a crash (graceful)."""
+        from talk2view_writer.tools.commenting import _comment_author
+
+        assert _comment_author(_ctx_without_config()) == "Talk2View"
+
+    def test_author_falls_back_when_user_name_blank(self) -> None:
+        from talk2view_writer.tools.commenting import _comment_author
+
+        assert _comment_author(_ctx_with_user("", "")) == "Talk2View"
+
+    def test_now_uno_datetime_carries_current_date(self) -> None:
+        from datetime import datetime
+
+        from talk2view_writer.tools.commenting import _now_uno_datetime
+
+        before = datetime.now()
+        dt = _now_uno_datetime()
+        after = datetime.now()
+        # createUnoStruct is a MagicMock in tests; the fields we set are
+        # readable back. Confirm the date matches today (date can't roll
+        # between before/after except at midnight — assert the year/month).
+        assert dt.Year == before.year == after.year
+        assert dt.Month == before.month
+
+    def test_stamp_authorship_sets_author_initials_and_date(self) -> None:
+        from talk2view_writer.tools.commenting import _stamp_authorship
+
+        ann = FakeAnnotation(name="x", content="hi")
+        _stamp_authorship(_ctx_with_user("Ben", "Zwick"), ann)
+        assert ann.Author == "Talk2View on behalf of Ben Zwick"
+        assert ann.Initials == "T2V"
+        assert ann.DateTimeValue is not None
 
 
 # ---------------------------------------------------------------------------

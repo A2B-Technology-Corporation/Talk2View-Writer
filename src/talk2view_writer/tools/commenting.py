@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 from talk2view import tool  # type: ignore[import-not-found]
@@ -128,6 +129,94 @@ def _find_by_id(doc: Any, comment_id: str) -> Any | None:
         if _annotation_id(a) == comment_id:
             return a
     return None
+
+
+# ---------------------------------------------------------------------------
+# Authorship stamping
+# ---------------------------------------------------------------------------
+#
+# When a human types a comment, LibreOffice fills in the Author (from
+# Tools > Options > User Data) and the timestamp automatically. The UNO
+# ``createInstance`` path does NOT — a comment created via the API comes
+# out with a blank author and no date (Investigation #46). We replicate
+# the auto-fill explicitly. See ADR-0037 for the author-string choice.
+
+
+def _lo_user_full_name(ctx: Any) -> str:
+    """Return the LibreOffice user-profile full name, or ``""`` if unknown.
+
+    Reads ``givenname`` + ``sn`` from ``/org.openoffice.UserProfile/Data``
+    — the same name LibreOffice stamps on a human-typed comment.
+
+    Best-effort: a stripped or headless build may not expose the
+    configuration service. We surface the failure via ``logger.warning``
+    (not silently) and fall back to ``""`` so the caller can use a plain
+    ``"Talk2View"`` author rather than failing the whole comment.
+    """
+    import uno  # type: ignore[import-not-found]
+
+    try:
+        provider = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.configuration.ConfigurationProvider", ctx
+        )
+        arg = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
+        arg.Name = "nodepath"
+        arg.Value = "/org.openoffice.UserProfile/Data"
+        access = provider.createInstanceWithArguments(
+            "com.sun.star.configuration.ConfigurationAccess", (arg,)
+        )
+        given = (access.getByName("givenname") or "").strip()
+        surname = (access.getByName("sn") or "").strip()
+    except Exception as exc:
+        logger.warning(
+            "Could not read LibreOffice user-profile name (%s); "
+            "stamping comments as plain 'Talk2View'.",
+            exc,
+        )
+        return ""
+    return f"{given} {surname}".strip()
+
+
+def _comment_author(ctx: Any) -> str:
+    """Author string for AI-created comments (ADR-0037).
+
+    ``"Talk2View on behalf of <user>"`` so the comment is attributable to
+    the assistant yet tied to the human driving the session. Falls back
+    to plain ``"Talk2View"`` when the LibreOffice user name is unknown.
+    """
+    name = _lo_user_full_name(ctx)
+    return f"Talk2View on behalf of {name}" if name else "Talk2View"
+
+
+def _now_uno_datetime() -> Any:
+    """Build a ``com.sun.star.util.DateTime`` for the current local time."""
+    import uno  # type: ignore[import-not-found]
+
+    now = datetime.now()
+    dt = uno.createUnoStruct("com.sun.star.util.DateTime")
+    dt.Year = now.year
+    dt.Month = now.month
+    dt.Day = now.day
+    dt.Hours = now.hour
+    dt.Minutes = now.minute
+    dt.Seconds = now.second
+    if hasattr(dt, "NanoSeconds"):
+        dt.NanoSeconds = now.microsecond * 1000
+    if hasattr(dt, "IsUTC"):
+        dt.IsUTC = False
+    return dt
+
+
+def _stamp_authorship(ctx: Any, annotation: Any) -> None:
+    """Populate Author / Initials / DateTimeValue on a new annotation.
+
+    Without this, comments created through the UNO API show a blank
+    author and no date (Investigation #46 / ADR-0037).
+    """
+    annotation.Author = _comment_author(ctx)
+    annotation.Initials = "T2V"
+    if hasattr(annotation, "DateTimeValue"):
+        annotation.DateTimeValue = _now_uno_datetime()
 
 
 # ---------------------------------------------------------------------------
@@ -321,10 +410,7 @@ def add_comment(
     # Create an Annotation text field and attach it to the matched range.
     annotation = doc.createInstance("com.sun.star.text.TextField.Annotation")
     annotation.Content = comment
-    # ``Author`` and ``Initials`` default to the LibreOffice user — leaving
-    # them unset preserves Writer's normal behaviour. Setting an explicit
-    # author here would diverge from how comments appear when a human user
-    # types them.
+    _stamp_authorship(ext.ctx, annotation)
 
     text_obj = target_range.getText()
     # ``True`` for the second arg replaces the range with the annotation
@@ -480,12 +566,12 @@ def manage_comment(
 
     elif action == "reply":
         assert isinstance(text, str)
-        _insert_reply(doc, target, text)
+        _insert_reply(ext.ctx, doc, target, text)
         detail = f'Reply added: "{text_preview}"'
 
     elif action == "resolve_with_reply":
         assert isinstance(text, str)
-        _insert_reply(doc, target, text)
+        _insert_reply(ext.ctx, doc, target, text)
         if hasattr(target, "Resolved"):
             target.Resolved = True
             detail = f'Reply added and comment resolved: "{text_preview}"'
@@ -514,7 +600,7 @@ def manage_comment(
     )
 
 
-def _insert_reply(doc: Any, parent: Any, content: str) -> None:
+def _insert_reply(ctx: Any, doc: Any, parent: Any, content: str) -> None:
     """Insert a reply annotation anchored to the parent's range.
 
     LibreOffice ≥ 7.4 supports the reply chain via the ``ParentName``
@@ -524,6 +610,7 @@ def _insert_reply(doc: Any, parent: Any, content: str) -> None:
     """
     reply = doc.createInstance("com.sun.star.text.TextField.Annotation")
     reply.Content = content
+    _stamp_authorship(ctx, reply)
 
     parent_name = getattr(parent, "Name", "") or ""
     if parent_name and hasattr(reply, "ParentName"):

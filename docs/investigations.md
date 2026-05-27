@@ -1514,3 +1514,31 @@ gap.
 (`SqliteSaver`, `PostgresSaver`, or one of LangGraph's
 serverless-friendly options). Trade-off: persistent checkpointers
 add per-step latency. Worth profiling.
+
+## #46 — Writer: UNO-created annotations have no author/date (FIXED 2026-05-27)
+
+**What:** `add_comment` and `manage_comment`'s reply path created
+annotations via `doc.createInstance("com.sun.star.text.TextField.Annotation")`
+and set only `Content`. Unlike a human typing a comment (where
+LibreOffice auto-fills `Author` from Tools › Options › User Data and
+the timestamp), the UNO path leaves `Author` and `DateTimeValue`
+blank — so every AI comment showed an empty author and no date in
+the margin.
+
+**Where:** `src/talk2view_writer/tools/commenting.py` — the old code
+even had a comment claiming leaving them unset "preserves Writer's
+normal behaviour" (backwards: the API path is exactly where the
+auto-fill is missing).
+
+**Why it matters:** Reviewers couldn't tell who left a comment or
+when. Word doesn't hit this because `insertComment` stamps the
+signed-in Office user automatically — a Writer-specific gap.
+
+**Fix:** `_stamp_authorship` now sets `Author` =
+`"Talk2View on behalf of <LO user>"` (read from
+`/org.openoffice.UserProfile/Data`, falling back to plain
+`"Talk2View"`), `Initials` = `"T2V"`, and `DateTimeValue` = now.
+See ADR-0037. Note: can't be confirmed via the apt-build live E2E
+because Investigation #38 prevents `add_comment` from attaching at
+all on that LO build; verified by unit tests + a build where comments
+work.

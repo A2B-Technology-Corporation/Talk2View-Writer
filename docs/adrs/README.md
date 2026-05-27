@@ -57,6 +57,7 @@ applied.
 | [0034](0034-reuse-word-partner-key-with-writer-system-prompt.md) | Reuse Word's partner key + override system prompt for Writer | G | Accepted |
 | [0035](0035-track-changes-default-for-ai-edits.md) | Track changes by default for AI edits (per-call envelope, user preference) | G | Accepted |
 | [0036](0036-live-e2e-via-playwright-real-soffice.md) | Live E2E via Playwright + bridge-routed shim + real soffice + real engine | G | Accepted |
+| [0037](0037-comment-authorship-stamping.md) | Stamp author ("Talk2View on behalf of …") + date on AI-created comments | G | Accepted |
 
 ## Writing a new ADR
 
