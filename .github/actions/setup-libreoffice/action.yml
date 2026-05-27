@@ -1,0 +1,182 @@
+name: Setup LibreOffice
+description: >
+  Install LibreOffice for the current runner OS and log the resolved
+  version. On Linux the apt source is selected by the lo-apt-source input
+  (ubuntu | ppa-still | ppa-fresh | debian-stable | debian-backports);
+  macOS uses the Homebrew cask and Windows uses chocolatey (with retries).
+  Extracted from the ci.yml integration job so the release-smoke workflow
+  can reuse the exact same install paths.
+
+inputs:
+  lo-apt-source:
+    description: "Linux apt source: ubuntu | ppa-still | ppa-fresh | debian-stable | debian-backports"
+    required: false
+    default: ubuntu
+
+runs:
+  using: composite
+  steps:
+    - name: Install LibreOffice (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        LO_APT_SOURCE: ${{ inputs.lo-apt-source }}
+      run: |
+        set -x
+        # Inside a Debian container we're root and sudo isn't
+        # installed; on the native Ubuntu runner sudo is needed.
+        if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+        # Containers from ``debian:bookworm`` are minimal — git,
+        # curl, ca-certificates, gnupg, and lsb-release aren't
+        # installed. Without them ``actions/checkout``,
+        # ``setup-uv``, and ``add-apt-repository`` can't run. Bring
+        # them in before doing anything else.
+        if [ -f /etc/debian_version ] && ! command -v git >/dev/null 2>&1; then
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            git curl ca-certificates gnupg lsb-release \
+            software-properties-common
+        fi
+
+        # Pick the apt source by matrix entry. ``ubuntu`` (default)
+        # uses noble's bundled LO 24.2.x. The ``ppa-*`` variants pull
+        # newer LO branches from TDF's official PPAs so we can detect
+        # major-version regressions. ``debian-stable`` and
+        # ``debian-backports`` enable Debian-specific paths inside
+        # a ``debian:bookworm`` container so we cover the user's
+        # actual deployment environment (see ADR-0026).
+        case "$LO_APT_SOURCE" in
+          ubuntu)
+            echo "Using Ubuntu noble apt (LibreOffice 24.2.x)"
+            ;;
+          ppa-still)
+            $SUDO apt-get update
+            $SUDO apt-get install -y --no-install-recommends software-properties-common
+            $SUDO add-apt-repository -y ppa:libreoffice/libreoffice-still
+            ;;
+          ppa-fresh)
+            $SUDO apt-get update
+            $SUDO apt-get install -y --no-install-recommends software-properties-common
+            $SUDO add-apt-repository -y ppa:libreoffice/ppa
+            ;;
+          debian-stable)
+            echo "Using Debian bookworm stable apt (LibreOffice 7.x)"
+            ;;
+          debian-backports)
+            echo "Enabling Debian bookworm-backports for LibreOffice 26.x"
+            echo "deb http://deb.debian.org/debian bookworm-backports main" \
+              | $SUDO tee /etc/apt/sources.list.d/backports.list
+            $SUDO apt-get update
+            # Pin LibreOffice packages to backports — without this
+            # apt picks the stable LO 7.x even when backports is
+            # enabled, defeating the point of the matrix entry.
+            # Built via printf to avoid a HEREDOC whose closing
+            # delimiter would break YAML block-scalar indentation.
+            printf '%s\n' \
+              'Package: libreoffice* libobasis* python3-uno' \
+              'Pin: release a=bookworm-backports' \
+              'Pin-Priority: 990' \
+              | $SUDO tee /etc/apt/preferences.d/99-libreoffice-backports
+            ;;
+          *)
+            echo "::error::Unknown LO_APT_SOURCE=$LO_APT_SOURCE"
+            exit 1
+            ;;
+        esac
+        $SUDO apt-get update
+        $SUDO apt-get install -y --no-install-recommends \
+          libreoffice libreoffice-script-provider-python \
+          python3-uno xvfb at-spi2-core x11-utils \
+          imagemagick
+        # Log which version actually got installed so the failing
+        # job's banner line tells us the real number not just the
+        # PPA label. Also append to $GITHUB_STEP_SUMMARY so the
+        # version shows on the workflow run page without having to
+        # expand the install log — important for the matrix where
+        # the PPA name (``fresh``) drifts independently of the real
+        # major version (``fresh`` may still be 25.x on noble until
+        # 26.x is built for it).
+        echo "::group::Installed LibreOffice version"
+        lo_version="$(/usr/bin/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+        echo "$lo_version"
+        dpkg -l 'libreoffice-core*' 2>/dev/null | tail -5 || true
+        echo "::endgroup::"
+        {
+          echo "### LibreOffice version (Linux, $LO_APT_SOURCE)"
+          echo ""
+          echo '```'
+          echo "$lo_version"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+        # Start a system AT-SPI bus for dogtail (Linux only).
+        $SUDO systemctl --version >/dev/null 2>&1 || true
+
+    - name: Install LibreOffice (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        # `--cask` ships the .app bundle. Homebrew removed the
+        # `--no-quarantine` flag in 2025; `xattr -d` after install
+        # is the replacement for skipping Gatekeeper's first-run
+        # prompt so we can headless-launch from CI.
+        brew install --cask libreoffice
+        xattr -dr com.apple.quarantine /Applications/LibreOffice.app || true
+        lo_version="$(/Applications/LibreOffice.app/Contents/MacOS/soffice --version 2>/dev/null || echo 'soffice --version FAILED')"
+        echo "$lo_version"
+        {
+          echo "### LibreOffice version (macOS Homebrew cask)"
+          echo ""
+          echo '```'
+          echo "$lo_version"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Install LibreOffice (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        # documentfoundation.org's CDN intermittently times out on
+        # the Windows install — observed 2026-05-20 with a 60s
+        # ``GetResponse`` timeout from chocolatey on the
+        # ``LibreOffice_26.2.3_Win_x86-64.msi`` URL. Retry up to
+        # 3 times with exponential backoff so a transient CDN
+        # outage doesn't block the PR.
+        $maxAttempts = 3
+        $sleepSeconds = 30
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+          Write-Host "choco install libreoffice-fresh attempt $attempt of $maxAttempts"
+          choco install libreoffice-fresh -y --no-progress
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Install succeeded on attempt $attempt"
+            break
+          }
+          if ($attempt -lt $maxAttempts) {
+            Write-Host "Install failed (exit $LASTEXITCODE); sleeping ${sleepSeconds}s before retry"
+            Start-Sleep -Seconds $sleepSeconds
+            $sleepSeconds = $sleepSeconds * 2
+          } else {
+            Write-Error "All $maxAttempts attempts failed"
+            exit 1
+          }
+        }
+        $sofficeExe = 'C:\Program Files\LibreOffice\program\soffice.exe'
+        if (Test-Path $sofficeExe) {
+          $lo_version = (& $sofficeExe --version) 2>&1
+        } else {
+          $lo_version = 'soffice.exe not found at expected path'
+        }
+        Write-Host $lo_version
+        # Avoid a PowerShell here-string (``@"..."@``) here: its closing
+        # delimiter must sit at column 1 of the line, but that breaks
+        # YAML's block-scalar indentation rule and the whole workflow
+        # fails to parse silently (GitHub does NOT trigger a run when
+        # the file is unparseable — the symptom is "no checks queued",
+        # not a visible error). Build the summary with explicit
+        # Add-Content lines instead.
+        $fence = [char]0x60 + [char]0x60 + [char]0x60
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### LibreOffice version (Windows Chocolatey libreoffice-fresh)"
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ""
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $lo_version
+        Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $fence
