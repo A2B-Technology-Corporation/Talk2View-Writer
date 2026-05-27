@@ -1542,3 +1542,32 @@ See ADR-0037. Note: can't be confirmed via the apt-build live E2E
 because Investigation #38 prevents `add_comment` from attaching at
 all on that LO build; verified by unit tests + a build where comments
 work.
+
+## #47 — Engine `/resume` errors mid tool-loop in the installed `.oxt` (NEW 2026-05-27)
+
+**What:** With the released `.oxt` (`v1.0.0-alpha.1`) against
+production `engine.talk2view.com`, any prompt that drives a multi-step
+tool loop dies partway through with the engine catch-all
+**"An error occurred while resuming. Please try again."** (HTTP 200,
+single SSE chunk, `finish_reason: stop`). Single-shot text turns (no
+tools) work. Filed upstream as **Talk2View-Platform #70**.
+
+**Where:** Engine (Talk2View-Platform), not Writer. Confirmed from
+`~/.cache/talk2view-writer/talk2view.log`: every `/resume` POST
+returned **200 OK**, every tool executed on the client, every tool
+result was well-formed JSON. The error text arrives as a normal 200
+SSE content delta from the engine (`server: uvicorn`) — i.e. raised
+and swallowed server-side. The Writer client is healthy.
+
+**Why it matters:** This is the headline failure for the alpha — the
+product looks broken on the first real "write me a document" prompt.
+Ties together the already-filed engine issues: #44 (`/resume` ignores
+`tool_call_id`), #45 (`MemorySaver` in-RAM state), #43
+(`default_temperature = 1.0` → duplicate/non-deterministic tool calls).
+"Works without the oxt" = the E2E path runs against `mock-engine.ts`,
+which doesn't reproduce the real engine's resume bug.
+
+**Next step:** Tracked in Platform #70 — get the server-side traceback
+behind the catch-all, validate `tool_call_id` against the pending
+interrupt, consider a persistent checkpointer + lower agent
+temperature. No Writer-side change available; the client is correct.
