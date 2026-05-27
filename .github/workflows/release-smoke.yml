@@ -1,0 +1,195 @@
+name: Release smoke
+
+# Post-publish verification of the ACTUAL released artifact. Downloads the
+# `Talk2ViewWriter.oxt` asset from the GitHub Release and installs+exercises
+# it the way a user does, across the same platform/LibreOffice matrix CI
+# already validates.
+#
+# Per-platform depth (the chat WINDOW cannot open in headless CI on
+# macOS/Windows — no display server on hosted runners — and Windows chat is
+# unimplemented, investigation #48):
+#   - All platforms: install the .oxt, confirm it registers (`unopkg list`)
+#     and that its bundled per-platform wheels are present (`-m release_smoke`).
+#   - Linux only: additionally instantiate the extension over the UNO socket
+#     (`-m integration`) and run a live auth/chat round-trip (`-m live`).
+#
+# Triggers on every published release (incl. prereleases) + manual dispatch.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to smoke-test (e.g. v1.0.0-alpha.4)"
+        required: true
+
+permissions:
+  contents: read  # download the release asset via GITHUB_TOKEN
+
+concurrency:
+  group: release-smoke-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.os }}${{ matrix.lo_label && format(', LO {0}', matrix.lo_label) || '' }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirrors the ci.yml integration matrix (include-only — see the note
+        # there about merge-collapse). Live chat runs only on the Linux
+        # ubuntu entry; macOS/Windows verify install + load only.
+        include:
+          - os: ubuntu-latest
+            lo_apt_source: ubuntu
+            lo_label: "24.2 noble apt"
+            run_live_chat: true
+          - os: ubuntu-latest
+            lo_apt_source: ppa-still
+            lo_label: "still TDF PPA (25.x)"
+          - os: ubuntu-latest
+            lo_apt_source: ppa-fresh
+            lo_label: "fresh TDF PPA (26.x)"
+          - os: ubuntu-latest
+            container: buildpack-deps:bookworm
+            lo_apt_source: debian-stable
+            lo_label: "Debian bookworm stable"
+          - os: ubuntu-latest
+            container: buildpack-deps:bookworm
+            lo_apt_source: debian-backports
+            lo_label: "Debian bookworm backports (LO 26.x)"
+          - os: macos-14
+          - os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/checkout-sdk-sibling
+        with:
+          token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv python install 3.13
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            echo "::error::No release tag (neither release event nor dispatch input)"; exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Smoke-testing release $TAG"
+
+      - name: Install LibreOffice
+        uses: ./.github/actions/setup-libreoffice
+        with:
+          lo-apt-source: ${{ matrix.lo_apt_source || 'ubuntu' }}
+
+      # JS action — runs even inside the Debian container (which has no `gh`)
+      # and authenticates to the private repo with GITHUB_TOKEN.
+      - name: Download released .oxt
+        uses: robinraju/release-downloader@v1
+        with:
+          repository: ${{ github.repository }}
+          tag: ${{ steps.tag.outputs.tag }}
+          fileName: Talk2ViewWriter.oxt
+          out-file-path: dist
+          token: ${{ github.token }}
+
+      - name: Install dev dependencies (test runner)
+        run: make dev
+
+      - name: Validate .oxt contents (all platforms)
+        env:
+          T2V_RELEASE_OXT: dist/Talk2ViewWriter.oxt
+          T2V_RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: uv run pytest -m release_smoke -v --tb=short
+
+      - name: Install the released .oxt
+        shell: bash
+        run: bash scripts/install_oxt.sh dist/Talk2ViewWriter.oxt
+
+      - name: Verify the extension registered (all platforms)
+        shell: bash
+        run: bash scripts/verify_oxt_installed.sh
+
+      - name: Wire PyUNO into the venv (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          VENV_SITE=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))")
+          ln -sf /usr/lib/python3/dist-packages/uno.py "$VENV_SITE/uno.py"
+          ln -sf /usr/lib/python3/dist-packages/unohelper.py "$VENV_SITE/unohelper.py"
+
+      - name: Start soffice (Linux, under xvfb)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x1024x24 &
+          sleep 1
+          # Debian containers have no session bus; dbus-run-session creates
+          # one for soffice. Harmless on the native Ubuntu runner.
+          if command -v dbus-run-session >/dev/null 2>&1; then
+            DBUS_WRAP=(dbus-run-session --)
+          else
+            DBUS_WRAP=()
+          fi
+          T2V_WRITER_DEBUG=1 "${DBUS_WRAP[@]}" /usr/bin/soffice \
+            --writer --norestore --nologo --nodefault \
+            --accept="socket,host=127.0.0.1,port=2002;urp;" \
+            >soffice.stdout.log 2>soffice.stderr.log &
+          uv run python scripts/wait_for_soffice.py --timeout 120
+
+      - name: Start headless soffice (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          /Applications/LibreOffice.app/Contents/MacOS/soffice \
+            --headless --norestore --nologo --nodefault \
+            --accept="socket,host=127.0.0.1,port=2002;urp;" &
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      - name: Start headless soffice (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $soffice = 'C:\Program Files\LibreOffice\program\soffice.exe'
+          Start-Process -FilePath $soffice -ArgumentList @(
+            '--headless', '--norestore', '--nologo', '--nodefault',
+            '--accept="socket,host=127.0.0.1,port=2002;urp;"'
+          )
+          uv run python scripts/wait_for_soffice.py --timeout 60
+
+      - name: Integration tests (extension loads over UNO)
+        # On Linux this instantiates com.talk2view.writer.ProtocolHandler
+        # inside soffice (the real load canary). On macOS/Windows the
+        # UNO-socket tests skip (PyUNO isn't wired into the venv there),
+        # leaving the cross-platform `unopkg list` + contents checks above
+        # as the install guarantee.
+        timeout-minutes: 5
+        run: uv run pytest -m integration -s --tb=short
+
+      - name: Live chat round-trip (Linux only)
+        if: runner.os == 'Linux' && matrix.run_live_chat == true
+        env:
+          T2V_TEST_USER_EMAIL: ${{ secrets.T2V_TEST_USER_EMAIL }}
+          T2V_TEST_USER_PASSWORD: ${{ secrets.T2V_TEST_USER_PASSWORD }}
+        run: uv run pytest -m live --tb=short
+
+      - name: Upload soffice logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-smoke-${{ matrix.os }}-${{ matrix.lo_apt_source || 'default' }}
+          path: |
+            soffice.stdout.log
+            soffice.stderr.log
+          if-no-files-found: ignore
