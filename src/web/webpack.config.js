@@ -1,5 +1,9 @@
 const path = require('path');
+const webpack = require('webpack');
 const HtmlWebpackPlugin = require('html-webpack-plugin');
+// Single source of truth for the bundled version — bumped by the
+// release version dance alongside pyproject.toml / __init__.py.
+const PKG_VERSION = require('./package.json').version;
 
 /**
  * Webpack config for the Talk2View-Writer chat UI.
@@ -55,6 +59,11 @@ module.exports = (env, argv) => {
       ],
     },
     plugins: [
+      // Inline the extension version so the in-app update banner can
+      // compare it against the latest GitHub release.
+      new webpack.DefinePlugin({
+        __APP_VERSION__: JSON.stringify(PKG_VERSION),
+      }),
       new HtmlWebpackPlugin({
         template: path.resolve(__dirname, 'index.html'),
         filename: 'index.html',

@@ -21,6 +21,7 @@ import { Talk2View, ChatPanel, useChat, useTalk2View } from '@talk2view/sdk/ui';
 import { useT2V, useT2VTools } from '@talk2view/sdk/react';
 import { writerTools } from './tools';
 import { logToHost } from './bridge';
+import { UpdateBanner } from './UpdateBanner';
 import { rememberEmail, installEmailAutofill } from './remember_email';
 // Repo-root SYSTEM_PROMPT.md — webpack's asset/source loader inlines
 // the file's contents as a string at build time. Single source of
@@ -199,6 +200,7 @@ export function App() {
       <ToolRegistrar />
       <LogBridge />
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+        <UpdateBanner />
         <ChatPanel />
       </div>
     </Talk2View>
