@@ -323,6 +323,17 @@ def main() -> None:
 
     api = _Api(bridge)
 
+    # On macOS pywebview's Cocoa backend imports AppKit / Foundation /
+    # WebKit / objc — none of which ship with LibreOffice's bundled
+    # Python framework. We bundle pyobjc as universal2 wheels under
+    # ``_vendored_wheels/<runtime-tag>/`` (see ADR-0038) and the
+    # loader prepends that path to sys.path so pywebview's
+    # ``initialize(gui='cocoa')`` resolves cleanly. No-op on
+    # Linux/Windows.
+    from ._wheel_loader import ensure_vendored_pyobjc
+
+    ensure_vendored_pyobjc()
+
     import webview
 
     _patch_webkitgtk_cors_settings()

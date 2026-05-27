@@ -39,6 +39,30 @@ from pathlib import Path
 # Bump in tandem when ``uv lock --upgrade`` selects a new pydantic-core.
 PYDANTIC_CORE_VERSION = "2.46.4"
 
+# pyobjc packages bundled for the macOS Cocoa backend of pywebview.
+# Per pywebview's official install docs the minimum sufficient set is:
+#
+#   pyobjc-core, pyobjc-framework-Cocoa,
+#   pyobjc-framework-WebKit, pyobjc-framework-security
+#
+# We list ``-WebKit`` + ``-security`` as direct requests; pip resolves
+# ``-core`` and ``-Cocoa`` transitively. All four ship as ``universal2``
+# wheels (arm64 + x86_64 in one binary) per Python minor version, so
+# the same set is extracted into BOTH macOS arch directories — the
+# loader prepends one path per runtime tag and finds AppKit /
+# Foundation / WebKit / objc / PyObjCTools regardless of arch. See
+# ADR-0038.
+PYOBJC_DIRECT_REQUIREMENTS: tuple[str, ...] = (
+    "pyobjc-framework-WebKit",
+    "pyobjc-framework-security",
+)
+# Pin the pyobjc major version that the OXT was last validated
+# against. Bump in tandem with a manual test that webview.start()
+# still succeeds — pyobjc occasionally drops macOS-version support
+# in major releases, so this is the matrix-maintenance counterpart
+# to PYDANTIC_CORE_VERSION above.
+PYOBJC_VERSION_SPEC = ">=12.1,<13"
+
 
 # (python_tag, abi_tag, platform_tag, our_short_plat_tag)
 #
@@ -138,7 +162,121 @@ def _extract(wheel: Path, dest: Path) -> None:
                 zf.extract(member, dest)
 
 
+def _extract_all_top_level(wheel: Path, dest: Path) -> list[str]:
+    """Extract every top-level package from ``wheel`` into ``dest``.
+
+    Unlike :func:`_extract` (single-package), this is the right tool
+    for the pyobjc framework wheels which each contribute multiple
+    sibling top-level directories (e.g. ``pyobjc_framework_cocoa``
+    contributes ``AppKit/``, ``Foundation/``, ``Cocoa/``,
+    ``CoreFoundation/``, and ``PyObjCTools/``).
+
+    Skips ``*.dist-info/`` metadata directories — the loader doesn't
+    need them and keeping them out keeps the OXT smaller.
+
+    Returns the sorted list of top-level directory names extracted,
+    useful for the script's per-target summary log.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    extracted: set[str] = set()
+    with zipfile.ZipFile(wheel) as zf:
+        for member in zf.namelist():
+            top = member.split("/", 1)[0]
+            if not top or top.endswith(".dist-info"):
+                continue
+            zf.extract(member, dest)
+            extracted.add(top)
+    return sorted(extracted)
+
+
+def _download_pyobjc(py_tag: str, abi_tag: str, plat_tag: str) -> list[Path]:
+    """Download pyobjc wheels (direct + transitive) for one target.
+
+    Unlike ``_download``, this resolves transitive deps so pip pulls
+    in pyobjc-core + pyobjc-framework-Cocoa automatically alongside
+    the direct requests. Returns the list of wheel paths matching
+    the requested python + abi tag — empty ⇒ pip download failed
+    (the matrix entry will be reported as a miss in the script
+    summary).
+
+    NOTE: pyobjc ships ``universal2`` wheels, so calling pip with
+    ``--platform macosx_11_0_arm64`` AND ``--platform macosx_11_0_x86_64``
+    in sequence will resolve to the SAME wheel filename for both
+    arches. pip skips the re-download on the second call; matching
+    by ``cpXY-cpXY-*.whl`` filename instead of a set-diff handles
+    that without losing the second arch's results.
+    """
+    WHEELS_DIR.mkdir(parents=True, exist_ok=True)
+    py_ver = f"{py_tag[2]}.{py_tag[3:]}"  # cp313 -> 3.13
+    cmd = [
+        "uvx",
+        "pip",
+        "download",
+        "--only-binary=:all:",
+        "--python-version",
+        py_ver,
+        "--platform",
+        plat_tag,
+        "--implementation",
+        "cp",
+        "--abi",
+        abi_tag,
+        "--dest",
+        str(WHEELS_DIR),
+        *[f"{req}{PYOBJC_VERSION_SPEC}" for req in PYOBJC_DIRECT_REQUIREMENTS],
+    ]
+    print(f"  $ {' '.join(cmd[2:])}")
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        print(f"    SKIP — pip download failed:\n    {result.stderr.strip()}")
+        return []
+    return sorted(WHEELS_DIR.glob(f"pyobjc_*-*-{py_tag}-{abi_tag}-*.whl"))
+
+
+def _vendor_pyobjc_for_macos_rows(misses: list[str]) -> list[str]:
+    """Download + extract pyobjc into every macOS row of MATRIX.
+
+    pyobjc ships universal2 wheels — the same binary content lands
+    in both ``cpXY-macosx_arm64`` and ``cpXY-macosx_x86_64``
+    extracted directories. Pip caches downloads across runs so the
+    second arch is essentially free.
+
+    Appends per-target failure tags to ``misses`` (passed by
+    reference) and returns the list of successful targets so the
+    script's main summary can roll both wheel sets together.
+    """
+    successes: list[str] = []
+    print("\nVendoring pyobjc (Cocoa backend of pywebview) for macOS rows")
+    for py_tag, abi_tag, plat_tag, our_plat_tag in MATRIX:
+        if not our_plat_tag.startswith("macosx_"):
+            continue
+        target = f"{py_tag}-{our_plat_tag}"
+        print(f"\n[{target}] (pyobjc)")
+        wheels = _download_pyobjc(py_tag, abi_tag, plat_tag)
+        if not wheels:
+            misses.append(f"pyobjc:{target}")
+            continue
+        dest = EXTRACTED_DIR / target
+        # NOTE: deliberately don't shutil.rmtree(dest) here — the
+        # pydantic-core extraction already populated this directory
+        # earlier in main(). pyobjc and pydantic_core have disjoint
+        # top-level dir names, so adding pyobjc's modules alongside
+        # is safe.
+        for wheel in wheels:
+            extracted = _extract_all_top_level(wheel, dest)
+            print(f"    + {wheel.name} -> {', '.join(extracted)}")
+        successes.append(target)
+    return successes
+
+
 def main() -> int:
+    """Refresh the cross-platform wheel matrix (pydantic-core + pyobjc).
+
+    Clears ``vendor/wheels`` + ``vendor/extracted``, downloads the
+    pinned pydantic_core wheels for every row of :data:`MATRIX`, then
+    layers pyobjc wheels on the macOS rows. Exits 1 if any target
+    failed to download (the summary names which ones).
+    """
     if WHEELS_DIR.exists():
         print(f"Clearing previous wheels under {WHEELS_DIR}")
         shutil.rmtree(WHEELS_DIR)
@@ -163,11 +301,15 @@ def main() -> int:
         print(f"    -> extracted to {dest.relative_to(REPO)}")
         successes.append(target)
 
+    pyobjc_successes = _vendor_pyobjc_for_macos_rows(misses)
+
     print("\n" + "=" * 60)
-    print(f"Vendored {len(successes)} of {len(MATRIX)} targets.")
+    print(f"Vendored pydantic_core: {len(successes)} of {len(MATRIX)} targets.")
+    macos_rows = sum(1 for _, _, _, plat in MATRIX if plat.startswith("macosx_"))
+    print(f"Vendored pyobjc:        {len(pyobjc_successes)} of {macos_rows} macOS rows.")
     if misses:
         print(f"  Missed: {', '.join(misses)}")
-        print("  Investigate via `pip index versions pydantic-core` for each tag.")
+        print("  Investigate via `pip index versions <package>` for each tag.")
     print("=" * 60)
     return 0 if not misses else 1
 

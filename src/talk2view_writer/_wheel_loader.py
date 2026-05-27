@@ -225,3 +225,84 @@ def ensure_vendored_pydantic_core() -> None:
             f"Python (a release-time error).\n"
             f"{_manual_install_hint()}"
         ) from exc
+
+
+def _pyobjc_install_hint() -> str:
+    return (
+        f"Manual recovery — run this with your LibreOffice's Python:\n"
+        f"  {sys.executable} -m pip install --user pyobjc-framework-WebKit"
+    )
+
+
+def ensure_vendored_pyobjc() -> None:
+    """Make pyobjc importable from bundled wheels on macOS.
+
+    No-op on non-macOS — pywebview's Linux backend (WebKitGTK) and
+    Windows backend (EdgeChromium) need different runtime deps,
+    bundled elsewhere or already present in LO's environment.
+
+    On macOS, pywebview's Cocoa backend imports ``AppKit``,
+    ``Foundation``, ``WebKit``, ``objc``, and ``PyObjCTools`` — all
+    of which live across three pyobjc wheels:
+
+      - ``pyobjc-core`` (objc, PyObjCTools)
+      - ``pyobjc-framework-Cocoa`` (AppKit, Foundation, Cocoa, ...)
+      - ``pyobjc-framework-WebKit`` (WebKit, JavaScriptCore)
+
+    These ship as ``universal2`` wheels (arm64 + x86_64 in one
+    binary) per Python minor version, so the per-platform-tag
+    directory contains the same content on both Mac architectures.
+
+    ``objc`` is the canary import — it's the foundational pyobjc
+    package that the higher framework wrappers depend on; if it
+    loads, the rest follow (and we'll see any failure of the
+    framework wrappers from pywebview's own traceback).
+
+    Raises:
+        ImportError: If no bundled pyobjc wheel matches the runtime
+            tag and ``objc`` is not already importable on the path.
+    """
+    if sys.platform != "darwin":
+        return
+
+    _prefer_bundled_pure_python_deps()
+
+    try:
+        # ``objc`` ships only inside the bundled pyobjc wheel — not in
+        # the dev venv — so mypy can't resolve it statically. The
+        # runtime import is exactly what this function exists to
+        # provide.
+        import objc  # type: ignore[import-not-found]
+
+        logger.debug("objc already importable from %s", getattr(objc, "__file__", "<unknown>"))
+        return
+    except ImportError:
+        pass
+
+    tag = runtime_tag()
+    candidate = _candidate_directory()
+    if not os.path.isdir(candidate):
+        bundled = sorted(os.listdir(_VENDORED_ROOT)) if os.path.isdir(_VENDORED_ROOT) else []
+        raise ImportError(
+            f"No bundled pyobjc wheel for runtime tag '{tag}'. "
+            f"Bundled tags: {bundled or '(none — was the .oxt built with make vendor-wheels?)'}.\n"
+            f"{_pyobjc_install_hint()}"
+        )
+
+    if candidate not in sys.path:
+        sys.path.insert(0, candidate)
+        logger.info("Prepended %s to sys.path", candidate)
+
+    try:
+        import objc  # type: ignore[import-not-found]
+
+        logger.info("objc loaded from %s", getattr(objc, "__file__", candidate))
+    except ImportError as exc:
+        raise ImportError(
+            f"Bundled directory at {candidate} matched runtime tag '{tag}' "
+            f"but objc import still fails: {exc}.\n"
+            f"Likely cause: the pyobjc wheels weren't extracted into the "
+            f"directory at build time. Re-run `make vendor-wheels && make "
+            f"package`.\n"
+            f"{_pyobjc_install_hint()}"
+        ) from exc

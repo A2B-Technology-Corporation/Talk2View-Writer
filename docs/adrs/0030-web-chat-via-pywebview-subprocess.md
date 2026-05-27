@@ -1,10 +1,10 @@
 # ADR-0030: Web chat UI via pywebview subprocess + Unix-socket bridge
 
-**Status:** Accepted
+**Status:** Accepted (macOS Python-discovery + pyobjc assumption corrected by ADR-0038)
 **Date:** 2026-05-22
 **Phase:** F
 **Supersedes:** ADR-0029 (the floating non-modal *XDialog* chat window)
-**Superseded by:** —
+**Superseded by:** Partially — ADR-0038 (macOS subprocess interpreter + pyobjc bundling)
 
 ## Context
 
