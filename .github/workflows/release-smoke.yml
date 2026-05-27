@@ -18,11 +18,17 @@ name: Release smoke
 # interactively under --shared (root containers) and exits non-zero on macOS
 # in CI, producing false failures even though `unopkg add` succeeded.
 #
-# Triggers on every published release (incl. prereleases) + manual dispatch.
+# Fires automatically when the Release workflow finishes successfully, via
+# `workflow_run`. We can't use `on: release: [published]`: release.yml
+# publishes with the automatic GITHUB_TOKEN, and events from GITHUB_TOKEN
+# don't start other workflows (GitHub's recursion guard). `workflow_run`
+# isn't subject to that, and the triggering Release run was started by a tag
+# push so its head_branch is the release tag. Also runnable via dispatch.
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -33,11 +39,14 @@ permissions:
   contents: read  # download the release asset via GITHUB_TOKEN
 
 concurrency:
-  group: release-smoke-${{ github.event.release.tag_name || github.event.inputs.tag }}
+  group: release-smoke-${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   smoke:
+    # On workflow_run, only proceed if the Release run actually succeeded;
+    # always run for a manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     name: Smoke (${{ matrix.os }}${{ matrix.lo_label && format(', LO {0}', matrix.lo_label) || '' }})
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
@@ -87,9 +96,11 @@ jobs:
         id: tag
         shell: bash
         run: |
-          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          # workflow_run: the Release run was triggered by a tag push, so its
+          # head_branch is the release tag (e.g. v1.0.0). dispatch: the input.
+          TAG="${{ github.event.workflow_run.head_branch || github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then
-            echo "::error::No release tag (neither release event nor dispatch input)"; exit 1
+            echo "::error::No release tag (no workflow_run head_branch and no dispatch input)"; exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Smoke-testing release $TAG"
