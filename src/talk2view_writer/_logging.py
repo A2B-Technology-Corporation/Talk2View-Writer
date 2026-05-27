@@ -87,11 +87,19 @@ def log_file_path() -> Path:
     return base / "talk2view.log"
 
 
+def debug_enabled() -> bool:
+    """Return ``True`` when ``T2V_WRITER_DEBUG`` is set to a truthy value.
+
+    Gates developer-only behaviour: DEBUG-level logging and the
+    pywebview web inspector (see ``web_runner.py``). Off by default so
+    end users never see devtools.
+    """
+    return os.environ.get("T2V_WRITER_DEBUG", "").lower() in ("1", "true", "yes", "on")
+
+
 def _level_from_env() -> int:
     """Return ``DEBUG`` if T2V_WRITER_DEBUG is truthy, otherwise ``INFO``."""
-    if os.environ.get("T2V_WRITER_DEBUG", "").lower() in ("1", "true", "yes", "on"):
-        return logging.DEBUG
-    return logging.INFO
+    return logging.DEBUG if debug_enabled() else logging.INFO
 
 
 def _install_excepthooks(logger: logging.Logger) -> None:

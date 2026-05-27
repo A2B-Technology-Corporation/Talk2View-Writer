@@ -32,6 +32,8 @@ import threading
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from ._logging import debug_enabled
+
 logger = logging.getLogger("talk2view_writer.web_runner")
 
 
@@ -362,7 +364,7 @@ def main() -> None:
         "gtk" if sys.platform.startswith("linux") else None
     )
     webview.start(
-        debug=True,
+        debug=debug_enabled(),
         private_mode=False,
         storage_path=str(storage_path),
         gui=gui_backend,

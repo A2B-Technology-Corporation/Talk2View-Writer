@@ -58,6 +58,31 @@ class TestLogFilePath:
 
 
 @pytest.mark.unit
+class TestDebugEnabled:
+    """``debug_enabled`` gates DEBUG logging *and* the pywebview inspector."""
+
+    @pytest.mark.parametrize("value", ["1", "true", "True", "YES", "on", "On"])
+    def test_truthy_values_enable(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("T2V_WRITER_DEBUG", value)
+        assert _logging.debug_enabled() is True
+
+    @pytest.mark.parametrize("value", ["", "0", "false", "no", "off", "anything"])
+    def test_falsey_values_disable(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv("T2V_WRITER_DEBUG", value)
+        assert _logging.debug_enabled() is False
+
+    def test_unset_defaults_to_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("T2V_WRITER_DEBUG", raising=False)
+        assert _logging.debug_enabled() is False
+
+
+@pytest.mark.unit
 class TestSetupLogging:
     def test_creates_file_and_returns_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
