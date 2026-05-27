@@ -40,6 +40,7 @@ import logging
 import logging.handlers
 import os
 import platform as _platform
+import re
 import sys
 import threading
 import traceback
@@ -85,6 +86,33 @@ def log_file_path() -> Path:
         base = Path(xdg) / "talk2view-writer"
     base.mkdir(parents=True, exist_ok=True)
     return base / "talk2view.log"
+
+
+# Secrets that must never reach the log file: the Supabase bearer JWT
+# (carries the user's email + session), partner keys, and any raw JWT.
+# Redaction runs at the formatter boundary (see _RedactingFormatter) so
+# every log line is scrubbed regardless of which call site produced it.
+_BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+")
+_PARTNER_KEY_RE = re.compile(r"(pk_(?:live|test)_)[A-Za-z0-9]+")
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+
+
+def redact_secrets(text: str) -> str:
+    """Scrub bearer tokens, partner keys, and raw JWTs from a log string.
+
+    Idempotent: re-running over already-redacted text is a no-op.
+    """
+    text = _BEARER_RE.sub(r"\1<redacted>", text)
+    text = _PARTNER_KEY_RE.sub(r"\1<redacted>", text)
+    text = _JWT_RE.sub("<redacted-jwt>", text)
+    return text
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Formatter that strips credentials from the final rendered line."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets(super().format(record))
 
 
 def debug_enabled() -> bool:
@@ -165,7 +193,7 @@ def setup_logging() -> Path:
         path = log_file_path()
         level = _level_from_env()
 
-        formatter = logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+        formatter = _RedactingFormatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 
         try:
             file_handler = logging.handlers.RotatingFileHandler(

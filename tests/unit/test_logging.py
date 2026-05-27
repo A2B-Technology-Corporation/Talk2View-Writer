@@ -83,6 +83,54 @@ class TestDebugEnabled:
 
 
 @pytest.mark.unit
+class TestRedactSecrets:
+    """Credentials must never reach the persistent log (shared in bug reports)."""
+
+    _JWT = (
+        "eyJhbGciOiJIUzI1NiJ9.eyJlbWFpbCI6ImJlbkBleGFtcGxlLmNvbSJ9.abc-DEF_123"
+    )
+
+    def test_redacts_bearer_token(self) -> None:
+        out = _logging.redact_secrets(f"Authorization: Bearer {self._JWT}")
+        assert self._JWT not in out
+        assert "Bearer <redacted>" in out
+
+    def test_redacts_partner_key(self) -> None:
+        out = _logging.redact_secrets("key=pk_live_474f6f895dfec144a70b841db0")
+        assert "474f6f895dfec144" not in out
+        assert "pk_live_<redacted>" in out
+
+    def test_redacts_bare_jwt(self) -> None:
+        out = _logging.redact_secrets(f"token in body {self._JWT} here")
+        assert self._JWT not in out
+        assert "<redacted-jwt>" in out
+
+    def test_leaves_ordinary_text_untouched(self) -> None:
+        msg = "BridgeServer.dispatch: id=42 method=invoke_tool name=get_document"
+        assert _logging.redact_secrets(msg) == msg
+
+    def test_is_idempotent(self) -> None:
+        once = _logging.redact_secrets(f"Bearer {self._JWT}")
+        assert _logging.redact_secrets(once) == once
+
+    def test_formatter_redacts_rendered_line(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """End-to-end: a token logged through the package logger lands redacted."""
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        path = _logging.setup_logging()
+        logging.getLogger("talk2view_writer.test").info(
+            "proxy params={'Authorization': 'Bearer %s'}", self._JWT
+        )
+        for h in logging.getLogger("talk2view_writer").handlers:
+            h.flush()
+        content = path.read_text(encoding="utf-8")
+        assert self._JWT not in content
+        assert "Bearer <redacted>" in content
+
+
+@pytest.mark.unit
 class TestSetupLogging:
     def test_creates_file_and_returns_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

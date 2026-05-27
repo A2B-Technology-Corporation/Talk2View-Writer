@@ -408,8 +408,10 @@ export function installHostLogging(): void {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
     const method = (init?.method ?? (typeof input !== 'string' && !(input instanceof URL) ? input.method : 'GET')) || 'GET';
 
+    // Never log request headers — they carry the Authorization bearer
+    // JWT and partner key. (The Python log boundary also redacts these,
+    // but don't emit them to the devtools console in the first place.)
     logToHost('info', `[fetch:${reqId}] → ${method} ${url}`, {
-      headers: init?.headers ?? null,
       bodyType: init?.body ? typeof init.body : null,
       proxied: _shouldProxy(url),
     });
