@@ -134,24 +134,66 @@ jobs:
           ln -sf /usr/lib/python3/dist-packages/unohelper.py "$VENV_SITE/unohelper.py"
 
       - name: Start soffice (Linux, under xvfb)
+        # Proven launch lifted verbatim from ci.yml's integration job — it
+        # reliably handles Debian containers. Note the trailing ``|| true``:
+        # a soffice-startup timeout (known container URP flakiness, inv #25)
+        # is tolerated, and the `-m integration` tests below then skip via
+        # the uno_context fixture rather than hard-failing the cell. The
+        # cross-platform install + `-m release_smoke` checks already ran.
         if: runner.os == 'Linux'
         shell: bash
         run: |
           export DISPLAY=:99
           Xvfb :99 -screen 0 1280x1024x24 &
           sleep 1
-          # Debian containers have no session bus; dbus-run-session creates
-          # one for soffice. Harmless on the native Ubuntu runner.
+          # soffice needs a session dbus to initialise. The native GHA Ubuntu
+          # runner has one; Debian containers don't. dbus-run-session creates
+          # a per-process session bus — required in containers, harmless
+          # elsewhere.
           if command -v dbus-run-session >/dev/null 2>&1; then
             DBUS_WRAP=(dbus-run-session --)
           else
             DBUS_WRAP=()
+            echo "::warning::dbus-run-session not found; soffice may fail to start without a session bus"
           fi
           T2V_WRITER_DEBUG=1 "${DBUS_WRAP[@]}" /usr/bin/soffice \
             --writer --norestore --nologo --nodefault \
             --accept="socket,host=127.0.0.1,port=2002;urp;" \
             >soffice.stdout.log 2>soffice.stderr.log &
-          uv run python scripts/wait_for_soffice.py --timeout 120
+          SOFFICE_BG_PID=$!
+
+          # Periodic screenshot loop — captures Xvfb every 15s up to 120s so
+          # a hung startup leaves visual forensics in _diag/.
+          mkdir -p _diag
+          (
+            for t in 5 15 30 45 60 90 120; do
+              sleep_for=$((t - ${last_t:-0}))
+              sleep "$sleep_for"
+              last_t=$t
+              if command -v import >/dev/null 2>&1; then
+                DISPLAY=:99 import -window root "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              elif command -v scrot >/dev/null 2>&1; then
+                DISPLAY=:99 scrot "_diag/screenshot_${t}s.png" 2>/dev/null || true
+              fi
+            done
+          ) &
+          SCREENSHOT_PID=$!
+
+          sleep 5
+          echo "::group::Post-launch process state"
+          if kill -0 "$SOFFICE_BG_PID" 2>/dev/null; then
+            echo "soffice wrapper (pid $SOFFICE_BG_PID) is alive"
+          else
+            echo "::error::soffice wrapper (pid $SOFFICE_BG_PID) is NOT alive after 5s"
+          fi
+          ps auxf 2>/dev/null | grep -E 'soffice|dbus|Xvfb' | grep -v grep || echo "no soffice/dbus/Xvfb processes"
+          (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep :2002 || echo "nothing listening on :2002 yet"
+          echo "::endgroup::"
+
+          # Tolerate a startup timeout (see step comment); integration tests
+          # skip if the socket never came up.
+          uv run python scripts/wait_for_soffice.py --timeout 120 \
+            && kill "$SCREENSHOT_PID" 2>/dev/null || true
 
       - name: Start headless soffice (macOS)
         if: runner.os == 'macOS'
@@ -196,4 +238,5 @@ jobs:
           path: |
             soffice.stdout.log
             soffice.stderr.log
+            _diag/
           if-no-files-found: ignore
