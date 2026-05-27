@@ -4,7 +4,7 @@
              xmlns:xlink="http://www.w3.org/1999/xlink"
              xmlns:l="http://libreoffice.org/extensions/description/2011">
     <identifier value="com.talk2view.writer"/>
-    <version value="1.0.0"/>
+    <version value="1.0.1"/>
     <display-name>
         <name lang="en">Talk2View for Writer</name>
     </display-name>

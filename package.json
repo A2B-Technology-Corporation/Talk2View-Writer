@@ -1,7 +1,7 @@
 {
   "name": "talk2view-writer-e2e",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Playwright E2E harness for Talk2View-Writer. The chat-UI bundle itself lives in src/web/ and has its own package.json. This top-level package.json holds only the test-runner dependencies + the playwright.config.ts at the repo root. See ADR-0031.",
   "scripts": {
     "test:e2e": "playwright test",
