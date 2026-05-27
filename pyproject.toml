@@ -110,6 +110,7 @@ markers = [
     "gui_smoke: Linux-only AT-SPI sidebar test (dogtail). Required-pass.",
     "live: Live chat E2E against engine.talk2view.com. Requires T2V_TEST_USER_EMAIL/PASSWORD env.",
     "e2e: End-to-end tests (legacy alias; superseded by integration + gui_smoke + live)",
+    "release_smoke: Validates a packaged/published .oxt artifact. Requires T2V_RELEASE_OXT env pointing at the .oxt; no soffice needed.",
 ]
 
 [tool.mypy]
