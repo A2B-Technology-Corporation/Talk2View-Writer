@@ -49,6 +49,46 @@ def _ru(obj: Any) -> str:
 _EXTENSION_ID = "com.talk2view.writer"
 _HTML_PATH = "web/index.html"
 
+# Canonical install path for the LibreOffice-bundled Python wrapper on
+# macOS. Used as a fallback when sys.executable isn't inside an .app
+# bundle (e.g. when running unit tests under the user's own Python).
+# Exposed as a module-level Path so tests can monkeypatch it.
+STANDARD_LO_PYTHON_DARWIN = Path("/Applications/LibreOffice.app/Contents/Resources/python")
+
+# URE_BOOTSTRAP encodes the LO install root. LO sets this in every
+# process it owns (including embedded Python extensions like ours),
+# so it's the official discovery mechanism — robust to portable
+# installs and non-default install locations. The value is a
+# ``vnd.sun.star.pathname:<path>`` URI pointing at ``fundamentalrc``
+# inside ``Contents/Resources/`` on macOS — two levels up is the
+# install root, and the Python wrapper sits at
+# ``<install>/Contents/Resources/python`` on macOS.
+_URE_BOOTSTRAP_PREFIX = "vnd.sun.star.pathname:"
+
+
+def _wrapper_from_ure_bootstrap() -> str | None:
+    """Derive the LO macOS Python wrapper from ``URE_BOOTSTRAP``.
+
+    Returns the wrapper path as a string if URE_BOOTSTRAP is set,
+    parses cleanly, and the wrapper exists + is executable. Returns
+    ``None`` otherwise (the caller will fall through to the next
+    discovery method).
+
+    macOS-specific: the LO install layout on Linux / Windows is
+    different (``program/python`` vs ``Contents/Resources/python``)
+    so this helper is only meaningful on macOS today.
+    """
+    raw = os.environ.get("URE_BOOTSTRAP", "")
+    if not raw.startswith(_URE_BOOTSTRAP_PREFIX):
+        return None
+    fundamentalrc = Path(raw[len(_URE_BOOTSTRAP_PREFIX) :])
+    # fundamentalrc lives at ``<install>/Contents/Resources/fundamentalrc``
+    # on macOS; the Python wrapper is its sibling.
+    wrapper = fundamentalrc.parent / "python"
+    if wrapper.is_file() and os.access(wrapper, os.X_OK):
+        return str(wrapper)
+    return None
+
 
 class WebWindow:
     """Singleton subprocess-backed chat window.
@@ -151,8 +191,7 @@ class WebWindow:
         python_bin = self._resolve_python()
         socket_path = self._ensure_bridge()
         logger.info(
-            "WebWindow.show: html_path=%s pythonpath_dir=%s python=%s "
-            "bridge_socket=%s",
+            "WebWindow.show: html_path=%s pythonpath_dir=%s python=%s bridge_socket=%s",
             html_path,
             pythonpath_dir,
             python_bin,
@@ -164,9 +203,7 @@ class WebWindow:
         # bundled ``webview`` + ``talk2view_writer.web_runner``.
         existing_pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = (
-            f"{pythonpath_dir}{os.pathsep}{existing_pp}"
-            if existing_pp
-            else pythonpath_dir
+            f"{pythonpath_dir}{os.pathsep}{existing_pp}" if existing_pp else pythonpath_dir
         )
         # Help the user diagnose failures in the subprocess.
         env["PYTHONUNBUFFERED"] = "1"
@@ -194,13 +231,9 @@ class WebWindow:
                 stderr=subprocess.PIPE,
             )
         except Exception:
-            logger.exception(
-                "WebWindow.show: subprocess.Popen raised — re-raising"
-            )
+            logger.exception("WebWindow.show: subprocess.Popen raised — re-raising")
             raise
-        logger.info(
-            "WebWindow.show: subprocess started pid=%s", self._proc.pid
-        )
+        logger.info("WebWindow.show: subprocess started pid=%s", self._proc.pid)
         atexit.register(self._terminate_on_exit)
 
         # Pump subprocess stderr into our log so the user sees
@@ -230,21 +263,16 @@ class WebWindow:
                 self._proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
                 logger.warning(
-                    "WebWindow.atexit: subprocess didn't exit on SIGTERM, "
-                    "sending SIGKILL"
+                    "WebWindow.atexit: subprocess didn't exit on SIGTERM, sending SIGKILL"
                 )
                 self._proc.kill()
             except Exception:
-                logger.exception(
-                    "WebWindow.atexit: terminate raised — continuing"
-                )
+                logger.exception("WebWindow.atexit: terminate raised — continuing")
         if self._bridge is not None:
             try:
                 self._bridge.stop()
             except Exception:
-                logger.exception(
-                    "WebWindow.atexit: bridge.stop raised — continuing"
-                )
+                logger.exception("WebWindow.atexit: bridge.stop raised — continuing")
 
     def _ensure_bridge(self) -> str:
         """Lazily start the Unix-socket JSON-RPC bridge. Returns its path."""
@@ -272,9 +300,7 @@ class WebWindow:
                     continue
                 logger.info("web_runner[stderr]: %s", line)
         except Exception:
-            logger.exception(
-                "web_runner stderr pump exited unexpectedly"
-            )
+            logger.exception("web_runner stderr pump exited unexpectedly")
         finally:
             rc = self._proc.poll() if self._proc else None
             logger.info("web_runner subprocess exited rc=%s", rc)
@@ -290,14 +316,11 @@ class WebWindow:
 
         parsed = urlparse(html_url)
         if parsed.scheme != "file":
-            raise RuntimeError(
-                f"Talk2View web bundle URL must be file://, got {html_url!r}"
-            )
+            raise RuntimeError(f"Talk2View web bundle URL must be file://, got {html_url!r}")
         path = Path(unquote(parsed.path))
         if not path.is_file():
             raise FileNotFoundError(
-                f"Talk2View web bundle missing: {path} "
-                f"(resolved from {html_url})"
+                f"Talk2View web bundle missing: {path} (resolved from {html_url})"
             )
         logger.info(
             "WebWindow._resolve_html_path: file exists size=%d bytes",
@@ -313,15 +336,10 @@ class WebWindow:
         extension_root_url = pip.getPackageLocation(_EXTENSION_ID)
         parsed = urlparse(extension_root_url)
         if parsed.scheme != "file":
-            raise RuntimeError(
-                f"Extension root URL must be file://, got "
-                f"{extension_root_url!r}"
-            )
+            raise RuntimeError(f"Extension root URL must be file://, got {extension_root_url!r}")
         path = Path(unquote(parsed.path)) / "pythonpath"
         if not path.is_dir():
-            raise FileNotFoundError(
-                f"pythonpath/ missing under extension root: {path}"
-            )
+            raise FileNotFoundError(f"pythonpath/ missing under extension root: {path}")
         return str(path)
 
     def _resolve_python(self) -> str:
@@ -345,28 +363,121 @@ class WebWindow:
 
         if sys.platform == "linux":
             candidate = shutil.which("python3") or "/usr/bin/python3"
-            logger.info(
-                "WebWindow._resolve_python: linux candidate=%s", candidate
-            )
+            logger.info("WebWindow._resolve_python: linux candidate=%s", candidate)
             return candidate
         if sys.platform == "darwin":
-            # LO on macOS bundles its own Python; the path is fairly
-            # standard but a future commit should resolve it from the
-            # LO install location reported by the PIP. Fall back to a
-            # system python3 if that exists.
-            candidate = shutil.which("python3") or "/usr/bin/python3"
-            logger.info(
-                "WebWindow._resolve_python: darwin candidate=%s "
-                "(TODO: resolve LO-bundled python)",
-                candidate,
+            # macOS LO embeds Python 3.12 in
+            # `LibreOfficePython.framework` and sets PYTHONHOME in its
+            # own process environment. Spawning the system
+            # /usr/bin/python3 (Apple ships 3.9-class) makes the child
+            # inherit that PYTHONHOME and try to load LO's bundled
+            # stdlib — which references symbols only present in 3.10+
+            # (e.g. `io.text_encoding`). The child dies before
+            # pywebview can put a window on screen. The fix is to spawn
+            # the LO-bundled interpreter itself via the canonical
+            # `Contents/Resources/python` wrapper shipped inside the LO
+            # app bundle (it sets PYTHONHOME correctly + execs the
+            # matching framework interpreter).
+            #
+            # Resolution order, most-authoritative first:
+            #
+            #   1. ``URE_BOOTSTRAP`` env var. LO sets this on every
+            #      process it owns (including ours) — its value
+            #      encodes the install root unambiguously, so this
+            #      handles portable + non-standard install paths
+            #      without guessing.
+            #   2. Walk every ``.app`` ancestor of ``sys.executable``
+            #      checking for ``Contents/Resources/python``. Covers
+            #      the case where URE_BOOTSTRAP is somehow missing
+            #      (e.g. a non-LO host embedding our extension code
+            #      in tests) — and works around the nested-bundle
+            #      surprise that LO's Python lives inside
+            #      ``Python.app`` *inside* ``LibreOffice.app``
+            #      (the inner .app has no wrapper; the outer one
+            #      does).
+            #   3. Canonical ``/Applications/LibreOffice.app/...``
+            #      path as last resort.
+            candidate = self._find_lo_bundled_python_darwin()
+            if candidate is not None:
+                logger.info(
+                    "WebWindow._resolve_python: darwin LO-bundled python=%s",
+                    candidate,
+                )
+                return candidate
+            raise FileNotFoundError(
+                "Could not locate the LibreOffice-bundled Python "
+                "interpreter on macOS. Set T2V_PYTHON to override "
+                "(e.g. /Applications/LibreOffice.app/Contents/"
+                "Resources/python)."
             )
-            return candidate
         if sys.platform == "win32":
             candidate = shutil.which("python") or shutil.which("python3")
             if not candidate:
                 raise FileNotFoundError(
-                    "Talk2View needs python.exe on PATH (TODO: resolve "
-                    "LO-bundled python)"
+                    "Talk2View needs python.exe on PATH (TODO: resolve LO-bundled python)"
                 )
             return candidate
         raise RuntimeError(f"unsupported platform: {sys.platform}")
+
+    def _find_lo_bundled_python_darwin(self) -> str | None:
+        """Locate the LibreOffice-bundled Python wrapper on macOS.
+
+        Three-stage lookup, most-authoritative first:
+
+        1. Parse ``URE_BOOTSTRAP`` — the env var LO sets on every
+           process it owns. Format::
+
+               vnd.sun.star.pathname:/<install>/Contents/Resources/fundamentalrc
+
+           Two levels up from ``fundamentalrc`` is the LO install
+           root; ``Contents/Resources/python`` lives directly under
+           it. This is the official LO install-discovery mechanism
+           and handles portable / non-standard install paths
+           without guessing.
+        2. Walk every ``.app`` ancestor of ``sys.executable``
+           checking for the wrapper. LO's bundled interpreter lives
+           inside a nested ``Python.app`` *inside* the outer
+           ``LibreOffice.app`` — the inner has no ``python``
+           wrapper, the outer does — so iterate ALL ``.app``
+           ancestors, don't stop at the first.
+        3. Canonical ``/Applications/LibreOffice.app/...`` path as
+           a last-resort hardcoded fallback (e.g. when this method
+           is invoked from a non-LO host like unit tests).
+
+        Returns the wrapper path as a string, or ``None`` if no
+        executable wrapper can be found by any route.
+        """
+        from_bootstrap = _wrapper_from_ure_bootstrap()
+        if from_bootstrap is not None:
+            logger.info(
+                "WebWindow._find_lo_bundled_python_darwin: URE_BOOTSTRAP → %s",
+                from_bootstrap,
+            )
+            return from_bootstrap
+
+        try:
+            exe = Path(sys.executable).resolve()
+        except OSError:
+            exe = None
+        if exe is not None:
+            for parent in exe.parents:
+                if parent.suffix != ".app":
+                    continue
+                wrapper = parent / "Contents" / "Resources" / "python"
+                if wrapper.is_file() and os.access(wrapper, os.X_OK):
+                    logger.info(
+                        "WebWindow._find_lo_bundled_python_darwin: sys.executable .app walk → %s",
+                        wrapper,
+                    )
+                    return str(wrapper)
+                # else: keep walking — an outer .app ancestor (e.g.
+                # LibreOffice.app wrapping a nested Python.app) may
+                # still own the wrapper.
+
+        if STANDARD_LO_PYTHON_DARWIN.is_file() and os.access(STANDARD_LO_PYTHON_DARWIN, os.X_OK):
+            logger.info(
+                "WebWindow._find_lo_bundled_python_darwin: hardcoded path → %s",
+                STANDARD_LO_PYTHON_DARWIN,
+            )
+            return str(STANDARD_LO_PYTHON_DARWIN)
+        return None

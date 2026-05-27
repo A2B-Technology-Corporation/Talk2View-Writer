@@ -1571,3 +1571,37 @@ which doesn't reproduce the real engine's resume bug.
 behind the catch-all, validate `tool_call_id` against the pending
 interrupt, consider a persistent checkpointer + lower agent
 temperature. No Writer-side change available; the client is correct.
+
+## #48 — Windows port of `_resolve_python` will fail the same way macOS just did (NEW 2026-05-27)
+
+**What:** `WebWindow._resolve_python` on Windows is still
+`shutil.which("python") or shutil.which("python3")`. That's the
+exact equivalent of the macOS bug ADR-0038 just fixed: a child
+interpreter is spawned with `env=os.environ.copy()`, inheriting LO's
+`PYTHONHOME` pointing at LO's bundled Python framework — so a system
+`python.exe` (when one exists at all) will try to load LO's bundled
+stdlib and crash with an `io`/`text_encoding`-shaped error, *or* hit
+the AppKit-equivalent ModuleNotFoundError when pywebview tries
+to load the EdgeChromium / WebView2 binding. Worse, Windows users
+overwhelmingly **don't have any `python.exe` on PATH** so
+`shutil.which` returns `None` and the loader raises
+`FileNotFoundError("Talk2View needs python.exe on PATH ...")` before
+anything else has a chance.
+
+**Where:** `src/talk2view_writer/ui/web_window.py:_resolve_python`
+(Windows branch). Same comment as the old macOS branch:
+`(TODO: resolve LO-bundled python)`.
+
+**Why it matters:** First Windows user installs the OXT, clicks
+Open Chat, sees a `FileNotFoundError` ERRORBOX — same DOA
+experience macOS just had. ADR-0030's cross-platform UI promise
+isn't honoured until this is fixed.
+
+**Next step:** Mirror ADR-0038's macOS approach on Windows.
+URE_BOOTSTRAP on Windows points at `program\fundamental.ini`; the
+LO Python interpreter is `program\python.exe` in the same install
+root. Bundle `pythonnet` (or whatever pywebview's EdgeChromium
+backend needs — currently `pywebview` on Windows uses
+`pywebview[cef]` or the built-in EdgeChromium binding via
+`webview2`) as Windows wheels in the matrix. Probably another ADR
+when we get there.
