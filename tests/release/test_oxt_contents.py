@@ -110,3 +110,11 @@ def test_manifest_version_present_and_matches_tag(oxt_path: Path) -> None:
             f"manifest version {version!r} != release tag base {base!r} "
             f"(from {_TAG_ENV}={tag!r})"
         )
+
+
+def test_manifest_ships_update_feed(oxt_path: Path) -> None:
+    """The shipped manifest carries the update-information update feed."""
+    with zipfile.ZipFile(oxt_path) as zf:
+        description = zf.read("description.xml").decode("utf-8")
+    assert "update-information" in description
+    assert "releases/latest/download/update.xml" in description
