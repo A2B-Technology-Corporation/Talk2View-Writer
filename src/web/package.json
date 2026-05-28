@@ -1,7 +1,7 @@
 {
   "name": "talk2view-writer-web",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "React + Talk2View SDK chat UI for the LibreOffice Writer extension. Built by webpack to ../../build/Talk2ViewWriter/web/ via `make build-web`.",
   "scripts": {
     "build": "webpack --mode production",
