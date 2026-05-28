@@ -178,6 +178,11 @@ for (const sc of SCENARIO_FILES) {
         await composer.fill(step.prompt);
         await composer.press('Enter');
 
+        // Tracks whether THIS turn hung (a soft-wait below timed out).
+        // Combined with 0 cumulative tool calls it is the fail-fast signal
+        // that the engine isn't tool-calling at all (Platform #73).
+        let turnHung = false;
+
         await expect(composer).toBeDisabled({ timeout: 10_000 });
         // Soft-wait for composer to re-enable. If a tool call hangs
         // forever (e.g. LO C++ bug in manage_list — Investigation #37 —
@@ -189,6 +194,7 @@ for (const sc of SCENARIO_FILES) {
         try {
           await expect(composer).toBeEnabled({ timeout: 120_000 });
         } catch {
+          turnHung = true;
           note(
             `${stepLabel} composer never re-enabled within 120s — likely an underlying LO tool hang (see Investigations #37, #38)`,
           );
@@ -213,6 +219,7 @@ for (const sc of SCENARIO_FILES) {
             )
             .toBe(true);
         } catch {
+          turnHung = true;
           note(
             `${stepLabel} timed out (120s) waiting for the settled assistant reply; transcript will show whatever was captured`,
           );
@@ -227,6 +234,23 @@ for (const sc of SCENARIO_FILES) {
           () => window.__t2vToolCalls?.slice() ?? [],
         );
         const stepToolCalls = toolCalls.slice(beforeToolCalls);
+
+        // Fail-fast (Platform #73). A turn that hung AND has produced no
+        // tool call across the whole scenario so far means the engine isn't
+        // tool-calling — walking the remaining steps would just burn ~240s
+        // of soft-waits each (this is what turned the suite into a ~1.9h
+        // run). Abort now and trip the cross-scenario breaker so the rest
+        // skip. The post-loop assertions still fire, so this scenario fails
+        // loudly — just fast. Conservative: only fires while cumulative
+        // tool calls are still 0, so a slow-but-working engine that already
+        // made a call is never aborted.
+        if (turnHung && toolCalls.length === 0) {
+          engineNotToolCalling = true;
+          note(
+            `${stepLabel} turn hung with 0 tool calls — engine not tool-calling (Platform #73); aborting scenario early`,
+          );
+          break;
+        }
         const assistantText = await page.evaluate(
           () =>
             (
