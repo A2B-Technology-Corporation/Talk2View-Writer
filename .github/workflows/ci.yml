@@ -811,7 +811,15 @@ jobs:
         # socket and one of them hangs. Serial execution makes the
         # whole suite ~3-4 minutes instead of ~2 but eliminates the
         # bridge-contention class of flake entirely.
-        run: npx playwright test tests/e2e/specs/live- --workers=1
+        #
+        # --max-failures=3: fail-fast. A healthy suite passes (or has a
+        # stray flake) in ~3-4 min. A BROKEN engine — e.g. one returning
+        # zero tool calls (Platform #73) — makes every scenario burn its
+        # ~120s-per-step soft-waits, ballooning the run to ~45min-1.7h.
+        # Bailing after 3 failures caps a broken engine at ~10-13min
+        # instead of grinding through all 11 scenarios. Live E2E is a
+        # non-required job, so stopping early loses no merge signal.
+        run: npx playwright test tests/e2e/specs/live- --workers=1 --max-failures=3
 
       # Always grab diagnostic logs so a CI failure has the soffice
       # state, the bridge log, and the per-step Xvfb screenshots
