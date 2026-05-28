@@ -102,9 +102,14 @@ let engineNotToolCalling = false;
 
 for (const sc of SCENARIO_FILES) {
   test.describe(`live scenario: ${sc.name}`, () => {
-    test.describe.configure({ retries: 0 });
-    // Each scenario can take minutes (multiple LLM round-trips).
-    test.setTimeout(15 * 60 * 1000);
+    // Each scenario can take minutes (multiple LLM round-trips). Set the
+    // timeout via describe.configure, NOT test.setTimeout(): the latter,
+    // called here in the describe BODY (collection phase), is silently
+    // ignored, leaving the 30s global default from playwright.config.ts.
+    // That 30s killed each test mid-step (the first soft-wait alone is
+    // 120s) BEFORE the fail-fast logic below could run, so the breaker
+    // never tripped and a dead engine still walked all 11 scenarios.
+    test.describe.configure({ retries: 0, timeout: 15 * 60 * 1000 });
 
     test(`walks the scripted scenario; hard-fails on any violation`, async ({
       browser,
