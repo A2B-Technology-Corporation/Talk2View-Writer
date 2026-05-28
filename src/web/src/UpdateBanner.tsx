@@ -14,7 +14,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { isNewer } from './version';
-import { logToHost } from './bridge';
+import { logToHost, openExternal } from './bridge';
 
 const REPO = 'A2B-Technology-Corporation/Talk2View-Writer';
 const RELEASES_PAGE = `https://github.com/${REPO}/releases/latest`;
@@ -83,7 +83,9 @@ export function UpdateBanner(): React.ReactElement | null {
       </span>
       <button
         type="button"
-        onClick={() => window.open(RELEASES_PAGE, '_blank', 'noopener')}
+        onClick={() => {
+          void openExternal(RELEASES_PAGE);
+        }}
         style={{ cursor: 'pointer', font: 'inherit' }}
       >
         Releases

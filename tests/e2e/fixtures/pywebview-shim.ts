@@ -33,6 +33,7 @@ declare global {
         list_tools: () => Promise<string[]>;
         log: (level: string, message: string, context?: unknown) => Promise<void>;
         ping: (message: string) => Promise<unknown>;
+        open_external: (url: string) => Promise<{ opened: boolean }>;
         proxy_fetch: (
           url: string,
           method: string,
@@ -64,6 +65,8 @@ declare global {
     __t2vTestLogs?: Array<{ level: string; message: string; context: unknown }>;
     // Test hook for invoke_tool — every call appended here.
     __t2vToolCalls?: Array<{ name: string; args: Record<string, unknown> }>;
+    // Test hook for open_external — every opened URL appended here.
+    __t2vExternalOpens?: string[];
   }
 }
 
@@ -83,6 +86,7 @@ export function installPywebviewShim(opts: { overrides?: ShimOverrides } = {}): 
 
     window.__t2vTestLogs = [];
     window.__t2vToolCalls = [];
+    window.__t2vExternalOpens = [];
 
     const overrides = opts.overrides ?? {};
 
@@ -126,6 +130,10 @@ export function installPywebviewShim(opts: { overrides?: ShimOverrides } = {}): 
         },
         async ping(message) {
           return overrides.ping?.(message) ?? { echo: message, from: 'shim' };
+        },
+        async open_external(url) {
+          window.__t2vExternalOpens!.push(url);
+          return { opened: true };
         },
         async proxy_fetch(url, method, headers, body) {
           // Round-trip through the page's own fetch — the mock engine
