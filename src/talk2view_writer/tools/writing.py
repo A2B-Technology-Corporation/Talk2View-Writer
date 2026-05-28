@@ -149,7 +149,9 @@ def _insert_paragraph_at_cursor(
                 # suspended (the redline already exists from the tracked
                 # insert above). The text is in; degrade to the default
                 # paragraph style rather than failing the whole insert.
-                logger.warning(
+                # logger.exception() captures the actual UNO error + traceback
+                # — never swallow it behind a bare message.
+                logger.exception(
                     "Could not apply paragraph style %r (track-changes redline "
                     "constraint); left the default style",
                     style,
