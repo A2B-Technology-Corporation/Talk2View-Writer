@@ -189,3 +189,111 @@ class TestInsertParagraphAtCursorSkipsLeadingBreakWhenEmpty:
             if c[0] in ("insertControlCharacter", "insertString")
         ]
         assert op_names == ["insertControlCharacter", "insertString"]
+
+
+class _FakeDoc:
+    """Duck-typed Writer doc for suspend_record_changes (no UNO)."""
+
+    def __init__(
+        self, *, record: bool = True, readable: bool = True, writable: bool = True
+    ) -> None:
+        self._record = record
+        self._readable = readable
+        self._writable = writable
+        self.sets: list[tuple[str, object]] = []
+
+    def getPropertyValue(self, name: str) -> object:  # noqa: N802 (UNO name)
+        if not self._readable:
+            raise RuntimeError("cannot read property")
+        return self._record
+
+    def setPropertyValue(self, name: str, value: object) -> None:  # noqa: N802
+        if not self._writable:
+            raise RuntimeError("cannot write property")
+        self.sets.append((name, value))
+
+
+@pytest.mark.unit
+class TestSuspendRecordChanges:
+    """Class-based CM so a UNO exception in the body propagates cleanly.
+
+    Regression for the broken tool-error path: a ``@contextmanager``
+    generator's ``__exit__`` did ``exc.__traceback__ = tb`` on the pyuno
+    exception struct, which crashed with "'traceback' object has no
+    attribute 'getTypes'" and masked the real error.
+    """
+
+    def test_suspends_then_restores(self) -> None:
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        doc = _FakeDoc(record=True)
+        with suspend_record_changes(doc):
+            assert ("RecordChanges", False) in doc.sets
+        assert doc.sets[-1] == ("RecordChanges", True)
+
+    def test_noop_when_already_off(self) -> None:
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        doc = _FakeDoc(record=False)
+        with suspend_record_changes(doc):
+            pass
+        assert doc.sets == []
+
+    def test_noop_when_unreadable(self) -> None:
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        doc = _FakeDoc(readable=False)
+        with suspend_record_changes(doc):
+            pass
+        assert doc.sets == []
+
+    def test_body_exception_propagates_unchanged_and_restores(self) -> None:
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        doc = _FakeDoc(record=True)
+        sentinel = ValueError("boom")
+        with pytest.raises(ValueError) as info, suspend_record_changes(doc):
+            raise sentinel
+        # Same object — not wrapped/mangled (the bug re-raised a different
+        # UNO conversion error instead of the original).
+        assert info.value is sentinel
+        # Restored despite the exception.
+        assert doc.sets[-1] == ("RecordChanges", True)
+
+
+@pytest.mark.unit
+class TestStyleAssignmentResilience:
+    """insert_content degrades gracefully when ParaStyleName is rejected.
+
+    LO can reject a ParaStyleName write on a redline-bearing paragraph
+    even with RecordChanges suspended. The text is already inserted, so
+    we log + keep the default style rather than failing the whole tool.
+    """
+
+    def test_para_style_runtimeexception_is_swallowed(self) -> None:
+        from com.sun.star.uno import RuntimeException
+
+        class _RaisingParaCursor:
+            def gotoStartOfParagraph(self, expand: bool) -> None:  # noqa: N802
+                pass
+
+            def gotoEndOfParagraph(self, expand: bool) -> None:  # noqa: N802
+                pass
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if name == "ParaStyleName":
+                    raise RuntimeException("redline constraint")
+                object.__setattr__(self, name, value)
+
+        text_obj = MagicMock()
+        cursor = MagicMock()
+        probe = MagicMock()
+        probe.getString.return_value = "existing"
+        para_cursor = _RaisingParaCursor()
+        text_obj.createTextCursorByRange.side_effect = [probe, para_cursor]
+
+        # Must NOT raise — graceful degradation, returns the cursor.
+        result = _insert_paragraph_at_cursor(
+            text_obj, cursor, "Hello", style="Heading 1", doc=None
+        )
+        assert result is para_cursor

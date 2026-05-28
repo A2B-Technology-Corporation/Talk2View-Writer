@@ -20,10 +20,9 @@ persistent track-changes setting. Gated by the
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
@@ -143,8 +142,7 @@ def ui_thread_tool(fn: _F) -> _F:
     return wrapper  # type: ignore[return-value]
 
 
-@contextlib.contextmanager
-def suspend_record_changes(doc: Any) -> Iterator[None]:
+class suspend_record_changes:  # noqa: N801 — used like a function-style CM
     """Briefly disable ``doc.RecordChanges`` for a single UNO write.
 
     LibreOffice raises ``com.sun.star.uno.RuntimeException`` when you set
@@ -160,36 +158,46 @@ def suspend_record_changes(doc: Any) -> Iterator[None]:
     through. Style is part of the same logical edit the user already
     sees in the redline view; it doesn't deserve its own redline entry.
 
-    No-op when ``RecordChanges`` is already False or unreadable —
-    cheaper than the alternative of probing first and a clear signal
-    that this context manager is harmless to apply unconditionally.
+    No-op when ``RecordChanges`` is already False or unreadable.
+
+    Implemented as a class, NOT a ``@contextmanager`` generator, on
+    purpose: when the wrapped body raises a *UNO* exception, contextlib's
+    generator ``__exit__`` does ``exc.__traceback__ = tb`` — and a pyuno
+    exception struct's ``__setattr__`` then tries to convert the Python
+    traceback to a UNO type and dies with "'traceback' object has no
+    attribute 'getTypes'", masking the real error and breaking the
+    bridge's error path. A plain ``__exit__`` never touches
+    ``__traceback__``, so the original exception propagates cleanly.
     """
-    try:
-        prior = doc.getPropertyValue("RecordChanges")
-    except Exception:
-        # Older LO builds / headless contexts may refuse. Just pass through.
-        yield
-        return
-    if not prior:
-        yield
-        return
-    try:
-        doc.setPropertyValue("RecordChanges", False)
-    except Exception:
-        logger.exception(
-            "Could not suspend RecordChanges; ParaStyleName may fail"
-        )
-        yield
-        return
-    try:
-        yield
-    finally:
+
+    def __init__(self, doc: Any) -> None:
+        self._doc = doc
+        self._restore = False
+
+    def __enter__(self) -> suspend_record_changes:
         try:
-            doc.setPropertyValue("RecordChanges", True)
+            prior = self._doc.getPropertyValue("RecordChanges")
         except Exception:
-            logger.exception(
-                "Could not restore RecordChanges after suspend block"
-            )
+            # Older LO builds / headless contexts may refuse. Pass through.
+            return self
+        if not prior:
+            return self
+        try:
+            self._doc.setPropertyValue("RecordChanges", False)
+            self._restore = True
+        except Exception:
+            logger.exception("Could not suspend RecordChanges; ParaStyleName may fail")
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        # Returns None (falsy) so the original exception always propagates
+        # unchanged — and, unlike contextlib's generator __exit__, never
+        # assigns exc.__traceback__ (the pyuno-struct setattr trap).
+        if self._restore:
+            try:
+                self._doc.setPropertyValue("RecordChanges", True)
+            except Exception:
+                logger.exception("Could not restore RecordChanges after suspend block")
 
 
 def _run_with_track_changes(

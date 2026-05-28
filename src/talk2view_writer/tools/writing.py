@@ -135,11 +135,27 @@ def _insert_paragraph_at_cursor(
     para_cursor.gotoStartOfParagraph(False)
     para_cursor.gotoEndOfParagraph(True)
     if style:
+        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
         from talk2view_writer.tools._base import suspend_record_changes
 
         ctx = suspend_record_changes(doc) if doc is not None else contextlib.nullcontext()
         with ctx:
-            para_cursor.ParaStyleName = word_to_libreoffice_style(style)
+            try:
+                para_cursor.ParaStyleName = word_to_libreoffice_style(style)
+            except RuntimeException:
+                # LO can still reject a ParaStyleName write on a paragraph
+                # that carries an active redline even with RecordChanges
+                # suspended (the redline already exists from the tracked
+                # insert above). The text is in; degrade to the default
+                # paragraph style rather than failing the whole insert.
+                # logger.exception() captures the actual UNO error + traceback
+                # — never swallow it behind a bare message.
+                logger.exception(
+                    "Could not apply paragraph style %r (track-changes redline "
+                    "constraint); left the default style",
+                    style,
+                )
     return para_cursor
 
 

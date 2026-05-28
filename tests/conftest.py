@@ -143,3 +143,7 @@ _frame = _make_module("com.sun.star.frame")
 _beans = _make_module("com.sun.star.beans")
 _beans.PropertyValue = MagicMock(name="PropertyValue")  # type: ignore[attr-defined]
 _uno_pkg = _make_module("com.sun.star.uno")
+# Production code catches the UNO RuntimeException (e.g. writing.py's
+# ParaStyleName-under-redline guard). Expose a real Exception subclass so
+# ``from com.sun.star.uno import RuntimeException`` + ``except`` work in tests.
+_uno_pkg.RuntimeException = type("RuntimeException", (Exception,), {})  # type: ignore[attr-defined]
