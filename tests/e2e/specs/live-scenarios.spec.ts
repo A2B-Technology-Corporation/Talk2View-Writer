@@ -91,25 +91,11 @@ const SCENARIO_FILES = readdirSync(SCENARIOS_DIR)
   .map((f) => ({ name: basename(f).replace(/\.ya?ml$/, ''), path: join(SCENARIOS_DIR, f) }))
   .sort((a, b) => a.name.localeCompare(b.name));
 
-// Circuit breaker. If a scenario completes with ZERO tool calls, the engine
-// isn't tool-calling at all (Platform #73) — every remaining scenario would
-// just burn its per-step timeouts (a broken engine turned this ~minutes suite
-// into a 1.7h run). Trip the breaker on the first such scenario and skip the
-// rest. Safe because every scenario expects >= 1 tool call, so 0 reliably
-// means the engine is broken, not that the scenario legitimately needed none.
-// Relies on --workers=1 (serial) so a scenario can see the prior one's result.
-let engineNotToolCalling = false;
-
 for (const sc of SCENARIO_FILES) {
   test.describe(`live scenario: ${sc.name}`, () => {
-    // Each scenario can take minutes (multiple LLM round-trips). Set the
-    // timeout via describe.configure, NOT test.setTimeout(): the latter,
-    // called here in the describe BODY (collection phase), is silently
-    // ignored, leaving the 30s global default from playwright.config.ts.
-    // That 30s killed each test mid-step (the first soft-wait alone is
-    // 120s) BEFORE the fail-fast logic below could run, so the breaker
-    // never tripped and a dead engine still walked all 11 scenarios.
-    test.describe.configure({ retries: 0, timeout: 15 * 60 * 1000 });
+    test.describe.configure({ retries: 0 });
+    // Each scenario can take minutes (multiple LLM round-trips).
+    test.setTimeout(15 * 60 * 1000);
 
     test(`walks the scripted scenario; hard-fails on any violation`, async ({
       browser,
@@ -118,12 +104,6 @@ for (const sc of SCENARIO_FILES) {
     }, testInfo) => {
       // One-shot Chromium — WebKit would double-bill the engine.
       test.skip(testInfo.project.name !== 'chromium', 'one-shot Chromium');
-      // Fail-fast: a prior scenario proved the engine makes no tool calls
-      // (Platform #73). Skip rather than burn this scenario's timeouts too.
-      test.skip(
-        engineNotToolCalling,
-        'an earlier live scenario produced 0 tool calls — engine not tool-calling (Platform #73); skipping to avoid burning the full suite',
-      );
 
       const artifactsDir = join(ARTIFACTS_ROOT, sc.name);
       await mkdir(artifactsDir, { recursive: true });
@@ -183,11 +163,6 @@ for (const sc of SCENARIO_FILES) {
         await composer.fill(step.prompt);
         await composer.press('Enter');
 
-        // Tracks whether THIS turn hung (a soft-wait below timed out).
-        // Combined with 0 cumulative tool calls it is the fail-fast signal
-        // that the engine isn't tool-calling at all (Platform #73).
-        let turnHung = false;
-
         await expect(composer).toBeDisabled({ timeout: 10_000 });
         // Soft-wait for composer to re-enable. If a tool call hangs
         // forever (e.g. LO C++ bug in manage_list — Investigation #37 —
@@ -199,7 +174,6 @@ for (const sc of SCENARIO_FILES) {
         try {
           await expect(composer).toBeEnabled({ timeout: 120_000 });
         } catch {
-          turnHung = true;
           note(
             `${stepLabel} composer never re-enabled within 120s — likely an underlying LO tool hang (see Investigations #37, #38)`,
           );
@@ -224,7 +198,6 @@ for (const sc of SCENARIO_FILES) {
             )
             .toBe(true);
         } catch {
-          turnHung = true;
           note(
             `${stepLabel} timed out (120s) waiting for the settled assistant reply; transcript will show whatever was captured`,
           );
@@ -239,23 +212,6 @@ for (const sc of SCENARIO_FILES) {
           () => window.__t2vToolCalls?.slice() ?? [],
         );
         const stepToolCalls = toolCalls.slice(beforeToolCalls);
-
-        // Fail-fast (Platform #73). A turn that hung AND has produced no
-        // tool call across the whole scenario so far means the engine isn't
-        // tool-calling — walking the remaining steps would just burn ~240s
-        // of soft-waits each (this is what turned the suite into a ~1.9h
-        // run). Abort now and trip the cross-scenario breaker so the rest
-        // skip. The post-loop assertions still fire, so this scenario fails
-        // loudly — just fast. Conservative: only fires while cumulative
-        // tool calls are still 0, so a slow-but-working engine that already
-        // made a call is never aborted.
-        if (turnHung && toolCalls.length === 0) {
-          engineNotToolCalling = true;
-          note(
-            `${stepLabel} turn hung with 0 tool calls — engine not tool-calling (Platform #73); aborting scenario early`,
-          );
-          break;
-        }
         const assistantText = await page.evaluate(
           () =>
             (
@@ -450,9 +406,6 @@ for (const sc of SCENARIO_FILES) {
       const totalToolCalls = await page
         .evaluate(() => window.__t2vToolCalls?.length ?? 0)
         .catch(() => 0);
-      // Trip the circuit breaker (see top of file) so the remaining
-      // scenarios skip instead of repeating this broken-engine walk.
-      if (totalToolCalls === 0) engineNotToolCalling = true;
       for (const sf of softFailures) {
         testInfo.annotations.push({ type: 'scenario-failure', description: sf });
       }
