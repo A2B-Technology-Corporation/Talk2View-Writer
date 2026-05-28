@@ -148,10 +148,34 @@ jobs:
             echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Generate update.xml (LibreOffice extension update feed)
+        # The shipped .oxt's description.xml points its <update-information>
+        # at releases/latest/download/update.xml — which GitHub serves from
+        # the newest non-prerelease release. We upload this update.xml on
+        # every release; only the GA copy is ever served as "latest".
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          cat > dist/update.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <description xmlns="http://openoffice.org/extensions/update/2006"
+                       xmlns:xlink="http://www.w3.org/1999/xlink">
+            <identifier value="com.talk2view.writer"/>
+            <version value="$VERSION"/>
+            <update-download>
+              <src xlink:href="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/Talk2ViewWriter.oxt"/>
+            </update-download>
+          </description>
+          EOF
+          echo "Generated dist/update.xml for $TAG (version $VERSION):"
+          cat dist/update.xml
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Talk2ViewWriter.oxt
+          files: |
+            dist/Talk2ViewWriter.oxt
+            dist/update.xml
           body: ${{ steps.changelog.outputs.body }}
           prerelease: ${{ steps.prerelease.outputs.is_prerelease == 'true' }}
           generate_release_notes: false  # we generate our own above

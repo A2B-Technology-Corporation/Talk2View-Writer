@@ -5,6 +5,12 @@
              xmlns:l="http://libreoffice.org/extensions/description/2011">
     <identifier value="com.talk2view.writer"/>
     <version value="1.0.1"/>
+    <!-- LibreOffice "Check for Updates" reads this feed. The URL always
+         resolves to the newest non-prerelease release's update.xml (so
+         alphas are never offered); release.yml generates that update.xml. -->
+    <update-information>
+        <src xlink:href="https://github.com/A2B-Technology-Corporation/Talk2View-Writer/releases/latest/download/update.xml"/>
+    </update-information>
     <display-name>
         <name lang="en">Talk2View for Writer</name>
     </display-name>
