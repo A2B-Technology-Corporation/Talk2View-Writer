@@ -52,6 +52,20 @@ test.describe('update banner', () => {
     await expect(banner).toContainText('v99.0.0');
   });
 
+  test('Releases button opens the release page via the host (not window.open)', async ({
+    page,
+    mockEngine,
+  }) => {
+    await bootApp(page, mockEngine, 'v99.0.0');
+    await expect(page.getByTestId('update-banner')).toBeVisible({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Releases' }).click();
+    // Goes through the pywebview host bridge (open_external), NOT JS
+    // window.open which is a no-op in the WebKitGTK webview.
+    await expect
+      .poll(() => page.evaluate(() => window.__t2vExternalOpens ?? []), { timeout: 5_000 })
+      .toContain('https://github.com/A2B-Technology-Corporation/Talk2View-Writer/releases/latest');
+  });
+
   test('stays hidden when the latest release is not newer', async ({ page, mockEngine }) => {
     let checked = false;
     // Track that the banner actually performed its check (so a passing

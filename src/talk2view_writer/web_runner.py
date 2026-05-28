@@ -188,6 +188,33 @@ class _Api:
             return []
         return self._bridge.list_tools()
 
+    def open_external(self, url: str) -> dict[str, Any]:
+        """Open an http(s) URL in the user's default browser.
+
+        The chat UI runs in a pywebview WebKitGTK/Cocoa/EdgeChromium
+        webview where JS ``window.open`` is a no-op (no browser chrome to
+        host a new tab), so external links — e.g. the update banner's
+        "Releases" link — must go through the host process. Handled in
+        this subprocess; no LO round-trip needed.
+
+        Only http/https is allowed so a compromised page can't trigger a
+        ``file:`` / arbitrary-scheme handler.
+        """
+        if not isinstance(url, str) or not url.lower().startswith(
+            ("http://", "https://")
+        ):
+            logger.warning("open_external: refusing non-http(s) URL %r", url)
+            return {"opened": False}
+        logger.info("open_external: opening %s", url)
+        try:
+            import webbrowser
+
+            opened = webbrowser.open(url, new=2)
+        except Exception:
+            logger.exception("open_external: failed to open %s", url)
+            return {"opened": False}
+        return {"opened": bool(opened)}
+
     def invoke_tool(self, name: str, args: dict[str, Any] | None = None) -> Any:
         """Run a tool by name with JSON-serialisable args.
 

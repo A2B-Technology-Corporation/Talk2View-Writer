@@ -25,6 +25,7 @@ interface PywebviewApi {
     message: string,
     context: unknown,
   ): Promise<null>;
+  open_external(url: string): Promise<{ opened: boolean }>;
   proxy_fetch(
     url: string,
     method: string,
@@ -106,6 +107,24 @@ export async function invokeTool(
 ): Promise<unknown> {
   const api = await whenBridgeReady();
   return api.invoke_tool(name, args);
+}
+
+/**
+ * Open an external http(s) URL in the user's default browser.
+ *
+ * Goes through the pywebview host because JS ``window.open`` is a no-op
+ * in the WebKitGTK/Cocoa/EdgeChromium webview the chat runs in. Falls
+ * back to ``window.open`` when there's no host bridge (e.g. a plain
+ * browser during tests). Best-effort — never throws.
+ */
+export async function openExternal(url: string): Promise<void> {
+  try {
+    const api = await whenBridgeReady();
+    await api.open_external(url);
+  } catch (err) {
+    logToHost('debug', `[open_external] host open failed, falling back: ${String(err)}`);
+    window.open(url, '_blank', 'noopener');
+  }
 }
 
 /**
