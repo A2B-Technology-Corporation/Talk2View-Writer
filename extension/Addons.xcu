@@ -39,6 +39,33 @@
                             <value>com.sun.star.text.TextDocument</value>
                         </prop>
                     </node>
+                    <node oor:name="m2" oor:op="replace">
+                        <prop oor:name="URL" oor:type="xs:string">
+                            <value>private:separator</value>
+                        </prop>
+                    </node>
+                    <node oor:name="m3" oor:op="replace">
+                        <prop oor:name="URL" oor:type="xs:string">
+                            <value>vnd.com.talk2view.writer:about</value>
+                        </prop>
+                        <prop oor:name="Title" oor:type="xs:string">
+                            <value xml:lang="en">About Talk2View</value>
+                        </prop>
+                        <prop oor:name="Target" oor:type="xs:string">
+                            <value>_self</value>
+                        </prop>
+                    </node>
+                    <node oor:name="m4" oor:op="replace">
+                        <prop oor:name="URL" oor:type="xs:string">
+                            <value>vnd.com.talk2view.writer:license</value>
+                        </prop>
+                        <prop oor:name="Title" oor:type="xs:string">
+                            <value xml:lang="en">License Information</value>
+                        </prop>
+                        <prop oor:name="Target" oor:type="xs:string">
+                            <value>_self</value>
+                        </prop>
+                    </node>
                 </node>
             </node>
         </node>

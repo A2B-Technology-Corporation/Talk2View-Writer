@@ -170,6 +170,14 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
                 # are all handled inside the window, no separate
                 # menu items needed.
                 ext.show_chat_window()
+            elif command == "about":
+                from talk2view_writer.about import show_about
+
+                show_about(self.ctx)
+            elif command == "license":
+                from talk2view_writer.about import show_license
+
+                show_license(self.ctx)
             elif command in {"login", "logout", "settings"}:
                 # Legacy URLs from pre-ADR-0030 user profiles. The
                 # menu no longer exposes them (Addons.xcu, 2026-05-22)
