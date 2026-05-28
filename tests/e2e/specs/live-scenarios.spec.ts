@@ -91,6 +91,15 @@ const SCENARIO_FILES = readdirSync(SCENARIOS_DIR)
   .map((f) => ({ name: basename(f).replace(/\.ya?ml$/, ''), path: join(SCENARIOS_DIR, f) }))
   .sort((a, b) => a.name.localeCompare(b.name));
 
+// Circuit breaker. If a scenario completes with ZERO tool calls, the engine
+// isn't tool-calling at all (Platform #73) — every remaining scenario would
+// just burn its per-step timeouts (a broken engine turned this ~minutes suite
+// into a 1.7h run). Trip the breaker on the first such scenario and skip the
+// rest. Safe because every scenario expects >= 1 tool call, so 0 reliably
+// means the engine is broken, not that the scenario legitimately needed none.
+// Relies on --workers=1 (serial) so a scenario can see the prior one's result.
+let engineNotToolCalling = false;
+
 for (const sc of SCENARIO_FILES) {
   test.describe(`live scenario: ${sc.name}`, () => {
     test.describe.configure({ retries: 0 });
@@ -104,6 +113,12 @@ for (const sc of SCENARIO_FILES) {
     }, testInfo) => {
       // One-shot Chromium — WebKit would double-bill the engine.
       test.skip(testInfo.project.name !== 'chromium', 'one-shot Chromium');
+      // Fail-fast: a prior scenario proved the engine makes no tool calls
+      // (Platform #73). Skip rather than burn this scenario's timeouts too.
+      test.skip(
+        engineNotToolCalling,
+        'an earlier live scenario produced 0 tool calls — engine not tool-calling (Platform #73); skipping to avoid burning the full suite',
+      );
 
       const artifactsDir = join(ARTIFACTS_ROOT, sc.name);
       await mkdir(artifactsDir, { recursive: true });
@@ -406,6 +421,9 @@ for (const sc of SCENARIO_FILES) {
       const totalToolCalls = await page
         .evaluate(() => window.__t2vToolCalls?.length ?? 0)
         .catch(() => 0);
+      // Trip the circuit breaker (see top of file) so the remaining
+      // scenarios skip instead of repeating this broken-engine walk.
+      if (totalToolCalls === 0) engineNotToolCalling = true;
       for (const sf of softFailures) {
         testInfo.annotations.push({ type: 'scenario-failure', description: sf });
       }
