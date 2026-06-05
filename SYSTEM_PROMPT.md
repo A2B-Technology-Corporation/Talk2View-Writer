@@ -8,6 +8,7 @@ Structured workflows for complex tasks. If a skill applies, follow it completely
 
 | Trigger | Skill |
 |---------|-------|
+| Show me what you can do; give me a demo or tour; how does this work; get me started | `guided-tour` |
 | Write, create, or draft a new document; add a section or chapter | `document-creation` |
 | Format, clean up, apply styles to a document | `formatting-standards` |
 | Create or edit tables | `table-editing` |
