@@ -628,6 +628,27 @@ class TestGetHostWindow:
         assert result["geometry"] == {"x": 1, "y": 2, "w": 3, "h": 4}
         assert result["xid"] is None
 
+    def test_native_handle_zero_xid_normalised_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # LO running as a native Wayland client yields XID 0, which is not a
+        # usable handle — it must come back as None, not 0.
+        import uno
+
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr(uno, "getTypeByName", lambda name: name, raising=False)
+        monkeypatch.setattr(
+            uno, "getConstantByName", lambda name: 4, raising=False
+        )
+        peer = MagicMock(name="peer")
+        peer.getWindowHandle.return_value = SimpleNamespace(
+            WindowHandle=0, DisplayPointer=0
+        )
+        window = MagicMock(name="window")
+        window.queryInterface.return_value = peer
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        assert srv._native_handle(window) == {"xid": None}
+
 
 @pytest.mark.unit
 class TestToolRegistry:

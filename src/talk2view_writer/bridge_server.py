@@ -405,16 +405,19 @@ class BridgeServer:
         sys_type = uno.getConstantByName(const_name)
         # ProcessId is an empty byte sequence → "this process".
         handle = peer.getWindowHandle((), sys_type)
+        # A handle of 0 means "no usable native handle" on every platform —
+        # e.g. LO running as a native Wayland client returns XID 0. Normalise
+        # it to None so the subprocess's `if not handle` checks read cleanly.
         if sys.platform == "linux":
             # X11 returns a SystemDependentXWindow struct; WindowHandle is
             # the XID. On Wayland the XID is an XWayland id that cannot be
             # used for cross-process parenting — the subprocess decides
             # whether to use it based on its own session type.
-            return {"xid": int(handle.WindowHandle)}
+            return {"xid": int(handle.WindowHandle) or None}
         if sys.platform == "win32":
-            return {"hwnd": int(handle)}
+            return {"hwnd": int(handle) or None}
         if sys.platform == "darwin":
-            return {"nswindow": int(handle)}
+            return {"nswindow": int(handle) or None}
         return {}
 
     # ----- HTTPS proxy ----------------------------------------------------

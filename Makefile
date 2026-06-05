@@ -212,7 +212,7 @@ install-oxt: package
 	fi
 	@echo "Installing extension into user's LibreOffice profile..."
 	@unopkg add --force --suppress-license $(OXT)
-	@echo "Installed. Start LibreOffice Writer to see the Talk2View sidebar."
+	@echo "Installed. Start LibreOffice Writer and open Talk2View -> Open Talk2View Chat."
 
 clean:
 	rm -rf $(BUILD_DIR)/ $(DIST_DIR)/ .pytest_cache/ .ruff_cache/ .mypy_cache/ htmlcov/ .coverage
