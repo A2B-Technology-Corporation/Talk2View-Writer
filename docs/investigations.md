@@ -1622,3 +1622,38 @@ backend needs — currently `pywebview` on Windows uses
 `pywebview[cef]` or the built-in EdgeChromium binding via
 `webview2`) as Windows wheels in the matrix. Probably another ADR
 when we get there.
+
+
+## #49 — LibreOffice does not expose an xdg-foreign token via UNO (NEW 2026-06-05)
+
+**What:** ADR-0039 makes the chat companion window `transient-for` the
+LibreOffice document window so the WM stacks them together. On X11 this
+works via LO's container-window XID (`XSystemDependentWindowPeer.
+getWindowHandle`). On **Wayland** the equivalent is the `xdg-foreign`
+protocol: the parent (LO) must `export` its surface to get an opaque
+handle string, which the child (our subprocess) then `import`s via
+`zxdg_imported_v2.set_parent_of`. LibreOffice/VCL does **not** surface
+`gdk_wayland_window_export_handle` (or any equivalent) through UNO, and
+we cannot drive LO's GTK/VCL internals from our Python. So no usable
+parent token is obtainable on Wayland — cross-process transient-for is
+effectively unavailable to extensions there.
+
+**Where:** `src/talk2view_writer/bridge_server.py::_native_handle`
+(returns an XID only; no Wayland token), consumed by
+`src/talk2view_writer/web_runner.py::_try_set_transient` (X11 only).
+ADR-0039 "Cons" + "Follow-up".
+
+**Why it matters:** On Wayland the companion window can be branded and
+grouped (via `GLib.set_prgname` + icon) but cannot be parented to or
+positioned against LO. The "docked side panel" feel there is limited to
+branding + a tall persisted panel + manual drag-to-snap. This is the
+single biggest gap between the Wayland and X11/macOS/Windows experience.
+
+**Next step:**
+1. Check whether a newer LibreOffice exposes window-handle export via
+   UNO (e.g. a `XSystemDependentWindowPeer` Wayland system type) — none
+   exists as of LO 26.2.3.2.
+2. If LO never exposes it, the only Wayland paths to true docking are a
+   compositor-specific rule (KWin window rules) shipped as docs, or the
+   in-process Qt panel rewrite rejected in ADR-0039.
+3. Revisit if/when the chat moves to an in-process Qt host.

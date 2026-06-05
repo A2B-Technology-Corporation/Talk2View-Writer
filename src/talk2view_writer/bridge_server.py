@@ -227,6 +227,8 @@ class BridgeServer:
                     params.get("context"),
                 )
                 return json.dumps({"id": req_id, "result": None})
+            if method == "get_host_window":
+                return json.dumps({"id": req_id, "result": self._host_window()})
             if method == "proxy_fetch":
                 result = self._proxy_fetch(
                     str(params.get("url", "")),
@@ -294,6 +296,126 @@ class BridgeServer:
             log_method("%s | %s", message, ctx_str)
         else:
             log_method("%s", message)
+
+    # ----- Host window (companion-window docking, ADR-0039) ---------------
+
+    def _host_window(self) -> dict[str, Any]:
+        """Describe LibreOffice's main window for the chat subprocess.
+
+        The pywebview chat window queries this once, before it opens, so
+        it can size / position / parent itself against the LibreOffice
+        document window (ADR-0039). The UNO reads run on LO's UI thread
+        via :class:`UIThreadDispatcher` — UNO is not thread-safe and this
+        executes on a bridge worker thread.
+
+        Returns a descriptor dict (see :meth:`_read_host_window`), or an
+        empty dict if there is no current frame / window or the marshalled
+        read fails. Never raises — a docking-metadata failure must not
+        break opening the chat window.
+        """
+        try:
+            from talk2view_writer.extension import get_extension
+
+            ext = get_extension(self.ctx)
+            return ext.ui_thread.run_sync(self._read_host_window, timeout=5.0)
+        except Exception:
+            logger.exception("get_host_window: failed — returning {}")
+            return {}
+
+    def _read_host_window(self) -> dict[str, Any]:
+        """Read LO's container-window geometry + native handle (UI thread).
+
+        Mirrors the proven ``frame.getContainerWindow()`` pattern in
+        ``about.py`` — the frame's container window is a real VCL window
+        with a working peer, unlike the LO 26.x sidebar parent stub that
+        ADR-0029 documented as unusable.
+
+        Returns ``{}`` when there is no current frame or container window
+        (the synthetic test rig's ``FakeFrame.getContainerWindow()``
+        returns ``None``). Otherwise returns::
+
+            {"geometry": {"x", "y", "w", "h"} | None,
+             "xid": int | None, "hwnd": int | None, "nswindow": int | None}
+
+        ``getPosSize`` is documented to raise "not implemented" on some
+        peers (ADR-0029); that field degrades to ``None`` rather than
+        failing the whole read.
+        """
+        smgr = self.ctx.ServiceManager
+        desktop = smgr.createInstanceWithContext(
+            "com.sun.star.frame.Desktop", self.ctx
+        )
+        frame = desktop.getCurrentFrame()
+        if frame is None:
+            return {}
+        window = frame.getContainerWindow()
+        if window is None:
+            return {}
+        result: dict[str, Any] = {
+            "geometry": None,
+            "xid": None,
+            "hwnd": None,
+            "nswindow": None,
+        }
+        try:
+            rect = window.getPosSize()
+            result["geometry"] = {
+                "x": rect.X,
+                "y": rect.Y,
+                "w": rect.Width,
+                "h": rect.Height,
+            }
+        except Exception:
+            logger.exception("get_host_window: getPosSize failed — geometry=None")
+        try:
+            result.update(self._native_handle(window))
+        except Exception:
+            logger.exception(
+                "get_host_window: native handle extraction failed — handle=None"
+            )
+        logger.info("get_host_window: %s", result)
+        return result
+
+    def _native_handle(self, window: Any) -> dict[str, Any]:
+        """Best-effort native window handle for the current platform.
+
+        Used by the subprocess to set a transient-for / owner relationship
+        so the chat window stacks with LibreOffice. Returns ``{}`` when the
+        peer doesn't expose ``XSystemDependentWindowPeer`` — which is the
+        case on strict-PyUNO builds (ADR-0026), so callers must treat the
+        handle as optional and fall back to geometry-only positioning.
+        """
+        import sys
+
+        import uno
+
+        xsd_type = uno.getTypeByName(
+            "com.sun.star.awt.XSystemDependentWindowPeer"
+        )
+        peer = window.queryInterface(xsd_type)
+        if peer is None:
+            return {}
+        const_name = {
+            "linux": "com.sun.star.lang.SystemDependent.SYSTEM_XWINDOW",
+            "win32": "com.sun.star.lang.SystemDependent.SYSTEM_WIN32",
+            "darwin": "com.sun.star.lang.SystemDependent.SYSTEM_MAC",
+        }.get(sys.platform)
+        if const_name is None:
+            return {}
+        sys_type = uno.getConstantByName(const_name)
+        # ProcessId is an empty byte sequence → "this process".
+        handle = peer.getWindowHandle((), sys_type)
+        if sys.platform == "linux":
+            # X11 returns a SystemDependentXWindow struct; WindowHandle is
+            # the XID. On Wayland the XID is an XWayland id that cannot be
+            # used for cross-process parenting — the subprocess decides
+            # whether to use it based on its own session type.
+            return {"xid": int(handle.WindowHandle)}
+        if sys.platform == "win32":
+            return {"hwnd": int(handle)}
+        if sys.platform == "darwin":
+            return {"nswindow": int(handle)}
+        return {}
 
     # ----- HTTPS proxy ----------------------------------------------------
 

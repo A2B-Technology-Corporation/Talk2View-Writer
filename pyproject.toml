@@ -121,7 +121,9 @@ check_untyped_defs = true
 strict_optional = true
 
 [[tool.mypy.overrides]]
-module = ["uno.*", "unohelper.*", "com.sun.star.*", "talk2view.*"]
+# gi.* = PyGObject (used only inside the pywebview subprocess for GTK
+# window identity / transient-for, ADR-0039); it ships no type stubs.
+module = ["uno.*", "unohelper.*", "com.sun.star.*", "talk2view.*", "gi.*"]
 ignore_missing_imports = true
 
 [tool.bandit]
