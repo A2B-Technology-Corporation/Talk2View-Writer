@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -545,6 +546,108 @@ class TestProxyStream:
         assert types[-1] == "done"
         err = next(e for e in events if e["type"] == "error")
         assert "connection refused" in err["message"]
+
+
+@pytest.mark.unit
+class TestGetHostWindow:
+    """``get_host_window`` reports LO's window for companion-window docking.
+
+    The UI-thread marshalling (``_host_window``) needs a real LibreOffice,
+    so these tests drive ``_read_host_window`` (the UNO-reading half)
+    directly with fakes, and verify dispatch routing by stubbing
+    ``_host_window``.
+    """
+
+    @staticmethod
+    def _ctx_with_window(window: Any) -> MagicMock:
+        """A ctx whose Desktop → frame → container window is ``window``."""
+        ctx = MagicMock(name="ctx")
+        desktop = MagicMock(name="desktop")
+        frame = MagicMock(name="frame")
+        frame.getContainerWindow.return_value = window
+        desktop.getCurrentFrame.return_value = frame
+        ctx.ServiceManager.createInstanceWithContext.return_value = desktop
+        return ctx
+
+    def test_get_host_window_not_in_tool_allowlist(self) -> None:
+        # It is bridge infra, not a document tool the engine can invoke.
+        assert "get_host_window" not in _MVP_TOOL_NAMES
+
+    def test_dispatch_routes_to_host_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        payload = {"geometry": {"x": 0, "y": 0, "w": 10, "h": 20}, "xid": None}
+        monkeypatch.setattr(srv, "_host_window", lambda: payload)
+        req = json.dumps({"id": 8, "method": "get_host_window", "params": {}})
+        resp = json.loads(srv._dispatch_line(req))
+        assert resp == {"id": 8, "result": payload}
+
+    def test_read_host_window_no_frame_returns_empty(self) -> None:
+        ctx = MagicMock(name="ctx")
+        desktop = MagicMock(name="desktop")
+        desktop.getCurrentFrame.return_value = None
+        ctx.ServiceManager.createInstanceWithContext.return_value = desktop
+        srv = BridgeServer(ctx=ctx)
+        assert srv._read_host_window() == {}
+
+    def test_read_host_window_no_container_window_returns_empty(self) -> None:
+        srv = BridgeServer(ctx=self._ctx_with_window(None))
+        assert srv._read_host_window() == {}
+
+    def test_read_host_window_returns_geometry(self) -> None:
+        window = MagicMock(name="window")
+        window.getPosSize.return_value = SimpleNamespace(
+            X=100, Y=50, Width=1200, Height=900
+        )
+        # No XSystemDependentWindowPeer → native handle skipped.
+        window.queryInterface.return_value = None
+        srv = BridgeServer(ctx=self._ctx_with_window(window))
+        result = srv._read_host_window()
+        assert result["geometry"] == {"x": 100, "y": 50, "w": 1200, "h": 900}
+        assert result["xid"] is None
+        assert result["hwnd"] is None
+
+    def test_read_host_window_getpossize_failure_degrades_to_none(self) -> None:
+        window = MagicMock(name="window")
+        window.getPosSize.side_effect = RuntimeError("not implemented")
+        window.queryInterface.return_value = None
+        srv = BridgeServer(ctx=self._ctx_with_window(window))
+        result = srv._read_host_window()
+        assert result["geometry"] is None
+        assert result["xid"] is None
+
+    def test_read_host_window_native_handle_failure_keeps_geometry(self) -> None:
+        window = MagicMock(name="window")
+        window.getPosSize.return_value = SimpleNamespace(
+            X=1, Y=2, Width=3, Height=4
+        )
+        window.queryInterface.side_effect = RuntimeError("boom")
+        srv = BridgeServer(ctx=self._ctx_with_window(window))
+        result = srv._read_host_window()
+        assert result["geometry"] == {"x": 1, "y": 2, "w": 3, "h": 4}
+        assert result["xid"] is None
+
+    def test_native_handle_zero_xid_normalised_to_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # LO running as a native Wayland client yields XID 0, which is not a
+        # usable handle — it must come back as None, not 0.
+        import uno
+
+        monkeypatch.setattr("sys.platform", "linux")
+        monkeypatch.setattr(uno, "getTypeByName", lambda name: name, raising=False)
+        monkeypatch.setattr(
+            uno, "getConstantByName", lambda name: 4, raising=False
+        )
+        peer = MagicMock(name="peer")
+        peer.getWindowHandle.return_value = SimpleNamespace(
+            WindowHandle=0, DisplayPointer=0
+        )
+        window = MagicMock(name="window")
+        window.queryInterface.return_value = peer
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        assert srv._native_handle(window) == {"xid": None}
 
 
 @pytest.mark.unit

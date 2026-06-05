@@ -9,8 +9,13 @@ Talk2View-Writer is the LibreOffice Writer sibling of `Talk2View-Word`. It uses:
 - the **cloud** Talk2View engine (`engine.talk2view.com`) via the
   [`talk2view` Python SDK](../Talk2View-Platform/packages/sdk-python/) — same
   backend Talk2View-Word uses,
-- a **sidebar deck** (UNO `XSidebarPanel`) for the chat UI — registered via
-  `extension/Sidebar.xcu`,
+- a **pywebview companion window** for the chat UI (React + Talk2View SDK in a
+  subprocess), opened from the **Talk2View → Open Talk2View Chat** menu and
+  integrated as a docked side panel where the platform allows
+  ([ADR-0030](docs/adrs/0030-web-chat-via-pywebview-subprocess.md),
+  [ADR-0039](docs/adrs/0039-companion-window-docking.md)). The LO 26.x sidebar
+  deck was abandoned — its framework cannot host a Python panel
+  ([ADR-0029](docs/adrs/0029-floating-chat-window.md)),
 - **20 Python tools** registered via the SDK's `@tool` decorator, each invoking
   UNO APIs to manipulate the Writer document. (The Phase A plan said 26;
   reading + writing + formatting + search + structure + commenting actually
@@ -56,19 +61,22 @@ See `README.md`.
 
 ## UNO threading
 
-UNO is **not** thread-safe. The SDK's `t2v.chat()` returns an iterator that
-blocks on SSE reads. The pattern in `ui/sidebar_panel.py` is:
+UNO is **not** thread-safe. Per [ADR-0030](docs/adrs/0030-web-chat-via-pywebview-subprocess.md)
+the chat (auth, SSE iteration, message stream) lives entirely in the
+browser-side SDK inside the pywebview subprocess — LibreOffice's Python never
+iterates the chat. The only thing crossing back into LO is a **tool call**:
 
-1. UI submit handler spawns a worker thread.
-2. Worker iterates `t2v.chat(...)`, pushing `ChatEvent`s into a
-   `queue.Queue`.
-3. A `XTopWindowListener` timer (or `vcl.scheduleAction`-style callback)
-   drains the queue on the UI thread and updates widgets.
+1. The SDK in the webview invokes a tool → `window.pywebview.api.invoke_tool`.
+2. `web_runner._BridgeClient` sends it over the Unix socket to
+   `bridge_server.BridgeServer`, which runs on a bridge worker thread.
+3. The tool body (decorated with `@ui_thread_tool`) marshals its UNO calls
+   onto LO's UI thread via `UIThreadDispatcher.run_sync`
+   ([ADR-0018](docs/adrs/0018-ui-thread-marshalling-queue.md)) before
+   mutating the document.
 
-Tools registered via `@tool` execute on the worker thread when the SDK
-receives an `interrupt`. The tool implementations must marshal any UNO
-calls back to the UI thread before mutating the document — use the same
-queue + drain pattern, or grab the `solar_mutex` if available.
+Any new code in the LO process that reads/writes UNO from a non-UI thread
+(e.g. the `get_host_window` bridge method, ADR-0039) must do the same —
+marshal through `UIThreadDispatcher`, never touch UNO directly off-thread.
 
 ## Tool surface
 

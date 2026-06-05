@@ -69,6 +69,16 @@ class _BridgeClient:
     def list_tools(self) -> list[str]:
         return cast(list[str], self._call("list_tools", {}))
 
+    def get_host_window(self) -> dict[str, Any]:
+        """Ask LO for its main-window geometry + native handle (ADR-0039).
+
+        Returns the descriptor dict from ``BridgeServer._host_window`` (or
+        ``{}`` if LO has no current frame / the read failed). Used once,
+        before the chat window opens, to size / position / parent it
+        against the LibreOffice document window.
+        """
+        return cast(dict[str, Any], self._call("get_host_window", {}))
+
     def log(self, level: str, message: str, context: Any | None) -> None:
         # No need to round-trip the response; fire-and-forget the
         # log call but keep the request-id machinery so the server
@@ -325,6 +335,11 @@ def main() -> None:
         default=None,
         help="Path to LO's bridge Unix socket. Omit for offline tests.",
     )
+    parser.add_argument(
+        "--icon",
+        default=None,
+        help="Path to the window icon (PNG). Brands the chat window.",
+    )
     args = parser.parse_args()
 
     logger.info(
@@ -350,6 +365,35 @@ def main() -> None:
 
     api = _Api(bridge)
 
+    # Companion-window docking (ADR-0039): ask LO for its main-window
+    # geometry + native handle, combine with the user's last-saved
+    # geometry, and compute where/how to place the chat window. Best-effort
+    # — any failure degrades to a centred default-size window.
+    global _HOST_PARENT, _LATEST_GEOMETRY
+    host_window: dict[str, Any] = {}
+    if bridge is not None:
+        try:
+            host_window = bridge.get_host_window() or {}
+        except Exception:
+            logger.exception(
+                "web_runner: get_host_window failed — using default geometry"
+            )
+    session = _session_type()
+    geometry = _window_geometry(
+        host_window, _load_geometry(), sys.platform, session
+    )
+    _HOST_PARENT = host_window
+    _LATEST_GEOMETRY = {
+        "width": geometry["width"],
+        "height": geometry["height"],
+    }
+    logger.info(
+        "web_runner: host_window=%s session=%s geometry=%s",
+        host_window,
+        session,
+        geometry,
+    )
+
     # On macOS pywebview's Cocoa backend imports AppKit / Foundation /
     # WebKit / objc — none of which ship with LibreOffice's bundled
     # Python framework. We bundle pyobjc as universal2 wheels under
@@ -364,6 +408,12 @@ def main() -> None:
     import webview
 
     _patch_webkitgtk_cors_settings()
+    # Companion-window integration (ADR-0039): brand the GTK process as
+    # "Talk2View" and (X11 only) make the window transient-for LO. Both
+    # no-op on non-GTK platforms / Wayland.
+    if sys.platform.startswith("linux"):
+        _apply_window_identity()
+        _patch_gtk_window_transient()
     # Belt + braces: also raise the SSL tolerance just in case the
     # WebKitGTK shipped with this user's distro doesn't bundle the
     # same CA roots as system Python's httpx.
@@ -371,13 +421,21 @@ def main() -> None:
 
     storage_path = _webview_storage_path()
     logger.info("webview imported, calling create_window")
-    webview.create_window(
+    window = webview.create_window(
         "Talk2View",
         url=args.html_url,
         js_api=api,
-        width=400,
-        height=600,
+        width=geometry["width"],
+        height=geometry["height"],
+        x=geometry["x"],
+        y=geometry["y"],
+        frameless=geometry["frameless"],
+        easy_drag=False,
+        on_top=geometry["on_top"],
+        resizable=True,
+        min_size=_MIN_SIZE,
     )
+    _track_window_geometry(window)
     _install_focus_signal_handler(webview)
     logger.info(
         "webview.create_window returned; entering webview.start "
@@ -406,8 +464,12 @@ def main() -> None:
         private_mode=False,
         storage_path=str(storage_path),
         gui=gui_backend,
+        icon=args.icon,
     )
     logger.info("webview.start() returned — window closed, exiting")
+    # Persist the final geometry so the panel reopens where the user left
+    # it (size everywhere; position where the platform honours it).
+    _save_geometry(_LATEST_GEOMETRY)
 
 
 def _webview_storage_path() -> Path:
@@ -426,6 +488,237 @@ def _webview_storage_path() -> Path:
         base = Path(xdg) / "talk2view-writer" / "webview"
     base.mkdir(parents=True, exist_ok=True)
     return base
+
+
+# ---------------------------------------------------------------------------
+# Companion-window docking (ADR-0039)
+# ---------------------------------------------------------------------------
+
+# Default side-panel proportions: tall and narrow, like a docked deck.
+_DEFAULT_WIDTH = 400
+_DEFAULT_HEIGHT = 800
+_MIN_SIZE = (320, 400)
+
+# Last-known geometry, updated by the GTK move/resize events and persisted
+# when the window closes so the panel reopens where the user left it.
+_LATEST_GEOMETRY: dict[str, Any] = {}
+
+# LO's native window handle for the transient-for patch (X11 only). Set in
+# main() from the bridge's get_host_window reply before webview.start().
+_HOST_PARENT: dict[str, Any] | None = None
+
+
+def _session_type() -> str | None:
+    """Return ``'wayland'`` / ``'x11'`` on Linux, else ``None``.
+
+    Selects which docking capabilities the compositor allows (ADR-0039):
+    on Wayland a client cannot position its own toplevel or parent into
+    another process, so positioning + transient-for are skipped there.
+    """
+    if sys.platform != "linux":
+        return None
+    session = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    if session in ("wayland", "x11"):
+        return session
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return "wayland"
+    if os.environ.get("DISPLAY"):
+        return "x11"
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    """Return ``int(value)`` or ``None`` if it isn't a finite number."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _window_geometry(
+    host: dict[str, Any],
+    persisted: dict[str, Any],
+    platform: str,
+    session: str | None,
+) -> dict[str, Any]:
+    """Compute the chat window's size / position / chrome (ADR-0039).
+
+    Pure function — no GTK, no I/O — so the per-platform docking policy is
+    unit-tested in isolation.
+
+    Policy:
+      * Size: last persisted size wins; otherwise a tall narrow side-panel,
+        matching LO's height when first docking.
+      * Position: only platforms that let a client place its own toplevel
+        (everything except Linux/Wayland) auto-dock onto LO's right edge.
+        A persisted user position always wins. Wayland gets no coords — the
+        compositor places it and the user drags-to-snap once.
+      * frameless: kept ``False`` in v1 so the compositor's title-bar drag +
+        edge-snap work everywhere; a frameless panel + client-side drag
+        strip is the v2 follow-up.
+      * on_top: ``True`` so it floats over the document like a docked deck.
+    """
+    geom = host.get("geometry") or None
+    width = _coerce_int(persisted.get("width")) or _DEFAULT_WIDTH
+    height = _coerce_int(persisted.get("height"))
+
+    positionable = not (platform == "linux" and session == "wayland")
+    x = _coerce_int(persisted.get("x")) if positionable else None
+    y = _coerce_int(persisted.get("y")) if positionable else None
+
+    if positionable and geom and x is None and y is None:
+        # Dock onto LO's right edge, matching its height on first open.
+        x = int(geom["x"]) + int(geom["w"]) - width
+        y = int(geom["y"])
+        if height is None:
+            height = int(geom["h"])
+
+    if height is None:
+        height = _DEFAULT_HEIGHT
+
+    return {
+        "width": width,
+        "height": height,
+        "x": x,
+        "y": y,
+        "frameless": False,
+        "on_top": True,
+    }
+
+
+def _geometry_path() -> Path:
+    """Path to the persisted-geometry file (alongside the webview state)."""
+    return _webview_storage_path() / "geometry.json"
+
+
+def _load_geometry() -> dict[str, Any]:
+    """Read the persisted geometry dict, or ``{}`` if absent / unreadable."""
+    path = _geometry_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        logger.exception("geometry: failed to read %s — ignoring", path)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_geometry(geo: dict[str, Any]) -> None:
+    """Persist the geometry dict (no-op for an empty dict)."""
+    if not geo:
+        return
+    path = _geometry_path()
+    try:
+        path.write_text(json.dumps(geo))
+        logger.info("geometry: persisted %s to %s", geo, path)
+    except OSError:
+        logger.exception("geometry: failed to write %s", path)
+
+
+def _track_window_geometry(window: Any) -> None:
+    """Subscribe to GTK move/resize events so geometry persists.
+
+    The handlers mutate the module-level :data:`_LATEST_GEOMETRY`, which is
+    written to disk when the window closes. On Wayland ``moved`` reports
+    inert coordinates, but ``resized`` (size) is always meaningful — and
+    the restore path ignores Wayland positions anyway (see
+    :func:`_window_geometry`).
+    """
+
+    def _on_resized(width: int, height: int) -> None:
+        _LATEST_GEOMETRY["width"] = int(width)
+        _LATEST_GEOMETRY["height"] = int(height)
+
+    def _on_moved(x: int, y: int) -> None:
+        _LATEST_GEOMETRY["x"] = int(x)
+        _LATEST_GEOMETRY["y"] = int(y)
+
+    try:
+        window.events.resized += _on_resized
+        window.events.moved += _on_moved
+    except Exception:
+        logger.exception("geometry: failed to subscribe to move/resize events")
+
+
+def _apply_window_identity(app_name: str = "Talk2View") -> None:
+    """Brand the GTK process so the chat window reads as ``app_name``.
+
+    Without this the window inherits a generic ``python3`` identity and
+    won't carry the Talk2View name/icon or group consistently in the
+    taskbar/overview. Sets the program name GTK derives the Wayland
+    ``app_id`` / X11 ``WM_CLASS`` from (ADR-0039). Linux/GTK only; no-op
+    elsewhere (the icon is set separately via ``webview.start(icon=...)``).
+    """
+    try:
+        from gi.repository import GLib
+    except Exception:
+        logger.info("window identity: gi.repository.GLib unavailable — skipping")
+        return
+    for fn_name, value in (
+        ("set_prgname", app_name),
+        ("set_application_name", app_name),
+    ):
+        try:
+            getattr(GLib, fn_name)(value)
+        except Exception:
+            logger.exception("window identity: GLib.%s(%r) failed", fn_name, value)
+
+
+def _patch_gtk_window_transient() -> None:
+    """Wrap the GTK BrowserView to make the chat window transient-for LO.
+
+    A transient-for relationship makes the window manager stack the chat
+    window with the LibreOffice document window (child-of-LO behaviour).
+    Only engages on X11, where ``_HOST_PARENT`` carries LO's XID; on
+    Wayland there is no usable cross-process parent handle (LO does not
+    expose an xdg-foreign token via UNO — investigation #49), so it
+    no-ops. Sibling to ``_patch_webkitgtk_cors_settings``; guarded by a
+    sentinel so it applies once.
+    """
+    try:
+        from webview.platforms import gtk as gtk_backend
+    except ImportError:
+        logger.info(
+            "transient patch: pywebview.platforms.gtk not importable — skipping"
+        )
+        return
+
+    if getattr(gtk_backend.BrowserView, "_t2v_transient_patched", False):
+        return
+
+    original_init = gtk_backend.BrowserView.__init__
+
+    def patched_init(self: Any, window: Any) -> None:
+        original_init(self, window)
+        _try_set_transient(self.window)
+
+    gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
+    gtk_backend.BrowserView._t2v_transient_patched = True  # type: ignore[attr-defined]
+    logger.info("transient patch: BrowserView.__init__ wrapped")
+
+
+def _try_set_transient(gtk_window: Any) -> None:
+    """Set ``gtk_window`` transient-for LO's window via its XID (X11 only)."""
+    parent = _HOST_PARENT
+    xid = parent.get("xid") if parent else None
+    if not xid:
+        return
+    try:
+        from gi.repository import Gdk, GdkX11
+
+        display = Gdk.Display.get_default()
+        foreign = GdkX11.X11Window.foreign_new_for_display(display, int(xid))
+        if foreign is None:
+            logger.info("transient: foreign_new_for_display(%s) -> None", xid)
+            return
+        gtk_window.realize()
+        gtk_window.get_window().set_transient_for(foreign)
+        logger.info("transient: chat window set transient-for LO xid=%s", xid)
+    except Exception:
+        logger.exception("transient: set_transient_for(xid=%s) failed", xid)
 
 
 def _patch_webkitgtk_cors_settings() -> None:

@@ -5,7 +5,7 @@
 
 AI-powered document assistant for **LibreOffice Writer**. Sibling project to
 [Talk2View-Word](../Talk2View-Word/) (Microsoft Word). Adds a Talk2View chat
-panel to the LibreOffice Writer sidebar and executes Writer-native versions of
+companion window to LibreOffice Writer and executes Writer-native versions of
 the Talk2View-Word tool catalog through the UNO API.
 
 ## Install (end users)
@@ -22,8 +22,8 @@ then either:
   unopkg add --force Talk2ViewWriter.oxt
   ```
 
-Restart LibreOffice Writer; the **Talk2View** deck appears in the right
-sidebar.
+Restart LibreOffice Writer; open the chat from **Talk2View → Open
+Talk2View Chat** in the menu bar.
 
 The `.oxt` is a single universal package — same file works on Linux
 (x86_64 + aarch64), macOS (Intel + Apple Silicon), and Windows x86_64,
@@ -33,27 +33,20 @@ automatically at first launch (see [ADR-0023](docs/adrs/0023-vendor-pydantic-cor
 
 ### Supported LibreOffice builds
 
-Talk2View-Writer follows the canonical Python sidebar-panel pattern
-documented in LibreOffice's own SDK example
-(`odk/examples/python/toolpanel/toolpanel.py`). It works on any build
-that ships a stock PyUNO bridge:
+The chat is a pywebview companion window (not a sidebar deck — the LO
+26.x sidebar framework can't host a Python panel; see
+[ADR-0029](docs/adrs/0029-floating-chat-window.md) /
+[ADR-0030](docs/adrs/0030-web-chat-via-pywebview-subprocess.md)). It
+works on any build that ships a stock PyUNO bridge: TDF `.deb`/`.dmg`/
+`.msi` downloads (7.x–26.x), Flatpak, Snap, AppImage, macOS Homebrew
+Cask, and Debian/Ubuntu apt packages.
 
-- **LibreOffice from The Document Foundation** —
-  [`.deb` / `.dmg` / `.msi` downloads](https://www.libreoffice.org/download/download/)
-  (any 7.x, 24.x, 25.x, 26.x). All three OSes.
-- **Flatpak** — `flathub:org.libreoffice.LibreOffice` (Linux).
-- **Snap** — the LibreOffice Snap (Linux).
-- **AppImage** from documentfoundation.org (Linux).
-- **macOS Homebrew Cask** — `brew install --cask libreoffice`.
-- **Debian/Ubuntu apt packages** — verified working on `bookworm`
-  stable + backports, `noble` 24.2, and the
-  `libreoffice-still`/`libreoffice-fresh` TDF PPAs (25.x, 26.x).
-
-If the deck opens to an empty rectangle you may be on a downstream
-build whose PyUNO bridge rejects the canonical pattern — see
-[ADR-0027](docs/adrs/0027-canonical-toolpanel-pattern.md). Installing
-a TDF-shipped build (Flathub / Snap / `.deb` from
-documentfoundation.org) is the fix.
+The window integrates with LibreOffice as a docked side panel where the
+platform allows — branded + grouped on every desktop, with true
+edge-docking and child-of-LO stacking on X11, macOS, and Windows. On a
+Wayland session it is branded/grouped/tall + drag-to-snap (the
+compositor disallows client positioning/reparenting). See
+[ADR-0039](docs/adrs/0039-companion-window-docking.md).
 
 ## Status
 
@@ -61,10 +54,10 @@ Phase F — packaging + comprehensive test rig complete. See
 [`plan`](../../.claude/plans/i-want-to-make-rustling-eich.md) for the
 full roadmap. The current branch covers:
 
-- Sidebar deck renders reliably (ADR-0003, ADR-0007); chat panel
-  handles every SDK event type (`text`, `status`, `todos`, `tool_call`,
-  `error`, `done`) and ships with slash commands `/help`, `/clear`,
-  `/logout`, `/settings`, `/tools`.
+- Chat runs in a pywebview companion window (ADR-0030) that integrates
+  as a docked side panel where the platform allows (ADR-0039); the React
+  UI handles every SDK event type (`text`, `status`, `todos`,
+  `tool_call`, `error`, `done`).
 - All 20 tools registered with the SDK; tool-call interrupts
   auto-execute on the worker thread and marshal UNO calls back to the
   UI thread (ADRs 0008, 0009, 0018, 0020).
@@ -130,8 +123,9 @@ make install-oxt    # install into user's LibreOffice profile
 ```
 
 After `make install-oxt`, restart LibreOffice Writer and pick
-**Talk2View → Open Talk2View Chat** from the menu bar. A floating chat
-window backed by pywebview opens with the bundled React UI.
+**Talk2View → Open Talk2View Chat** from the menu bar. A Talk2View chat
+companion window backed by pywebview opens with the bundled React UI,
+docked beside LibreOffice where the platform allows (ADR-0039).
 
 ### Tests
 

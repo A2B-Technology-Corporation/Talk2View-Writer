@@ -59,6 +59,7 @@ applied.
 | [0036](0036-live-e2e-via-playwright-real-soffice.md) | Live E2E via Playwright + bridge-routed shim + real soffice + real engine | G | Accepted |
 | [0037](0037-comment-authorship-stamping.md) | Stamp author ("Talk2View on behalf of …") + date on AI-created comments | G | Accepted |
 | [0038](0038-macos-bundle-pyobjc-use-lo-python.md) | Spawn LO-bundled Python on macOS + bundle pyobjc as universal2 wheels (supersedes the system-Python assumption in ADR-0030) | F | Accepted |
+| [0039](0039-companion-window-docking.md) | Integrated companion window (WM identity + host-window docking) instead of the dead sidebar deck | G | Accepted |
 
 ## Writing a new ADR
 

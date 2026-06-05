@@ -190,6 +190,7 @@ class WebWindow:
         pythonpath_dir = self._resolve_pythonpath()
         python_bin = self._resolve_python()
         socket_path = self._ensure_bridge()
+        icon_path = self._resolve_icon_path()
         logger.info(
             "WebWindow.show: html_path=%s pythonpath_dir=%s python=%s bridge_socket=%s",
             html_path,
@@ -216,6 +217,8 @@ class WebWindow:
             "--bridge-socket",
             socket_path,
         ]
+        if icon_path is not None:
+            args += ["--icon", str(icon_path)]
         logger.info("WebWindow.show: spawning subprocess %s", args)
         try:
             # No ``start_new_session`` — the subprocess shares LO's
@@ -326,6 +329,33 @@ class WebWindow:
             "WebWindow._resolve_html_path: file exists size=%d bytes",
             path.stat().st_size,
         )
+        return path
+
+    def _resolve_icon_path(self) -> Path | None:
+        """Resolve the bundled window icon, or ``None`` if absent.
+
+        The icon brands the chat window (ADR-0039) but is not load-bearing
+        — a missing icon must not stop the window opening, so this logs and
+        returns ``None`` rather than raising.
+        """
+        pip = self.ctx.getValueByName(
+            "/singletons/com.sun.star.deployment.PackageInformationProvider"
+        )
+        extension_root_url = pip.getPackageLocation(_EXTENSION_ID)
+        parsed = urlparse(extension_root_url)
+        if parsed.scheme != "file":
+            logger.warning(
+                "WebWindow._resolve_icon_path: non-file extension root %r",
+                extension_root_url,
+            )
+            return None
+        path = Path(unquote(parsed.path)) / "icons" / "talk2view.png"
+        if not path.is_file():
+            logger.warning(
+                "WebWindow._resolve_icon_path: icon missing at %s", path
+            )
+            return None
+        logger.info("WebWindow._resolve_icon_path: icon=%s", path)
         return path
 
     def _resolve_pythonpath(self) -> str:
