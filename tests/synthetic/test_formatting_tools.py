@@ -171,6 +171,56 @@ class TestFormatParagraph:
         )
         assert applied in ("Heading 1", "Heading1")
 
+    def test_missing_style_single_target_degrades_not_raises(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A style the build doesn't ship → structured error, not a crash.
+
+        On LO 26.2 ``format_paragraph(style="ListParagraph")`` resolved to
+        the unregistered "List Bullet" paragraph style and threw a raw
+        ``com.sun.star.uno.RuntimeException`` that crashed the tool call (seen
+        live in the guided-tour run). It must degrade to a JSON error that
+        points the model at manage_list instead.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("list me"))
+        # Strip the list paragraph style — mirrors the real LO 26.2 build.
+        synthetic_doc._style_families["ParagraphStyles"].pop("List Bullet", None)
+        result = json.loads(
+            format_paragraph(paragraph_index=1, style="ListParagraph")
+        )
+        assert "error" in result
+        assert "recovery" in result
+        assert "manage_list" in result["recovery"]
+        assert "success" not in result
+
+    def test_missing_style_in_batch_reports_per_paragraph_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("list me"))
+        synthetic_doc._style_families["ParagraphStyles"].pop("List Bullet", None)
+        result = json.loads(
+            format_paragraph(paragraph_indices=[1], style="ListParagraph")
+        )
+        # Batch shape still returns; the one paragraph carries an error.
+        assert result["paragraphs_formatted"] == 0
+        assert "error" in result["results"][0]
+
+    def test_present_style_single_target_still_succeeds(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("head me"))
+        result = json.loads(
+            format_paragraph(paragraph_index=1, style="Heading1")
+        )
+        assert result.get("success") is True
+        assert result["resulting_style"] in ("Heading 1", "Heading1")
+
 
 class TestManageList:
     def test_empty_paragraph_indices_returns_error(
@@ -289,3 +339,41 @@ class TestManageList:
         para = synthetic_doc._text._paragraphs[1]
         assert para.getPropertyValue("NumberingRules") is None
         assert para.getPropertyValue("NumberingIsNumber") is False
+
+    def test_number_submits_only_minimal_props(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Regression: never round-trip the full getByIndex property set.
+
+        Real LO rejects re-submitting a level's entire default property set
+        via replaceByIndex with IllegalArgumentException — it crashed the
+        live guided-tour run (investigation #50). The synthetic NumberingRules
+        now ships a realistic default level, so a round-tripping regression
+        would surface those extra property names here.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("step one"))
+        manage_list(action="add", list_type="number", paragraph_indices=[1])
+        rules = synthetic_doc._text._paragraphs[1].getPropertyValue(
+            "NumberingRules"
+        )
+        submitted = {pv.Name for pv in rules.getByIndex(0)}
+        assert submitted == {"NumberingType", "Prefix", "Suffix"}, submitted
+
+    def test_bullet_submits_only_minimal_props(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
+        manage_list(action="add", list_type="bullet", paragraph_indices=[1])
+        rules = synthetic_doc._text._paragraphs[1].getPropertyValue(
+            "NumberingRules"
+        )
+        submitted = {pv.Name for pv in rules.getByIndex(0)}
+        assert submitted == {
+            "NumberingType",
+            "BulletChar",
+            "BulletFontName",
+        }, submitted

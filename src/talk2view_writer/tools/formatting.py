@@ -579,8 +579,62 @@ def format_paragraph(
             continue
         p = paragraphs[idx]
         if style is not None:
+            from com.sun.star.uno import (  # type: ignore[import-not-found]
+                RuntimeException,
+            )
+
+            lo_style = word_to_libreoffice_style(style)
+            if not _paragraph_style_exists(doc, lo_style):
+                # The build ships no such paragraph style (LO 26.2 has none
+                # of the list styles — investigation #50). Degrade to a
+                # structured per-paragraph error instead of letting the raw
+                # UNO RuntimeException crash the tool call.
+                results.append(
+                    {
+                        "index": idx,
+                        "error": (
+                            f'Paragraph style "{style}" (LibreOffice '
+                            f'"{lo_style}") is not registered in this build.'
+                        ),
+                        "recovery": (
+                            "This build ships no matching paragraph style. "
+                            "For bulleted/numbered lists use manage_list (it "
+                            "applies real list numbering without needing a "
+                            "list style). For headings or quotes pick a style "
+                            "that exists, or omit style and set alignment / "
+                            "spacing / indents directly."
+                        ),
+                    }
+                )
+                continue
             with suspend_record_changes(doc):
-                p.ParaStyleName = word_to_libreoffice_style(style)
+                try:
+                    p.ParaStyleName = lo_style
+                except RuntimeException:
+                    # Even when the style exists, an active track-changes
+                    # redline can reject the write (cf.
+                    # writing.py::_insert_paragraph_with_style). Degrade
+                    # rather than propagate the raw UNO error; logger keeps
+                    # the trace.
+                    logger.exception(
+                        "Could not apply paragraph style %r (track-changes "
+                        "redline constraint); left existing style",
+                        style,
+                    )
+                    results.append(
+                        {
+                            "index": idx,
+                            "error": (
+                                f'Could not apply style "{style}" to '
+                                f"paragraph {idx}."
+                            ),
+                            "recovery": (
+                                "The paragraph may be inside a tracked change; "
+                                "accept/reject changes or retry without style."
+                            ),
+                        }
+                    )
+                    continue
         _apply_paragraph_format(
             p,
             alignment=alignment,
@@ -625,6 +679,13 @@ def format_paragraph(
         )
     single = results[0]
     if "error" in single:
+        # A per-paragraph result that carries its own recovery (e.g. a
+        # missing-style degrade) is surfaced verbatim; the out-of-range
+        # result has no recovery key, so keep the original index message.
+        if "recovery" in single:
+            return json.dumps(
+                {"error": single["error"], "recovery": single["recovery"]}
+            )
         return json.dumps(
             {
                 "error": (
@@ -723,6 +784,20 @@ def _try_resolve_list_style(doc: Any, list_type: str) -> str | None:
         return None
 
 
+def _paragraph_style_exists(doc: Any, lo_style: str) -> bool:
+    """``True`` if ``lo_style`` is a registered paragraph style on this build.
+
+    Assigning ``ParaStyleName`` a style the build does not ship makes
+    LibreOffice throw ``com.sun.star.uno.RuntimeException``. LO 26.2 ships
+    none of the list paragraph styles (investigation #50), so a tool that
+    blindly sets, e.g., ``"List Bullet"`` crashes with a raw UNO error
+    instead of degrading. Check existence first via the same
+    ``StyleFamilies`` gate :func:`_resolve_list_style` uses.
+    """
+    families = doc.getStyleFamilies()
+    return bool(families.getByName("ParagraphStyles").hasByName(lo_style))
+
+
 # NumberingType values from com.sun.star.style.NumberingType, hardcoded to
 # their stable UNO constants so the helper needs no getConstantByName round
 # trip and stays unit-testable. ARABIC = 4 (1. 2. 3.); CHAR_SPECIAL = 6 (a
@@ -752,23 +827,35 @@ def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
     requested nesting level renders. The same object is shared across the
     target paragraphs so they form one continuous list (1. 2. 3. for
     numbers).
+
+    Each level is replaced with a **minimal, explicit** PropertyValue set —
+    only the few properties that define the marker. It deliberately does
+    NOT read the level's current properties via ``getByIndex`` and re-submit
+    them: on real LibreOffice 26.2 a level exposes a large default property
+    set, and re-submitting that whole set through ``replaceByIndex`` throws
+    ``com.sun.star.lang.IllegalArgumentException`` (investigation #50). The
+    in-process synthetic ``NumberingRules`` returns an empty level set, so
+    the round-trip looked harmless in tests but broke against real soffice.
+    Submitting only the marker properties merges cleanly with each level's
+    existing defaults on every build.
     """
     rules = doc.createInstance("com.sun.star.text.NumberingRules")
     for lvl in range(level + 1):
-        try:
-            props = {pv.Name: pv.Value for pv in rules.getByIndex(lvl)}
-        except Exception:
-            props = {}
         if list_type == "bullet":
-            props["NumberingType"] = _NUMBERING_TYPE_CHAR_SPECIAL
-            props["BulletChar"] = _BULLET_CHAR
-            props["BulletFontName"] = "OpenSymbol"
+            props = (
+                _make_property_value(
+                    "NumberingType", _NUMBERING_TYPE_CHAR_SPECIAL
+                ),
+                _make_property_value("BulletChar", _BULLET_CHAR),
+                _make_property_value("BulletFontName", "OpenSymbol"),
+            )
         else:
-            props["NumberingType"] = _NUMBERING_TYPE_ARABIC
-            props["Suffix"] = "."
-        rules.replaceByIndex(
-            lvl, tuple(_make_property_value(k, v) for k, v in props.items())
-        )
+            props = (
+                _make_property_value("NumberingType", _NUMBERING_TYPE_ARABIC),
+                _make_property_value("Prefix", ""),
+                _make_property_value("Suffix", "."),
+            )
+        rules.replaceByIndex(lvl, props)
     return rules
 
 
@@ -784,11 +871,14 @@ def manage_list(
 ) -> str:
     """Create or remove bulleted / numbered lists on specific paragraphs.
 
-    LibreOffice's list model is style-based: we apply ``List Bullet``
-    or ``List Number`` paragraph styles to each targeted paragraph
-    (and reset to ``Default Paragraph Style`` on remove). The ``level``
-    argument is honoured via the ``NumberingLevel`` property when the
-    LibreOffice build supports it.
+    LibreOffice's list model is numbering-rule-based, not style-based: we
+    build a ``NumberingRules`` object (:func:`_build_numbering_rules`) and
+    assign it to each targeted paragraph's ``NumberingRules`` property,
+    setting ``NumberingIsNumber`` / ``NumberingLevel`` alongside. This works
+    on every build, including LO 26.2 which registers no list paragraph
+    style. A list paragraph style is applied on top only when this build
+    happens to ship one (a Styles-sidebar nicety); it is never required.
+    ``remove`` clears ``NumberingRules`` and resets the paragraph style.
 
     Args:
         action: ``add`` or ``remove``.

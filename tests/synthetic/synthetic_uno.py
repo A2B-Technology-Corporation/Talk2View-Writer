@@ -723,18 +723,55 @@ class FakeUndoManager:
 # ---------------------------------------------------------------------------
 
 
+class _LevelProp:
+    """A stand-in for one ``com.sun.star.beans.PropertyValue`` in a level."""
+
+    def __init__(self, name: str, value: Any = None) -> None:
+        self.Name = name
+        self.Value = value
+
+
+# The (representative) property set a real LibreOffice NumberingRules level
+# exposes via getByIndex. Re-submitting this whole set through
+# replaceByIndex is what throws com.sun.star.lang.IllegalArgumentException on
+# real soffice (investigation #50). The fake carries it so a regression that
+# round-trips getByIndex (instead of submitting a minimal marker set) is
+# caught: the submitted property names would then include these extras.
+_NUMBERING_LEVEL_DEFAULT_PROPS = (
+    "NumberingType",
+    "Adjust",
+    "ParentNumbering",
+    "CharStyleName",
+    "BulletChar",
+    "BulletFontName",
+    "BulletId",
+    "LeftMargin",
+    "FirstLineOffset",
+    "SymbolTextDistance",
+    "Prefix",
+    "Suffix",
+    "PositionAndSpaceMode",
+    "LabelFollowedBy",
+)
+
+
 class FakeNumberingRules:
     """Minimal ``com.sun.star.text.NumberingRules`` (``XIndexReplace``).
 
     A real NumberingRules from ``doc.createInstance`` exposes 10 levels,
-    each a sequence of ``PropertyValue``. ``manage_list`` reads a level
-    via ``getByIndex`` and writes its bullet/number config back via
-    ``replaceByIndex``; this stub records those writes so tests can
-    assert the list was actually configured.
+    each a sequence of ``PropertyValue``. ``manage_list`` writes its
+    bullet/number config via ``replaceByIndex``; this stub records those
+    writes so tests can assert the list was actually configured AND that
+    only the minimal marker properties were submitted (not a full-set
+    round-trip — see investigation #50). ``getByIndex`` returns a realistic
+    non-empty default so a round-tripping regression is detectable.
     """
 
     def __init__(self, count: int = 10) -> None:
-        self._levels: list[tuple[Any, ...]] = [() for _ in range(count)]
+        self._levels: list[tuple[Any, ...]] = [
+            tuple(_LevelProp(name) for name in _NUMBERING_LEVEL_DEFAULT_PROPS)
+            for _ in range(count)
+        ]
 
     def getCount(self) -> int:  # noqa: N802
         return len(self._levels)
@@ -787,6 +824,7 @@ class FakeTextDocument(_Service):
         self._style_families: dict[str, dict[str, Any]] = {
             "ParagraphStyles": {
                 "Standard": _PropBag(),
+                "Default Paragraph Style": _PropBag(),
                 "Heading 1": _PropBag(),
                 "Heading 2": _PropBag(),
                 "Heading 3": _PropBag(),

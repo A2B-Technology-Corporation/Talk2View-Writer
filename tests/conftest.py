@@ -37,7 +37,23 @@ def _make_module(name: str) -> types.ModuleType:
 # ── Top-level UNO modules ────────────────────────────────────────────
 
 _uno = _make_module("uno")
-_uno.createUnoStruct = MagicMock(name="createUnoStruct")  # type: ignore[attr-defined]
+
+
+def _fake_uno_struct(_service_name: str) -> types.SimpleNamespace:
+    """Return a FRESH attribute-bag per call, like real ``createUnoStruct``.
+
+    A plain ``MagicMock`` would return one shared instance for every call, so
+    code that builds N distinct ``PropertyValue`` structs (e.g.
+    ``_build_numbering_rules``) would collapse to a single object and mask
+    bugs. A new ``SimpleNamespace`` each call mirrors real PyUNO, where every
+    struct is distinct.
+    """
+    return types.SimpleNamespace()
+
+
+_uno.createUnoStruct = MagicMock(  # type: ignore[attr-defined]
+    name="createUnoStruct", side_effect=_fake_uno_struct
+)
 _uno.Enum = MagicMock(name="Enum")  # type: ignore[attr-defined]
 _uno.getComponentContext = MagicMock(name="getComponentContext")  # type: ignore[attr-defined]
 # getTypeByName + invoke are used historically by sidebar_panel code

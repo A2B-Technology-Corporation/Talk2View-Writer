@@ -1695,6 +1695,35 @@ clears `NumberingRules`. Synthetic tests:
 paragraph-style-based. Reaching for `ParaStyleName = "List Bullet"` is the
 Word mental model leaking through; the portable path is `NumberingRules`.
 
+**UPDATE 2026-06-06 (the fix above was itself broken on real soffice):** A
+live `T2V_WRITER_DEBUG=1` guided-tour run showed the NumberingRules fix
+throwing `com.sun.star.lang.IllegalArgumentException` at
+`_build_numbering_rules`'s `rules.replaceByIndex(...)` on LO 26.2.3.2 — so
+`manage_list` was STILL non-functional, and the model again fell back to
+literal "•" via `search_document`. Root cause: `_build_numbering_rules` read
+each level's full property set via `{pv.Name: pv.Value for pv in
+rules.getByIndex(lvl)}` and re-submitted that ENTIRE set through
+`replaceByIndex`. Real LO exposes a large default property set per level and
+rejects re-submitting it wholesale; the in-process `FakeNumberingRules`
+returned an *empty* level set, so the synthetic tests only ever exercised the
+3 marker properties and the bug sailed through CI. **Re-fix:** submit ONLY a
+minimal, explicit marker set per level — `NumberingType` + `BulletChar` +
+`BulletFontName` for bullets; `NumberingType` + `Prefix` + `Suffix` for
+numbers — and never round-trip `getByIndex`; partial sets merge with each
+level's defaults on every build. Hardened the synthetic rig so this can't
+recur: `FakeNumberingRules.getByIndex` now returns a realistic 14-property
+default level, `conftest`'s `uno.createUnoStruct` returns a fresh struct per
+call (was a shared singleton MagicMock that collapsed N PropertyValues into
+one), and new tests assert the submitted property set is EXACTLY the minimal
+marker set (`test_number_submits_only_minimal_props`,
+`test_bullet_submits_only_minimal_props`).
+
+**Lesson²:** A synthetic UNO fake that is too lenient is worse than no test —
+it turns a real-soffice crash into a green check. Fakes for UNO setters that
+validate their input (replaceByIndex, ParaStyleName) must reproduce that
+strictness, or pair the behavioural test with an assertion on the exact call
+shape. Must still be verified on real soffice — see [[reference_platform_latency_umbrella]] note.
+
 ## #51 — The bridge serialises every call behind one lock + one connection (PARTIALLY MITIGATED 2026-06-06)
 
 **What:** `_BridgeClient._call` holds a single `self._lock` for the entire
@@ -1739,3 +1768,63 @@ task #14.
 **Next step:** capture a real run's `timing op=` lines; if `lock_wait_ms` on
 startup `proxy_fetch`es is large, implement client-side reply-routing +
 per-request server dispatch (or a dedicated fetch connection).
+
+**UPDATE 2026-06-06 — real timing captured, hypotheses confirmed.** A live
+`T2V_WRITER_DEBUG=1` guided-tour run produced the `timing op=` lines. Findings:
+(1) Slowness is the ENGINE, not the client. A single user "next" turn = up to
+**8 sequential engine round-trips**, each `stream.total` **3–13 s**, almost
+all in the first-chunk wait (engine thinking 2–8 s before emitting). Local
+tool calls were **1.5–30 ms**; `lock_wait_ms ≈ 0` during streaming (the
+fire-and-forget log fix is validated). (2) Startup `/v1/config` serialization
+is real: three GET `/v1/config` with `lock_wait_ms` stacking 899 → 1396 →
+1821 ms, and `tools/register` fired twice (startup + session create). (3)
+Client tool failures (investigations #50/#52) DIRECTLY inflate latency — the
+two failed list tool calls plus the 3 fake-bullet `search_document`
+work-arounds added ~20 s of engine round-trips to a 38 s turn. Numbers posted
+to Talk2View-Platform #88. The bridge-multiplexing refactor is deferred — the
+engine per-step latency dominates so heavily (×8 round-trips) that the
+biggest client-side win is cutting the *number* of round-trips (fix the tool
+failures; batch resume / WebSocket transport — #65/#53), not shaving the
+single-lock contention.
+
+## #52 — `format_paragraph` crashed on a paragraph style the build doesn't ship (FIXED 2026-06-06)
+
+**What:** In the live guided-tour run, immediately after `manage_list`
+failed, the model tried `format_paragraph(style="ListParagraph")`.
+`word_to_libreoffice_style("ListParagraph")` → `"List Bullet"`, which LO 26.2
+does not register as a paragraph style, and `format_paragraph` set
+`p.ParaStyleName = "List Bullet"` with **no existence check** →
+`com.sun.star.uno.RuntimeException`, propagated raw through the
+`@ui_thread_tool` / bridge boundary as an unhandled crash. The model then gave
+up on real list formatting and typed literal "•" characters.
+
+**Where:** `src/talk2view_writer/tools/formatting.py::format_paragraph` (the
+per-index `p.ParaStyleName = word_to_libreoffice_style(style)` write). Note
+`writing.py::_insert_paragraph_with_style` already wraps the identical write
+in `try/except RuntimeException`; `format_paragraph` was the unguarded outlier.
+
+**Why it matters:** Any `format_paragraph(style=...)` for a style the build
+lacks hard-crashed the tool call instead of returning a structured error the
+model could act on — wasting an engine round-trip and pushing the model toward
+the fake-bullet anti-pattern.
+
+**Fix:** New `_paragraph_style_exists(doc, lo_style)` gate
+(`StyleFamilies.getByName("ParagraphStyles").hasByName(...)`, the same check
+`_resolve_list_style` uses). On a miss, `format_paragraph` appends a structured
+`{error, recovery}` per-paragraph result (recovery points the model at
+`manage_list` for lists) and skips the style assignment while still applying
+the other paragraph properties. A `try/except RuntimeException` around the
+write is kept as defence-in-depth for the track-changes-redline case
+`writing.py` already handles. The single-target tail now surfaces a
+per-paragraph error that carries its own `recovery` instead of assuming
+out-of-range. Synthetic ParagraphStyles gained `"Default Paragraph Style"`
+(real LO 26.2 ships it). Tests:
+`test_missing_style_single_target_degrades_not_raises`,
+`test_missing_style_in_batch_reports_per_paragraph_error`,
+`test_present_style_single_target_still_succeeds`.
+
+**Lesson:** Every `ParaStyleName` / named-style assignment must be guarded —
+`hasByName` first, `except RuntimeException` as backstop — because the set of
+registered styles varies by build and by track-changes state. The codebase
+already knew this in `writing.py`; the fix was to make `format_paragraph`
+consistent.
