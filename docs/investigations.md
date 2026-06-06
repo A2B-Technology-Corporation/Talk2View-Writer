@@ -1770,8 +1770,10 @@ raises `IllegalArgumentException` for a bare tuple (Sequence<Any>) AND
 `RuntimeException` for a `uno.Any` that didn't arrive via `uno.invoke` (the
 `conftest` `uno.invoke` shim stamps `delivered_via_invoke` on the Any). A
 revert to either a bare tuple or a positional `uno.Any` now fails in CI, not
-only on soffice. Pending real-soffice confirmation (I cannot drive soffice;
-the user verifies).
+only on soffice. **Confirmed on real LO 26.2.3.2 (2026-06-07):** guided-tour
+`manage_list` produces a true bulleted list AND converts it to a numbered list
+on the follow-up "change to a numbered list" — both `replaceByIndex` calls
+return `success`, no exception. The three-strike saga is closed.
 
 **Lesson⁴:** Getting a typed sequence into an `any` parameter from PyUNO needs
 *two* things together — the explicit `uno.Any("[]com.sun.star.X", seq)` AND
