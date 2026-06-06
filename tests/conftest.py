@@ -72,6 +72,10 @@ class _FakeAny:
     def __init__(self, type_name: str, value: object) -> None:
         self.typeName = type_name  # mirrors PyUNO's attribute name
         self.value = value
+        #: Set True only when delivered through ``uno.invoke`` — lets the
+        #: synthetic rig reject a positional ``uno.Any`` the way the real
+        #: PyUNO bridge does (investigation #50).
+        self.delivered_via_invoke = False
 
 
 _uno.Any = _FakeAny  # type: ignore[attr-defined]
@@ -81,7 +85,25 @@ _uno.getComponentContext = MagicMock(name="getComponentContext")  # type: ignore
 # (now removed per ADR-0029). Kept for the few legacy call sites that
 # still need them; safe to remove once those clean up.
 _uno.getTypeByName = MagicMock(name="getTypeByName")  # type: ignore[attr-defined]
-_uno.invoke = MagicMock(name="invoke")  # type: ignore[attr-defined]
+
+
+def _fake_uno_invoke(obj: object, method_name: str, arg_tuple: tuple) -> object:
+    """Mirror ``uno.invoke``: call ``obj.method_name(*arg_tuple)``.
+
+    Real PyUNO requires ``uno.invoke`` to pass an explicitly-typed
+    ``uno.Any`` argument — a positional ``uno.Any`` is rejected at the bridge
+    with "uno.Any instance not accepted during method call, use uno.invoke
+    instead". The shim performs the call so synthetic UNO objects receive the
+    args (the ``uno.Any`` wrapper included) exactly as production passes them,
+    letting the fake enforce the typed-sequence contract (investigation #50).
+    """
+    for arg in arg_tuple:
+        if isinstance(arg, _FakeAny):
+            arg.delivered_via_invoke = True
+    return getattr(obj, method_name)(*arg_tuple)
+
+
+_uno.invoke = _fake_uno_invoke  # type: ignore[attr-defined]
 
 
 _unohelper = _make_module("unohelper")

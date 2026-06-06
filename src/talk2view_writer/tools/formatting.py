@@ -834,17 +834,26 @@ def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
     them; partial sets merge cleanly with each level's existing defaults on
     every build.
 
-    The property sequence is passed to ``replaceByIndex`` wrapped in an
-    explicit ``uno.Any("[]com.sun.star.beans.PropertyValue", ...)``. That
-    wrapper is **not** optional: ``replaceByIndex``'s second parameter is
-    typed ``any``, and PyUNO marshals a bare Python tuple as
-    ``Sequence<Any>``. LibreOffice's ``SvxUnoNumberingRules::replaceByIndex``
-    then fails to extract it as ``Sequence<PropertyValue>`` and throws a
-    message-less ``com.sun.star.lang.IllegalArgumentException`` — observed
-    live on LO 26.2.3.2 (investigation #50). Wrapping in a typed ``uno.Any``
-    makes PyUNO hand over a real ``Sequence<PropertyValue>`` so the ``>>=``
-    succeeds. The in-process synthetic ``NumberingRules`` now enforces this
-    same contract so the gap can't recur.
+    The property sequence must reach ``replaceByIndex`` as a typed
+    ``Sequence<com.sun.star.beans.PropertyValue>`` — and getting it there
+    takes BOTH halves of the PyUNO typed-argument dance:
+
+    1. ``replaceByIndex``'s second parameter is ``any``, and PyUNO marshals
+       a bare Python tuple as ``Sequence<Any>``. LibreOffice's
+       ``SvxUnoNumberingRules::replaceByIndex`` then fails to extract that as
+       ``Sequence<PropertyValue>`` and throws a *message-less*
+       ``com.sun.star.lang.IllegalArgumentException``.
+    2. The fix is an explicit
+       ``uno.Any("[]com.sun.star.beans.PropertyValue", props)`` — but a
+       ``uno.Any`` may **not** be passed positionally; PyUNO rejects it with
+       ``RuntimeException: uno.Any instance not accepted during method call,
+       use uno.invoke instead``. So the typed sequence is delivered through
+       ``uno.invoke(rules, "replaceByIndex", (lvl, anyval))``, PyUNO's
+       documented escape hatch for explicitly-typed arguments.
+
+    Both failure modes were observed live on LO 26.2.3.2 (investigation #50).
+    The in-process synthetic ``NumberingRules`` + ``uno.invoke`` shim now
+    enforce this exact contract so the gap can't recur.
     """
     import uno
 
@@ -864,8 +873,10 @@ def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
                 _make_property_value("Prefix", ""),
                 _make_property_value("Suffix", "."),
             )
-        rules.replaceByIndex(
-            lvl, uno.Any("[]com.sun.star.beans.PropertyValue", props)
+        uno.invoke(
+            rules,
+            "replaceByIndex",
+            (lvl, uno.Any("[]com.sun.star.beans.PropertyValue", props)),
         )
     return rules
 

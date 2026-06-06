@@ -794,13 +794,28 @@ class FakeNumberingRules:
 
     def replaceByIndex(self, index: int, props: Any) -> None:  # noqa: N802
         from com.sun.star.lang import IllegalArgumentException
+        from com.sun.star.uno import RuntimeException
 
         type_name = getattr(props, "typeName", None)
-        if type_name != "[]com.sun.star.beans.PropertyValue":
+        if type_name is None:
+            # Bare tuple → PyUNO marshals it as Sequence<Any>; soffice's
+            # `>>= Sequence<PropertyValue>` fails → message-less
+            # IllegalArgumentException.
             raise IllegalArgumentException(
                 "replaceByIndex needs uno.Any("
-                "'[]com.sun.star.beans.PropertyValue', ...); a bare tuple "
-                f"marshals as Sequence<Any> and soffice rejects it (got {type_name!r})"
+                "'[]com.sun.star.beans.PropertyValue', ...) via uno.invoke; "
+                "a bare tuple marshals as Sequence<Any> and soffice rejects it"
+            )
+        if not getattr(props, "delivered_via_invoke", False):
+            # A uno.Any passed positionally is rejected at the PyUNO bridge;
+            # it must be delivered through uno.invoke.
+            raise RuntimeException(
+                "uno.Any instance not accepted during method call, "
+                "use uno.invoke instead"
+            )
+        if type_name != "[]com.sun.star.beans.PropertyValue":
+            raise IllegalArgumentException(
+                f"replaceByIndex got wrong element type {type_name!r}"
             )
         self.submitted_types.append(type_name)
         self._levels[index] = tuple(props.value)

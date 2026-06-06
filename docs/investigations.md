@@ -1748,16 +1748,38 @@ rejection in-process, so a bare-tuple regression fails CI instead of only the
 live run. `conftest` gained a faithful `uno.Any` wrapper (`.typeName`/`.value`)
 and a real `IllegalArgumentException` subclass; new test
 `test_numbering_props_submitted_as_typed_uno_any` pins the submitted UNO type
-name. Verified working against real soffice (guided-tour `manage_list` now
-produces a true bulleted list, no `IllegalArgumentException`).
+name.
 
 **Lesson³:** A *message-less* `IllegalArgumentException` from a PyUNO
 `any`-typed setter almost always means a sequence/struct was marshalled with
 the wrong element type (`Sequence<Any>` instead of `Sequence<T>`), not that the
 *values* were wrong. Reach for `uno.Any("[]com.sun.star.X", seq)` before
-second-guessing the payload. Each of the three strikes here was a *different*
-real bug masked by the same lenient fake; the durable fix was making the fake
-enforce the C++ contract, not patching the symptom.
+second-guessing the payload.
+
+**UPDATE³ 2026-06-06 (typed `uno.Any` can't be passed positionally — fourth
+strike):** The `uno.Any` wrap from UPDATE² got *further* but still failed live:
+`manage_list` now threw `com.sun.star.uno.RuntimeException: uno.Any instance
+not accepted during method call, use uno.invoke instead` at the same
+`replaceByIndex` line. So the typed-Any hypothesis was correct, but PyUNO
+forbids handing a `uno.Any` to a method as an ordinary positional argument —
+its own error names the remedy. **Fix:** deliver the typed sequence through
+`uno.invoke(rules, "replaceByIndex", (lvl, uno.Any("[]com.sun.star.beans.PropertyValue", props)))`,
+PyUNO's documented escape hatch for explicitly-typed arguments. The synthetic
+rig now models *both* bridge constraints: `FakeNumberingRules.replaceByIndex`
+raises `IllegalArgumentException` for a bare tuple (Sequence<Any>) AND
+`RuntimeException` for a `uno.Any` that didn't arrive via `uno.invoke` (the
+`conftest` `uno.invoke` shim stamps `delivered_via_invoke` on the Any). A
+revert to either a bare tuple or a positional `uno.Any` now fails in CI, not
+only on soffice. Pending real-soffice confirmation (I cannot drive soffice;
+the user verifies).
+
+**Lesson⁴:** Getting a typed sequence into an `any` parameter from PyUNO needs
+*two* things together — the explicit `uno.Any("[]com.sun.star.X", seq)` AND
+delivery via `uno.invoke(obj, "method", (args…))`. Either alone fails, with two
+*different* exceptions. And the meta-lesson, now four strikes deep: an
+in-process UNO fake must encode every bridge-level rejection it can
+(element-type extraction, positional-Any prohibition), or each real-soffice-only
+failure costs a full rebuild + manual round-trip to discover.
 
 ## #51 — The bridge serialises every call behind one lock + one connection (PARTIALLY MITIGATED 2026-06-06)
 
