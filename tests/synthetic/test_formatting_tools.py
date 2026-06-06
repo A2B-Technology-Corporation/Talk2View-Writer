@@ -377,3 +377,26 @@ class TestManageList:
             "BulletChar",
             "BulletFontName",
         }, submitted
+
+    def test_numbering_props_submitted_as_typed_uno_any(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Marker props reach replaceByIndex as a typed ``uno.Any``, not a tuple.
+
+        On real LO 26.2.3.2 a bare tuple marshals as ``Sequence<Any>`` and
+        ``replaceByIndex`` throws a message-less ``IllegalArgumentException``;
+        the live guided-tour run hit this even after the minimal-marker re-fix
+        (investigation #50, third strike). Production must wrap the marker
+        sequence in ``uno.Any("[]com.sun.star.beans.PropertyValue", ...)``.
+        The hardened ``FakeNumberingRules`` raises on anything else, so a
+        regression fails ``manage_list`` outright here; this test additionally
+        pins the exact UNO type name that was handed over.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
+        manage_list(action="add", list_type="bullet", paragraph_indices=[1])
+        rules = synthetic_doc._text._paragraphs[1].getPropertyValue(
+            "NumberingRules"
+        )
+        assert rules.submitted_types == ["[]com.sun.star.beans.PropertyValue"]

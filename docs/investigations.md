@@ -1724,6 +1724,41 @@ validate their input (replaceByIndex, ParaStyleName) must reproduce that
 strictness, or pair the behavioural test with an assertion on the exact call
 shape. Must still be verified on real soffice — see [[reference_platform_latency_umbrella]] note.
 
+**UPDATE² 2026-06-06 (the minimal-marker re-fix was ALSO insufficient — third
+strike, now verified on real soffice):** A second live `T2V_WRITER_DEBUG=1`
+guided-tour run, against the freshly rebuilt `.oxt`, showed `manage_list` STILL
+throwing `com.sun.star.lang.IllegalArgumentException` at
+`_build_numbering_rules`'s `rules.replaceByIndex(lvl, props)` on LO 26.2.3.2 —
+and the model again degraded to literal `•` via `search_document` +
+`format_paragraph` hanging indents. The minimal-marker set was correct but
+beside the point; the crash was never about *which* properties. Real root
+cause: `replaceByIndex`'s second parameter is UNO `any`, and PyUNO marshals a
+bare Python tuple as `Sequence<Any>`. `SvxUnoNumberingRules::replaceByIndex`
+does `rElement >>= Sequence<PropertyValue>`, which fails on a `Sequence<Any>`
+and throws the **message-less** `IllegalArgumentException` we saw (no detail
+text — the tell-tale signature of a PyUNO type-marshalling mismatch, not a
+value rejection). **Fix:** wrap the marker tuple in an explicit
+`uno.Any("[]com.sun.star.beans.PropertyValue", props)` so PyUNO hands soffice a
+real `Sequence<PropertyValue>`. This is the canonical PyUNO idiom for any
+`XIndexReplace` over a typed sequence. **Hardening (the part that finally
+closes Lesson² for good):** `FakeNumberingRules.replaceByIndex` now *raises*
+`IllegalArgumentException` for anything that isn't a typed `uno.Any` of
+`"[]com.sun.star.beans.PropertyValue"` — it reproduces the exact real-soffice
+rejection in-process, so a bare-tuple regression fails CI instead of only the
+live run. `conftest` gained a faithful `uno.Any` wrapper (`.typeName`/`.value`)
+and a real `IllegalArgumentException` subclass; new test
+`test_numbering_props_submitted_as_typed_uno_any` pins the submitted UNO type
+name. Verified working against real soffice (guided-tour `manage_list` now
+produces a true bulleted list, no `IllegalArgumentException`).
+
+**Lesson³:** A *message-less* `IllegalArgumentException` from a PyUNO
+`any`-typed setter almost always means a sequence/struct was marshalled with
+the wrong element type (`Sequence<Any>` instead of `Sequence<T>`), not that the
+*values* were wrong. Reach for `uno.Any("[]com.sun.star.X", seq)` before
+second-guessing the payload. Each of the three strikes here was a *different*
+real bug masked by the same lenient fake; the durable fix was making the fake
+enforce the C++ contract, not patching the symptom.
+
 ## #51 — The bridge serialises every call behind one lock + one connection (PARTIALLY MITIGATED 2026-06-06)
 
 **What:** `_BridgeClient._call` holds a single `self._lock` for the entire

@@ -831,14 +831,23 @@ def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
     Each level is replaced with a **minimal, explicit** PropertyValue set —
     only the few properties that define the marker. It deliberately does
     NOT read the level's current properties via ``getByIndex`` and re-submit
-    them: on real LibreOffice 26.2 a level exposes a large default property
-    set, and re-submitting that whole set through ``replaceByIndex`` throws
-    ``com.sun.star.lang.IllegalArgumentException`` (investigation #50). The
-    in-process synthetic ``NumberingRules`` returns an empty level set, so
-    the round-trip looked harmless in tests but broke against real soffice.
-    Submitting only the marker properties merges cleanly with each level's
-    existing defaults on every build.
+    them; partial sets merge cleanly with each level's existing defaults on
+    every build.
+
+    The property sequence is passed to ``replaceByIndex`` wrapped in an
+    explicit ``uno.Any("[]com.sun.star.beans.PropertyValue", ...)``. That
+    wrapper is **not** optional: ``replaceByIndex``'s second parameter is
+    typed ``any``, and PyUNO marshals a bare Python tuple as
+    ``Sequence<Any>``. LibreOffice's ``SvxUnoNumberingRules::replaceByIndex``
+    then fails to extract it as ``Sequence<PropertyValue>`` and throws a
+    message-less ``com.sun.star.lang.IllegalArgumentException`` — observed
+    live on LO 26.2.3.2 (investigation #50). Wrapping in a typed ``uno.Any``
+    makes PyUNO hand over a real ``Sequence<PropertyValue>`` so the ``>>=``
+    succeeds. The in-process synthetic ``NumberingRules`` now enforces this
+    same contract so the gap can't recur.
     """
+    import uno
+
     rules = doc.createInstance("com.sun.star.text.NumberingRules")
     for lvl in range(level + 1):
         if list_type == "bullet":
@@ -855,7 +864,9 @@ def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
                 _make_property_value("Prefix", ""),
                 _make_property_value("Suffix", "."),
             )
-        rules.replaceByIndex(lvl, props)
+        rules.replaceByIndex(
+            lvl, uno.Any("[]com.sun.star.beans.PropertyValue", props)
+        )
     return rules
 
 

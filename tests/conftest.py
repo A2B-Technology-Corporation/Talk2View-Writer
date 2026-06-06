@@ -54,6 +54,27 @@ def _fake_uno_struct(_service_name: str) -> types.SimpleNamespace:
 _uno.createUnoStruct = MagicMock(  # type: ignore[attr-defined]
     name="createUnoStruct", side_effect=_fake_uno_struct
 )
+
+
+class _FakeAny:
+    """Stand-in for ``uno.Any`` — records the explicit UNO type + value.
+
+    PyUNO requires ``uno.Any("[]com.sun.star.beans.PropertyValue", seq)`` when
+    passing a typed sequence into an ``any`` parameter (e.g.
+    ``XIndexReplace.replaceByIndex``): a bare Python tuple is marshalled as
+    ``Sequence<Any>`` and the receiving C++ method's ``>>=`` extraction throws
+    a message-less ``IllegalArgumentException``. Modelling the wrapper lets the
+    synthetic ``FakeNumberingRules`` enforce that contract instead of silently
+    accepting anything — the lenient-fake gap that let investigation #50's
+    earlier fixes pass tests yet still crash on real soffice.
+    """
+
+    def __init__(self, type_name: str, value: object) -> None:
+        self.typeName = type_name  # mirrors PyUNO's attribute name
+        self.value = value
+
+
+_uno.Any = _FakeAny  # type: ignore[attr-defined]
 _uno.Enum = MagicMock(name="Enum")  # type: ignore[attr-defined]
 _uno.getComponentContext = MagicMock(name="getComponentContext")  # type: ignore[attr-defined]
 # getTypeByName + invoke are used historically by sidebar_panel code
@@ -135,6 +156,13 @@ _frame.XDispatchProvider = _stub_interface("XDispatchProvider")  # type: ignore[
 
 _lang = _make_module("com.sun.star.lang")
 _lang.XComponent = _stub_interface("XComponent")  # type: ignore[attr-defined]
+# UNO throws this when an ``any`` argument can't be extracted as the expected
+# type (e.g. NumberingRules.replaceByIndex given a Sequence<Any> instead of
+# Sequence<PropertyValue>). A real Exception subclass so the synthetic UNO rig
+# can model that strictness and production ``except`` clauses still work.
+_lang.IllegalArgumentException = type(  # type: ignore[attr-defined]
+    "IllegalArgumentException", (Exception,), {}
+)
 
 _ui = _make_module("com.sun.star.ui")
 _ui.XUIElement = _stub_interface("XUIElement")  # type: ignore[attr-defined]

@@ -765,6 +765,16 @@ class FakeNumberingRules:
     only the minimal marker properties were submitted (not a full-set
     round-trip — see investigation #50). ``getByIndex`` returns a realistic
     non-empty default so a round-tripping regression is detectable.
+
+    ``replaceByIndex`` here is **strict about its argument type**, mirroring
+    real LibreOffice: its second parameter is UNO ``any``, and the C++ side
+    can only extract a ``Sequence<PropertyValue>``. PyUNO produces that only
+    when the caller wraps the tuple in
+    ``uno.Any("[]com.sun.star.beans.PropertyValue", ...)``; a bare Python
+    tuple is marshalled as ``Sequence<Any>`` and soffice throws a
+    message-less ``IllegalArgumentException``. The fake reproduces that
+    exactly so a regression to a bare-tuple submit fails in CI instead of
+    only on real soffice (investigation #50, third strike).
     """
 
     def __init__(self, count: int = 10) -> None:
@@ -772,6 +782,9 @@ class FakeNumberingRules:
             tuple(_LevelProp(name) for name in _NUMBERING_LEVEL_DEFAULT_PROPS)
             for _ in range(count)
         ]
+        #: UNO type names submitted to replaceByIndex, in call order — lets a
+        #: test assert the typed-Any wrapper contract directly.
+        self.submitted_types: list[str] = []
 
     def getCount(self) -> int:  # noqa: N802
         return len(self._levels)
@@ -779,8 +792,18 @@ class FakeNumberingRules:
     def getByIndex(self, index: int) -> tuple[Any, ...]:  # noqa: N802
         return self._levels[index]
 
-    def replaceByIndex(self, index: int, props: tuple[Any, ...]) -> None:  # noqa: N802
-        self._levels[index] = tuple(props)
+    def replaceByIndex(self, index: int, props: Any) -> None:  # noqa: N802
+        from com.sun.star.lang import IllegalArgumentException
+
+        type_name = getattr(props, "typeName", None)
+        if type_name != "[]com.sun.star.beans.PropertyValue":
+            raise IllegalArgumentException(
+                "replaceByIndex needs uno.Any("
+                "'[]com.sun.star.beans.PropertyValue', ...); a bare tuple "
+                f"marshals as Sequence<Any> and soffice rejects it (got {type_name!r})"
+            )
+        self.submitted_types.append(type_name)
+        self._levels[index] = tuple(props.value)
 
 
 # ---------------------------------------------------------------------------
