@@ -1694,3 +1694,48 @@ clears `NumberingRules`. Synthetic tests:
 **Lesson:** LibreOffice's list model is numbering-rule-based, not
 paragraph-style-based. Reaching for `ParaStyleName = "List Bullet"` is the
 Word mental model leaking through; the portable path is `NumberingRules`.
+
+## #51 — The bridge serialises every call behind one lock + one connection (PARTIALLY MITIGATED 2026-06-06)
+
+**What:** `_BridgeClient._call` holds a single `self._lock` for the entire
+send+recv of each JSON-RPC round-trip, and `BridgeServer._handle_connection`
+reads/dispatches requests sequentially per connection. So any call that
+blocks server-side — chiefly `proxy_stream_next`, which parks on
+`q.get(timeout=60)` until the engine emits the next SSE chunk — holds the
+client lock (and the connection's read loop) for that whole inter-chunk gap.
+Every other call queued behind it (debug `log`s, and crucially the burst of
+`/v1/config` `proxy_fetch`es the SDK fires at startup) waits its turn. Result:
+N concurrent browser fetches that would normally run in parallel get
+**serialised** into N sequential round-trips. In the guided-tour log the
+startup config fetches stacked to 2.3 / 2.7 / 3.1 / 6.1 s.
+
+**Where:** `src/talk2view_writer/web_runner.py::_BridgeClient._call` (one lock
+per round-trip); `bridge_server.py::_handle_connection` (sequential per-conn
+read loop). The single-connection design is noted in the `bridge_server.py`
+module docstring.
+
+**Why it matters:** It converts the engine's per-chunk latency into
+head-of-line blocking for unrelated calls, and it serialises startup fetches
+that should overlap — directly inflating the "extremely slow" startup the user
+reported.
+
+**Mitigated (this commit, task #13):** `log` is now a fire-and-forget
+*notification* (no `id`, server sends no reply), so the hundreds of debug logs
+per turn no longer cost a round-trip nor hold the lock for one — they cost only
+a `sendall`. The per-call wire-dump logging dropped from INFO to DEBUG.
+
+**Not fixed:** concurrent `proxy_fetch`es (e.g. startup `/v1/config`) still
+serialise — a `notify`-style fix doesn't apply because those need their
+responses. The real fix is multiplexing: route replies by `id` on the client
+(async, multiple in-flight) and dispatch each server request on its own thread
+so a blocked `proxy_stream_next` doesn't stall the connection. That's a
+substantial refactor of the critical bridge path; it should be driven by the
+new `timing op=bridge.client_call ... lock_wait_ms=` + `timing op=bridge.dispatch`
+data from a real run, not done blind. Note also that the *duplicate*
+`/v1/config` fetches themselves look engine/SDK-side (no `/v1/config` reference
+exists in our web or SDK-python source) — see the platform issue filed for
+task #14.
+
+**Next step:** capture a real run's `timing op=` lines; if `lock_wait_ms` on
+startup `proxy_fetch`es is large, implement client-side reply-routing +
+per-request server dispatch (or a dedicated fetch connection).

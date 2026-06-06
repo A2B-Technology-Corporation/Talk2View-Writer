@@ -82,10 +82,13 @@ class _BridgeClient:
         return cast(dict[str, Any], self._call("get_host_window", {}))
 
     def log(self, level: str, message: str, context: Any | None) -> None:
-        # No need to round-trip the response; fire-and-forget the
-        # log call but keep the request-id machinery so the server
-        # can correlate later.
-        self._call("log", {"level": level, "message": message, "context": context})
+        # Fire-and-forget notification: no id, no reply read. Debug logs
+        # fire hundreds of times per turn; routing them through the
+        # blocking ``_call`` round-trip made each one wait for (and hold)
+        # the single bridge lock, serialising them behind in-flight
+        # ``proxy_stream_next`` reads. As a notification, a log costs
+        # only a ``sendall`` (task #13).
+        self.notify("log", {"level": level, "message": message, "context": context})
 
     def proxy_fetch(
         self,
@@ -151,10 +154,15 @@ class _BridgeClient:
             req = json.dumps(
                 {"id": req_id, "method": method, "params": params}
             ).encode("utf-8")
-            logger.info("BridgeClient -> %s", req.decode())
+            # DEBUG, not INFO: this dumps the full request + response
+            # (including stream chunk payloads) on every one of the
+            # hundreds of round-trips per turn. The compact
+            # ``bridge.client_call`` timing line below is the INFO
+            # summary; the raw frames are debug-only (task #13).
+            logger.debug("BridgeClient -> %s", req.decode())
             self._sock.sendall(req + b"\n")
             line = self._read_line()
-            logger.info("BridgeClient <- %s", line)
+            logger.debug("BridgeClient <- %s", line)
             rt_ms = monotonic_ms(t_acquired)
         log_timing(
             logger,
@@ -176,6 +184,31 @@ class _BridgeClient:
                 f"bridge {err.get('type', 'Error')}: {err.get('message', '')}"
             )
         return resp.get("result")
+
+    def notify(self, method: str, params: dict[str, Any]) -> None:
+        """Send a fire-and-forget notification (no ``id``, no reply read).
+
+        The server stays silent for id-less requests, so this returns as
+        soon as the bytes are written. The lock is held only for the
+        ``sendall`` (to keep one notification's bytes from interleaving
+        mid-frame with another sender), NOT for a round-trip — so a
+        notification can't be stuck behind an in-flight ``_call`` waiting
+        on the engine for anything longer than that call's own
+        ``sendall``.
+
+        Notifications deliberately do NOT consume a request id: ids only
+        matter for matching a reply, and there is no reply. Keeping
+        ``_next_id`` untouched means real calls' reply-id matching is
+        unaffected.
+
+        Silently no-ops if not connected — a dropped log line must never
+        crash the UI.
+        """
+        if self._sock is None:
+            return
+        req = json.dumps({"method": method, "params": params}).encode("utf-8")
+        with self._lock:
+            self._sock.sendall(req + b"\n")
 
     def _read_line(self) -> str:
         """Read one newline-terminated line from the socket."""
@@ -340,8 +373,11 @@ class _Api:
 
 def main() -> None:
     """Open the chat window and block on the pywebview event loop."""
+    # DEBUG when T2V_WRITER_DEBUG is set, else INFO — so the verbose
+    # per-call wire dumps surface only when a developer is diagnosing
+    # (the same gate as the web inspector). See task #13.
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if debug_enabled() else logging.INFO,
         format="%(asctime)s [web_runner] %(levelname)s %(name)s: %(message)s",
     )
 

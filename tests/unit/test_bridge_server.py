@@ -782,6 +782,107 @@ class TestTimingInstrumentation:
 
 
 @pytest.mark.unit
+class TestNotifications:
+    """Fire-and-forget notifications (id-less requests) get no reply.
+
+    Debug ``log`` lines are sent as notifications so they never block on
+    a response round-trip nor desync the framing of real RPC replies
+    (task #13). JSON-RPC convention: a request without an ``id`` is a
+    notification and the server stays silent.
+    """
+
+    def _server(self) -> BridgeServer:
+        return BridgeServer(ctx=MagicMock(name="ctx"))
+
+    def test_notification_returns_no_response(self) -> None:
+        srv = self._server()
+        line = json.dumps(
+            {"method": "log", "params": {"level": "info", "message": "hi"}}
+        )
+        assert srv._dispatch_line(line) is None
+
+    def test_request_with_id_still_responds(self) -> None:
+        srv = self._server()
+        line = json.dumps(
+            {"id": 9, "method": "log", "params": {"message": "hi"}}
+        )
+        resp = json.loads(srv._dispatch_line(line))
+        assert resp == {"id": 9, "result": None}
+
+    def test_notification_handler_error_stays_silent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Even if the handler raises, a notification gets no reply (the
+        # client isn't reading, so a stray error frame would desync the
+        # next real reply).
+        srv = self._server()
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("log sink down")
+
+        monkeypatch.setattr(srv, "_log_from_web", boom)
+        line = json.dumps({"method": "log", "params": {"message": "x"}})
+        assert srv._dispatch_line(line) is None
+
+    def test_socket_notification_does_not_desync_following_reply(
+        self, stub_tool: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """A notification followed by a real call yields exactly one reply.
+
+        This is the framing-safety guarantee: if the server wrongly
+        replied to the notification, the client's next ``recv`` would
+        read the notification's reply as the call's reply (id mismatch).
+        """
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        try:
+            path = srv.start()
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(5.0)
+            client.connect(path)
+            try:
+                notify = (
+                    json.dumps(
+                        {"method": "log", "params": {"message": "fire"}}
+                    )
+                    + "\n"
+                ).encode()
+                call = (
+                    json.dumps(
+                        {
+                            "id": 42,
+                            "method": "list_tools",
+                            "params": {},
+                        }
+                    )
+                    + "\n"
+                ).encode()
+                client.sendall(notify + call)
+
+                buf = b""
+                deadline = time.time() + 5.0
+                while b"\n" not in buf and time.time() < deadline:
+                    chunk = client.recv(8192)
+                    if not chunk:
+                        break
+                    buf += chunk
+                assert b"\n" in buf, f"no response (buf={buf!r})"
+                first, rest = buf.split(b"\n", 1)
+                resp = json.loads(first.decode())
+                # The one reply we get is the list_tools reply, NOT a log
+                # reply — proving the notification produced no frame.
+                assert resp["id"] == 42
+                assert resp["result"] == list(_MVP_TOOL_NAMES)
+                # And there is no second frame queued behind it.
+                assert rest.strip() == b""
+            finally:
+                client.close()
+        finally:
+            srv.stop()
+            if srv._accept_thread is not None:
+                srv._accept_thread.join(timeout=2.0)
+
+
+@pytest.mark.unit
 class TestToolRegistry:
     """The registry caches the tools list (built once per server)."""
 

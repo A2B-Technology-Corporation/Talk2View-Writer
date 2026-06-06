@@ -195,15 +195,24 @@ class BridgeServer:
                     if not raw.strip():
                         continue
                     response = self._dispatch_line(raw.decode("utf-8"))
-                    conn.sendall(response.encode("utf-8") + b"\n")
+                    # ``None`` means the request was a notification (no
+                    # id) — e.g. a fire-and-forget log. Stay silent so
+                    # the client's reply framing isn't desynced.
+                    if response is not None:
+                        conn.sendall(response.encode("utf-8") + b"\n")
         except Exception:
             logger.exception("BridgeServer connection handler failed")
         finally:
             with contextlib.suppress(OSError):
                 conn.close()
 
-    def _dispatch_line(self, line: str) -> str:
+    def _dispatch_line(self, line: str) -> str | None:
         """Parse one JSON-RPC request, dispatch, return one JSON response.
+
+        Returns ``None`` for a *notification* — a request with no ``id``
+        field (JSON-RPC convention). Notifications get no reply; we use
+        them for fire-and-forget logs so debug lines never cost a
+        round-trip nor desync real reply framing (task #13).
 
         Times the whole server-side handling per request and emits a
         ``timing op=bridge.dispatch`` line (task #12). The elapsed value
@@ -214,15 +223,24 @@ class BridgeServer:
         t0 = time.monotonic()
         req_id: Any = None
         method = "?"
+        is_notification = False
         try:
             req = json.loads(line)
-            req_id = req.get("id")
-            method = req.get("method")
-            params = req.get("params") or {}
+            if isinstance(req, dict):
+                req_id = req.get("id")
+                # A successfully-parsed dict with no id key is a
+                # notification. (A parse failure is NOT — we still owe
+                # the client an error reply, handled in ``except``.)
+                is_notification = "id" not in req
+                method = req.get("method") or "?"
+                params = req.get("params") or {}
+            else:
+                params = {}
             logger.info(
-                "BridgeServer.dispatch: id=%s method=%s params=%s",
+                "BridgeServer.dispatch: id=%s method=%s notify=%s params=%s",
                 req_id,
                 method,
+                is_notification,
                 params,
             )
             response = self._handle_method(method, params, req_id)
@@ -245,8 +263,12 @@ class BridgeServer:
             monotonic_ms(t0),
             id=req_id,
             method=method,
+            notify=is_notification,
         )
-        return response
+        # Notifications get no reply — even if the handler raised, since
+        # the client isn't reading and a stray frame would desync the
+        # next real reply.
+        return None if is_notification else response
 
     def _handle_method(
         self, method: str, params: dict[str, Any], req_id: Any

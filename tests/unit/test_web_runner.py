@@ -88,3 +88,79 @@ class TestBridgeClientTiming:
         assert "method=list_tools" in caplog.text
         assert "lock_wait_ms=" in caplog.text
         assert "id=1" in caplog.text
+
+    def test_wire_dump_is_debug_not_info(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The per-call request/response dump must not spam INFO.
+
+        It fires on every bridge call — hundreds of ``proxy_stream_next``
+        round-trips per turn, each carrying the chunk payload. At INFO
+        that's real formatting + IO overhead and it buries the timing
+        lines, so the raw dump is DEBUG-only (task #13).
+        """
+        client = self._client({"id": 1, "result": "pong"})
+        log = logging.getLogger(self._LOG)
+        log.addHandler(caplog.handler)
+        log.setLevel(logging.INFO)  # production level
+        client._call("list_tools", {})
+        assert "BridgeClient ->" not in caplog.text
+        assert "BridgeClient <-" not in caplog.text
+        # The compact timing summary still lands at INFO.
+        assert "timing op=bridge.client_call" in caplog.text
+
+
+class _NoReadSock:
+    """A socket stub that records sends and FAILS if anyone reads.
+
+    Used to prove fire-and-forget notifications never block on a reply.
+    """
+
+    def __init__(self) -> None:
+        self.sent = b""
+
+    def sendall(self, data: bytes) -> None:
+        self.sent += data
+
+    def recv(self, _n: int) -> bytes:  # pragma: no cover — must not run
+        raise AssertionError("notify must not read a response")
+
+
+@pytest.mark.unit
+class TestBridgeClientNotify:
+    """``log`` is a fire-and-forget notification (task #13)."""
+
+    def _client(self) -> tuple[_BridgeClient, _NoReadSock]:
+        sock = _NoReadSock()
+        client = _BridgeClient("/tmp/unused.sock")
+        client._sock = sock  # type: ignore[assignment]
+        return client, sock
+
+    def test_notify_sends_idless_frame_without_reading(self) -> None:
+        client, sock = self._client()
+        client.notify("log", {"level": "info", "message": "hi"})
+        sent = json.loads(sock.sent.rstrip(b"\n").decode())
+        assert sent["method"] == "log"
+        assert sent["params"]["message"] == "hi"
+        assert "id" not in sent, "notifications must omit the id field"
+
+    def test_log_is_fire_and_forget(self) -> None:
+        client, sock = self._client()
+        # Returns immediately; _NoReadSock.recv would raise if read.
+        assert client.log("warn", "careful", None) is None
+        sent = json.loads(sock.sent.rstrip(b"\n").decode())
+        assert sent["method"] == "log"
+        assert "id" not in sent
+
+    def test_notify_when_disconnected_is_silent(self) -> None:
+        client = _BridgeClient("/tmp/unused.sock")
+        # Not connected — a dropped log line must not raise.
+        assert client.notify("log", {"message": "x"}) is None
+
+    def test_next_call_id_unaffected_by_notify(self) -> None:
+        """Notifications don't consume request ids — replies still line up."""
+        client = _BridgeClient("/tmp/unused.sock")
+        client._sock = _FakeSock((json.dumps({"id": 1, "result": "ok"}) + "\n").encode())  # type: ignore[assignment]
+        client.notify("log", {"message": "noise"})
+        # The first real call still uses id=1 (the canned reply's id).
+        assert client._call("list_tools", {}) == "ok"
