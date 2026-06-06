@@ -234,30 +234,58 @@ class TestManageList:
         )
         assert applied in ("List Bullet", "ListBullet", "List Number")
 
-    def test_add_bullet_returns_structured_error_when_no_alias_available(
+    def test_add_bullet_applies_numbering_without_list_styles(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
     ) -> None:
-        """Missing bullet-style aliases → structured error, not exception.
+        """No list paragraph styles → still make a REAL list via NumberingRules.
 
-        When the LO build has none of the known bullet-style aliases,
-        ``manage_list`` returns a structured error (with ``recovery``)
-        instead of bubbling the LO RuntimeException — regression guard
-        for Investigation #37 (manage_list ParaStyleName runtime
-        resolver).
+        LO 26.2 ships no ``List Bullet`` paragraph style, so the old
+        style-only path failed and the model fell back to typing literal
+        "•" characters (surfaced by the guided-tour demo). ``manage_list``
+        must apply numbering via the paragraph ``NumberingRules`` property,
+        which works on every build.
         """
         from talk2view_writer.tools.formatting import manage_list
 
         synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
-        # Strip every bullet-style alias from the fake doc's
-        # ParagraphStyles family.
+        # Strip every bullet-style alias — mirrors the real LO 26.2 build.
         for alias in ("List Bullet", "Bulleted List", "List Paragraph", "ListBullet"):
             synthetic_doc._style_families["ParagraphStyles"].pop(alias, None)
 
         result = json.loads(
-            manage_list(
-                action="add", list_type="bullet", paragraph_indices=[1]
-            )
+            manage_list(action="add", list_type="bullet", paragraph_indices=[1])
         )
-        assert "error" in result
-        assert "recovery" in result
-        assert "List Bullet" in result["error"]
+        assert "error" not in result, result
+        assert result["success"] is True
+        para = synthetic_doc._text._paragraphs[1]
+        assert para.getPropertyValue("NumberingRules") is not None
+        assert para.getPropertyValue("NumberingIsNumber") is True
+
+    def test_add_number_applies_numbering(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("step one"))
+        synthetic_doc._text._paragraphs.append(FakeParagraph("step two"))
+        result = json.loads(
+            manage_list(action="add", list_type="number", paragraph_indices=[1, 2])
+        )
+        assert "error" not in result, result
+        for idx in (1, 2):
+            para = synthetic_doc._text._paragraphs[idx]
+            assert para.getPropertyValue("NumberingRules") is not None
+            assert para.getPropertyValue("NumberingIsNumber") is True
+
+    def test_remove_clears_numbering(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("item one"))
+        manage_list(action="add", list_type="bullet", paragraph_indices=[1])
+        result = json.loads(manage_list(action="remove", paragraph_indices=[1]))
+        assert "error" not in result, result
+        para = synthetic_doc._text._paragraphs[1]
+        assert para.getPropertyValue("NumberingRules") is None
+        assert para.getPropertyValue("NumberingIsNumber") is False

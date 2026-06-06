@@ -1657,3 +1657,40 @@ single biggest gap between the Wayland and X11/macOS/Windows experience.
    compositor-specific rule (KWin window rules) shipped as docs, or the
    in-process Qt panel rewrite rejected in ADR-0039.
 3. Revisit if/when the chat moves to an in-process Qt host.
+
+
+## #50 — `manage_list` depended on list paragraph styles LO 26.2 doesn't ship (FIXED 2026-06-06)
+
+**What:** On LO 26.2.3.2 the document's `ParagraphStyles` family registers
+*none* of `List Bullet` / `Bulleted List` / `List Paragraph` / `ListBullet`
+(nor the `List Number` equivalents). The original `manage_list` resolved a
+list paragraph style and applied it via `ParaStyleName`; with no style to
+resolve it returned a structured error whose `recovery` told the model to
+"apply formatting via insert_content / set the paragraph style by hand".
+During the guided-tour demo the model duly "recovered" by deleting the
+paragraphs and re-inserting them with literal `•` characters — fake bullets,
+the exact anti-pattern the system prompt forbids. Investigation #37's alias
+resolver only widened the set of style names tried; it didn't help builds
+that ship none of them.
+
+**Where:** `src/talk2view_writer/tools/formatting.py::manage_list` /
+`_resolve_list_style`.
+
+**Why it matters:** `manage_list` was effectively non-functional on a stock
+LO 26.2 install, and the failure produced visibly wrong output (text bullets,
+not a real list) instead of a clean degrade.
+
+**Fix (this commit):** `manage_list` now applies the list via the paragraph
+`NumberingRules` property — it builds a `com.sun.star.text.NumberingRules`
+(CHAR_SPECIAL bullet / ARABIC number), shares it across the target
+paragraphs, and sets `NumberingRules` + `NumberingLevel` + `NumberingIsNumber`
+on each. This works on every build regardless of registered styles; a list
+paragraph style is still applied on top when the build has one. `remove`
+clears `NumberingRules`. Synthetic tests:
+`test_add_bullet_applies_numbering_without_list_styles`,
+`test_add_number_applies_numbering`, `test_remove_clears_numbering` (with a
+`FakeNumberingRules` in the synthetic rig).
+
+**Lesson:** LibreOffice's list model is numbering-rule-based, not
+paragraph-style-based. Reaching for `ParaStyleName = "List Bullet"` is the
+Word mental model leaking through; the portable path is `NumberingRules`.

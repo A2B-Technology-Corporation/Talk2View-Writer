@@ -719,6 +719,34 @@ class FakeUndoManager:
 
 
 # ---------------------------------------------------------------------------
+# Numbering rules (com.sun.star.text.NumberingRules)
+# ---------------------------------------------------------------------------
+
+
+class FakeNumberingRules:
+    """Minimal ``com.sun.star.text.NumberingRules`` (``XIndexReplace``).
+
+    A real NumberingRules from ``doc.createInstance`` exposes 10 levels,
+    each a sequence of ``PropertyValue``. ``manage_list`` reads a level
+    via ``getByIndex`` and writes its bullet/number config back via
+    ``replaceByIndex``; this stub records those writes so tests can
+    assert the list was actually configured.
+    """
+
+    def __init__(self, count: int = 10) -> None:
+        self._levels: list[tuple[Any, ...]] = [() for _ in range(count)]
+
+    def getCount(self) -> int:  # noqa: N802
+        return len(self._levels)
+
+    def getByIndex(self, index: int) -> tuple[Any, ...]:  # noqa: N802
+        return self._levels[index]
+
+    def replaceByIndex(self, index: int, props: tuple[Any, ...]) -> None:  # noqa: N802
+        self._levels[index] = tuple(props)
+
+
+# ---------------------------------------------------------------------------
 # Document, desktop, frame
 # ---------------------------------------------------------------------------
 
@@ -855,6 +883,8 @@ class FakeTextDocument(_Service):
             return FakeAnnotation(name="__synthetic__", content="")
         if service == "com.sun.star.text.TextGraphicObject":
             return _PropBag(GraphicURL="", AnchorType=0)
+        if service == "com.sun.star.text.NumberingRules":
+            return FakeNumberingRules()
         raise RuntimeError(
             f"FakeTextDocument.createInstance: no synthetic for {service!r}. "
             "Extend tests/synthetic/synthetic_uno.py."

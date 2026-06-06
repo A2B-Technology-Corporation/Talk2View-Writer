@@ -709,6 +709,69 @@ def _resolve_list_style(doc: Any, list_type: str) -> str:
     )
 
 
+def _try_resolve_list_style(doc: Any, list_type: str) -> str | None:
+    """Return a list paragraph-style name if this build has one, else None.
+
+    LO 26.2 registers none of the list paragraph styles, so the list marker
+    must come from NumberingRules (:func:`_build_numbering_rules`). A style
+    is applied on top only as a Styles-sidebar nicety on builds that have
+    one — never depended on.
+    """
+    try:
+        return _resolve_list_style(doc, list_type)
+    except _ListStyleUnavailableError:
+        return None
+
+
+# NumberingType values from com.sun.star.style.NumberingType, hardcoded to
+# their stable UNO constants so the helper needs no getConstantByName round
+# trip and stays unit-testable. ARABIC = 4 (1. 2. 3.); CHAR_SPECIAL = 6 (a
+# bullet glyph).
+_NUMBERING_TYPE_ARABIC = 4
+_NUMBERING_TYPE_CHAR_SPECIAL = 6
+_BULLET_CHAR = "•"  # •
+
+
+def _make_property_value(name: str, value: Any) -> Any:
+    """Build a ``com.sun.star.beans.PropertyValue`` struct."""
+    import uno
+
+    pv = uno.createUnoStruct("com.sun.star.beans.PropertyValue")
+    pv.Name = name
+    pv.Value = value
+    return pv
+
+
+def _build_numbering_rules(doc: Any, list_type: str, level: int) -> Any:
+    """Build a NumberingRules object for a bullet / numbered list.
+
+    Works on every LibreOffice build because it does not rely on a list
+    paragraph style existing — it configures the document's own
+    NumberingRules, which the caller assigns to each paragraph's
+    ``NumberingRules`` property. Levels 0..``level`` are configured so the
+    requested nesting level renders. The same object is shared across the
+    target paragraphs so they form one continuous list (1. 2. 3. for
+    numbers).
+    """
+    rules = doc.createInstance("com.sun.star.text.NumberingRules")
+    for lvl in range(level + 1):
+        try:
+            props = {pv.Name: pv.Value for pv in rules.getByIndex(lvl)}
+        except Exception:
+            props = {}
+        if list_type == "bullet":
+            props["NumberingType"] = _NUMBERING_TYPE_CHAR_SPECIAL
+            props["BulletChar"] = _BULLET_CHAR
+            props["BulletFontName"] = "OpenSymbol"
+        else:
+            props["NumberingType"] = _NUMBERING_TYPE_ARABIC
+            props["Suffix"] = "."
+        rules.replaceByIndex(
+            lvl, tuple(_make_property_value(k, v) for k, v in props.items())
+        )
+    return rules
+
+
 @tool
 @ui_thread_tool
 def manage_list(
@@ -791,46 +854,40 @@ def manage_list(
                 }
             )
 
-    # Resolve the bullet / number style names against this LO build's
-    # actual paragraph-style family. Different LO localisations and
-    # builds ship different aliases ("List Bullet" vs "Bulleted List"
-    # vs "List Paragraph"). The hardcoded "List Bullet" raised a
-    # RuntimeException on Ubuntu 24.04 apt LO — Investigation #37.
+    # Apply lists via the paragraph NumberingRules property (works on every
+    # build) rather than depending on a "List Bullet" paragraph style that
+    # LO 26.2 does not register — that gap made the model fall back to
+    # typing literal "•" characters (Investigation #37 / #50). A list
+    # paragraph style is applied on top only when this build happens to
+    # register one (Styles-sidebar nicety); it is never required.
+    rules = None
+    style_name: str | None = None
     if action == "add":
-        try:
-            style_name = _resolve_list_style(doc, list_type or "")
-        except _ListStyleUnavailableError as exc:
-            return json.dumps(
-                {
-                    "error": str(exc),
-                    "recovery": (
-                        "This LibreOffice build does not register any of "
-                        "the standard bullet/number paragraph styles. "
-                        "Apply formatting via insert_content(style=...) "
-                        "on the originating call instead, or set the "
-                        "paragraph style by hand."
-                    ),
-                }
-            )
-    else:
-        style_name = ""  # not used in the remove branch
+        rules = _build_numbering_rules(doc, list_type or "bullet", level)
+        style_name = _try_resolve_list_style(doc, list_type or "")
 
     for idx in paragraph_indices:
         p = paragraphs[idx]
-        if action == "add":
-            with suspend_record_changes(doc):
-                p.ParaStyleName = style_name
-            try:
-                p.NumberingLevel = level
-            except Exception:
-                logger.debug("NumberingLevel not settable on this build")
-        else:
-            with suspend_record_changes(doc):
-                p.ParaStyleName = "Default Paragraph Style"
-            try:
+        with suspend_record_changes(doc):
+            if action == "add":
+                if style_name:
+                    p.ParaStyleName = style_name
+                p.NumberingRules = rules
+                p.NumberingIsNumber = True
+                try:
+                    p.NumberingLevel = level
+                except Exception:
+                    logger.debug("NumberingLevel not settable on this build")
+            else:
+                try:
+                    p.NumberingRules = None
+                except Exception:
+                    logger.debug("NumberingRules not clearable on this build")
                 p.NumberingIsNumber = False
-            except Exception:
-                logger.debug("NumberingIsNumber not settable on this build")
+                try:
+                    p.ParaStyleName = "Default Paragraph Style"
+                except Exception:
+                    logger.debug("Default Paragraph Style not settable")
         if left_indent is not None:
             p.ParaLeftMargin = points_to_hmm(left_indent)
         if right_indent is not None:
