@@ -11,10 +11,13 @@ and use a real Unix socket end-to-end test for the accept loop.
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -648,6 +651,134 @@ class TestGetHostWindow:
         window.queryInterface.return_value = peer
         srv = BridgeServer(ctx=MagicMock(name="ctx"))
         assert srv._native_handle(window) == {"xid": None}
+
+
+@pytest.mark.unit
+class TestTimingInstrumentation:
+    """Every dispatched request + every stream-chunk wait is timed.
+
+    The timing lines (``timing op=...``) are how a slow chat turn gets
+    diagnosed from the LibreOffice log after the fact (task #12). These
+    assert the instrumentation fires with the right ``op`` and the
+    correlating fields — not the wall-clock value, which would flake.
+    """
+
+    _LOG = "talk2view_writer.bridge_server"
+
+    @contextmanager
+    def _capture(self, caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+        """Capture the bridge logger's records despite ``propagate=False``.
+
+        The ``talk2view_writer`` package logger disables propagation
+        (``_logging.py``), so ``caplog`` — which listens on the root
+        logger — never sees the child ``bridge_server`` records. Attach
+        caplog's handler straight to the bridge logger for the duration
+        of the test instead of fighting the propagation chain.
+        """
+        log = logging.getLogger(self._LOG)
+        log.addHandler(caplog.handler)
+        prev_level = log.level
+        log.setLevel(logging.INFO)
+        try:
+            yield
+        finally:
+            log.removeHandler(caplog.handler)
+            log.setLevel(prev_level)
+
+    def test_dispatch_emits_timing_line(
+        self,
+        stub_tool: list[tuple[str, dict[str, Any]]],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        req = json.dumps({"id": 4, "method": "list_tools", "params": {}})
+        with self._capture(caplog):
+            srv._dispatch_line(req)
+        assert "timing op=bridge.dispatch" in caplog.text
+        assert "method=list_tools" in caplog.text
+        assert "id=4" in caplog.text
+
+    def test_dispatch_times_even_on_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        with self._capture(caplog):
+            srv._dispatch_line("not json")
+        # Malformed line still gets a timing line (method unknown -> '?').
+        assert "timing op=bridge.dispatch" in caplog.text
+
+    def test_stream_chunk_wait_is_timed_with_event_type(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import queue
+
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        stream_id = "deadbeefcafebabe"
+        q: queue.Queue[dict[str, Any]] = queue.Queue()
+        q.put({"type": "chunk", "data": "x"})
+        with srv._streams_lock:
+            srv._streams[stream_id] = q
+        with self._capture(caplog):
+            event = srv._proxy_stream_next(stream_id)
+        assert event["type"] == "chunk"
+        assert "timing op=stream.chunk_wait" in caplog.text
+        assert "event=chunk" in caplog.text
+
+    def test_stream_worker_logs_ttfb_and_total(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        class _Resp:
+            status_code = 200
+            reason_phrase = "OK"
+            headers: ClassVar[dict[str, str]] = {}
+
+            def iter_text(self):
+                yield "data: a\n\n"
+                yield "data: b\n\n"
+
+        @contextmanager
+        def fake_stream(method, url, **kwargs):
+            yield _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "stream", fake_stream)
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        with self._capture(caplog):
+            opened = json.loads(
+                srv._dispatch_line(
+                    json.dumps(
+                        {
+                            "id": 1,
+                            "method": "proxy_stream_open",
+                            "params": {
+                                "url": "https://example.test/x",
+                                "method": "POST",
+                                "headers": {},
+                                "body": None,
+                            },
+                        }
+                    )
+                )
+            )
+            stream_id = opened["result"]["stream_id"]
+            for next_id in range(2, 20):
+                r = json.loads(
+                    srv._dispatch_line(
+                        json.dumps(
+                            {
+                                "id": next_id,
+                                "method": "proxy_stream_next",
+                                "params": {"stream_id": stream_id},
+                            }
+                        )
+                    )
+                )
+                if r["result"]["type"] == "done":
+                    break
+        assert "timing op=stream.ttfb" in caplog.text
+        assert "timing op=stream.total" in caplog.text
+        assert "chunks=2" in caplog.text
 
 
 @pytest.mark.unit

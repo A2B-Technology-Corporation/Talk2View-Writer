@@ -8,12 +8,27 @@ lets us exercise the dispatcher's plumbing without LibreOffice running.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+
+
+def _attach_caplog(caplog: pytest.LogCaptureFixture) -> logging.Handler:
+    """Route ``talk2view_writer.ui_thread`` records into ``caplog``.
+
+    The package logger sets ``propagate=False`` (``_logging.py``), so
+    ``caplog`` (rooted at the root logger) needs the handler attached to
+    the ui_thread logger directly. Caller is responsible for nothing —
+    the handler stays for the rest of the test, which is fine.
+    """
+    log = logging.getLogger("talk2view_writer.ui_thread")
+    log.addHandler(caplog.handler)
+    log.setLevel(logging.INFO)
+    return caplog.handler
 
 
 def _make_ctx(addCallback_impl) -> MagicMock:  # noqa: N803 — UNO interface naming
@@ -145,3 +160,45 @@ def test_concurrent_run_sync_calls_isolated() -> None:
 
     assert not errors
     assert results == {i: i * 2 for i in range(10)}
+
+
+@pytest.mark.unit
+def test_run_sync_emits_timing_line(caplog: pytest.LogCaptureFixture) -> None:
+    """Each marshalling hop is timed (task #12).
+
+    ``ui_thread.run_sync`` is the UNO marshal boundary every mutating
+    tool crosses. The timing line separates ``exec_ms`` (the UNO call
+    itself, on the UI thread) from ``marshal_ms`` (time the call spent
+    queued before the UI thread picked it up) — the latter is what grows
+    when LO's event loop is busy.
+    """
+    from talk2view_writer.ui_thread import UIThreadDispatcher
+
+    def synchronous_add_callback(callback: Any, data: Any) -> None:
+        callback.notify(data)
+
+    ctx = _make_ctx(synchronous_add_callback)
+    dispatcher = UIThreadDispatcher(ctx)
+    _attach_caplog(caplog)
+    dispatcher.run_sync(lambda: "ok")
+
+    assert "timing op=ui_thread.run_sync" in caplog.text
+    assert "exec_ms=" in caplog.text
+    assert "marshal_ms=" in caplog.text
+
+
+@pytest.mark.unit
+def test_run_sync_times_out_path_still_logs_timing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from talk2view_writer.ui_thread import UIThreadDispatcher, UIThreadTimeoutError
+
+    ctx = _make_ctx(lambda callback, data: None)  # never fires
+    dispatcher = UIThreadDispatcher(ctx)
+    _attach_caplog(caplog)
+    with pytest.raises(UIThreadTimeoutError):
+        dispatcher.run_sync(lambda: 42, timeout=0.05)
+    assert "timing op=ui_thread.run_sync" in caplog.text
+    # No UI-thread exec happened, so exec is unknown -> 'na'.
+    assert "exec_ms=na" in caplog.text
+    assert "timed_out=True" in caplog.text

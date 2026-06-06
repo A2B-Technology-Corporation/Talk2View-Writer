@@ -25,6 +25,8 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from talk2view_writer.perf import log_timing
+
 if TYPE_CHECKING:
     from com.sun.star.text import XTextDocument
     from com.sun.star.uno import XComponentContext
@@ -136,6 +138,17 @@ def ui_thread_tool(fn: _F) -> _F:
             tool_name,
             elapsed_ms,
             result_summary,
+        )
+        # Canonical timing line (task #12) so tool latency greps the same
+        # way as the bridge / stream / UI-thread hops. ``ms`` here is the
+        # full local tool time as the SDK worker thread sees it — UNO
+        # marshal + (when on) the track-changes envelope.
+        log_timing(
+            logger,
+            "tool",
+            elapsed_ms,
+            name=tool_name,
+            track_changes=track_changes,
         )
         return result
 

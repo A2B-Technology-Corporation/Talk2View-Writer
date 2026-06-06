@@ -29,10 +29,12 @@ import os
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from ._logging import debug_enabled
+from .perf import log_timing, monotonic_ms
 
 logger = logging.getLogger("talk2view_writer.web_runner")
 
@@ -134,7 +136,16 @@ class _BridgeClient:
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
             raise RuntimeError("BridgeClient: not connected")
+        # Timing (task #12): ``lock_wait_ms`` is how long this call sat
+        # behind the single bridge lock before it could send — the
+        # contention metric. ``ms`` is the server round-trip once we
+        # held the lock. A debug ``log`` call showing a big
+        # ``lock_wait_ms`` means it queued behind an in-flight
+        # ``proxy_stream_next`` blocking on the engine.
+        t_before = time.monotonic()
         with self._lock:
+            lock_wait_ms = monotonic_ms(t_before)
+            t_acquired = time.monotonic()
             req_id = self._next_id
             self._next_id += 1
             req = json.dumps(
@@ -144,6 +155,15 @@ class _BridgeClient:
             self._sock.sendall(req + b"\n")
             line = self._read_line()
             logger.info("BridgeClient <- %s", line)
+            rt_ms = monotonic_ms(t_acquired)
+        log_timing(
+            logger,
+            "bridge.client_call",
+            rt_ms,
+            method=method,
+            id=req_id,
+            lock_wait_ms=round(lock_wait_ms, 1),
+        )
         resp = json.loads(line)
         if resp.get("id") != req_id:
             raise RuntimeError(

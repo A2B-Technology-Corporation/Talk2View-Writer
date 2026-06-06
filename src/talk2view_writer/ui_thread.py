@@ -22,11 +22,14 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import unohelper  # type: ignore[import-not-found]
 from com.sun.star.awt import XCallback  # type: ignore[import-not-found]
+
+from talk2view_writer.perf import log_timing, monotonic_ms
 
 if TYPE_CHECKING:
     from com.sun.star.uno import XComponentContext
@@ -116,9 +119,30 @@ class UIThreadDispatcher:
         callback = _RunOnUIThreadCallback(fn, args, kwargs, slot, done)
         with self._lock:
             self._callbacks.append(callback)
+        # Timing (task #12): ``total`` spans submit -> completion;
+        # ``exec`` is the UNO call itself on the UI thread (recorded by
+        # the callback); ``marshal = total - exec`` is the queue latency
+        # — how long the call waited for LO's event loop. A fat
+        # ``marshal_ms`` with a thin ``exec_ms`` means the UI thread was
+        # busy, not the document operation.
+        submit = time.monotonic()
         try:
             service.addCallback(callback, None)  # type: ignore[attr-defined]
-            if not done.wait(timeout):
+            fired = done.wait(timeout)
+            total_ms = monotonic_ms(submit)
+            exec_ms = callback.exec_ms
+            log_timing(
+                logger,
+                "ui_thread.run_sync",
+                total_ms,
+                fn=getattr(fn, "__name__", repr(fn)),
+                exec_ms=None if exec_ms is None else round(exec_ms, 1),
+                marshal_ms=(
+                    None if exec_ms is None else round(total_ms - exec_ms, 1)
+                ),
+                timed_out=not fired,
+            )
+            if not fired:
                 raise UIThreadTimeoutError(
                     f"UI-thread call to {getattr(fn, '__name__', fn)!r} "
                     f"did not complete within {timeout}s"
@@ -154,6 +178,10 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         self._kwargs = kwargs
         self._slot = slot
         self._done = done
+        # Set on the UI thread once ``notify`` runs ``fn``; stays None
+        # if the callback never fires (timeout). Read by ``run_sync``
+        # for the ``exec_ms`` timing field.
+        self.exec_ms: float | None = None
 
     def notify(self, data: Any) -> None:
         # Catch is *required* — this is cross-thread exception marshalling.
@@ -163,6 +191,7 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         # (where it's useless). Don't add logger.exception here: it
         # duplicates noise; the worker-thread raise gives the real
         # location.
+        started = time.monotonic()
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as exc:
@@ -170,4 +199,5 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         else:
             self._slot.append((True, result))
         finally:
+            self.exec_ms = monotonic_ms(started)
             self._done.set()

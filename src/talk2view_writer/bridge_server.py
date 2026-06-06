@@ -39,9 +39,12 @@ import queue
 import socket
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
+
+from talk2view_writer.perf import log_timing, monotonic_ms
 
 if TYPE_CHECKING:
     from com.sun.star.uno import XComponentContext
@@ -200,8 +203,17 @@ class BridgeServer:
                 conn.close()
 
     def _dispatch_line(self, line: str) -> str:
-        """Parse one JSON-RPC request, dispatch, return one JSON response."""
+        """Parse one JSON-RPC request, dispatch, return one JSON response.
+
+        Times the whole server-side handling per request and emits a
+        ``timing op=bridge.dispatch`` line (task #12). The elapsed value
+        is what the JS side perceives as the bridge round-trip minus the
+        socket transit, so it bounds tool exec, UI-thread marshalling,
+        and (for ``proxy_stream_next``) the engine's per-chunk latency.
+        """
+        t0 = time.monotonic()
         req_id: Any = None
+        method = "?"
         try:
             req = json.loads(line)
             req_id = req.get("id")
@@ -213,57 +225,12 @@ class BridgeServer:
                 method,
                 params,
             )
-            if method == "invoke_tool":
-                result = self._invoke_tool(
-                    params.get("name", ""), params.get("args") or {}
-                )
-                return json.dumps({"id": req_id, "result": result})
-            if method == "list_tools":
-                return json.dumps({"id": req_id, "result": list(_MVP_TOOL_NAMES)})
-            if method == "log":
-                self._log_from_web(
-                    str(params.get("level", "info")),
-                    str(params.get("message", "")),
-                    params.get("context"),
-                )
-                return json.dumps({"id": req_id, "result": None})
-            if method == "get_host_window":
-                return json.dumps({"id": req_id, "result": self._host_window()})
-            if method == "proxy_fetch":
-                result = self._proxy_fetch(
-                    str(params.get("url", "")),
-                    str(params.get("method", "GET")).upper(),
-                    params.get("headers") or {},
-                    params.get("body"),
-                )
-                return json.dumps({"id": req_id, "result": result})
-            if method == "proxy_stream_open":
-                result = self._proxy_stream_open(
-                    str(params.get("url", "")),
-                    str(params.get("method", "GET")).upper(),
-                    params.get("headers") or {},
-                    params.get("body"),
-                )
-                return json.dumps({"id": req_id, "result": result})
-            if method == "proxy_stream_next":
-                result = self._proxy_stream_next(
-                    str(params.get("stream_id", "")),
-                )
-                return json.dumps({"id": req_id, "result": result})
-            return json.dumps(
-                {
-                    "id": req_id,
-                    "error": {
-                        "type": "UnknownMethod",
-                        "message": f"unknown method {method!r}",
-                    },
-                }
-            )
+            response = self._handle_method(method, params, req_id)
         except Exception as exc:
             logger.exception(
                 "BridgeServer.dispatch: id=%s line=%r raised", req_id, line
             )
-            return json.dumps(
+            response = json.dumps(
                 {
                     "id": req_id,
                     "error": {
@@ -272,6 +239,65 @@ class BridgeServer:
                     },
                 }
             )
+        log_timing(
+            logger,
+            "bridge.dispatch",
+            monotonic_ms(t0),
+            id=req_id,
+            method=method,
+        )
+        return response
+
+    def _handle_method(
+        self, method: str, params: dict[str, Any], req_id: Any
+    ) -> str:
+        """Route one parsed request to its handler, return the JSON reply."""
+        if method == "invoke_tool":
+            result = self._invoke_tool(
+                params.get("name", ""), params.get("args") or {}
+            )
+            return json.dumps({"id": req_id, "result": result})
+        if method == "list_tools":
+            return json.dumps({"id": req_id, "result": list(_MVP_TOOL_NAMES)})
+        if method == "log":
+            self._log_from_web(
+                str(params.get("level", "info")),
+                str(params.get("message", "")),
+                params.get("context"),
+            )
+            return json.dumps({"id": req_id, "result": None})
+        if method == "get_host_window":
+            return json.dumps({"id": req_id, "result": self._host_window()})
+        if method == "proxy_fetch":
+            result = self._proxy_fetch(
+                str(params.get("url", "")),
+                str(params.get("method", "GET")).upper(),
+                params.get("headers") or {},
+                params.get("body"),
+            )
+            return json.dumps({"id": req_id, "result": result})
+        if method == "proxy_stream_open":
+            result = self._proxy_stream_open(
+                str(params.get("url", "")),
+                str(params.get("method", "GET")).upper(),
+                params.get("headers") or {},
+                params.get("body"),
+            )
+            return json.dumps({"id": req_id, "result": result})
+        if method == "proxy_stream_next":
+            result = self._proxy_stream_next(
+                str(params.get("stream_id", "")),
+            )
+            return json.dumps({"id": req_id, "result": result})
+        return json.dumps(
+            {
+                "id": req_id,
+                "error": {
+                    "type": "UnknownMethod",
+                    "message": f"unknown method {method!r}",
+                },
+            }
+        )
 
     # ----- Logging from the web side --------------------------------------
 
@@ -577,6 +603,15 @@ class BridgeServer:
             self._streams[stream_id] = q
 
         def worker() -> None:
+            # Producer-side engine timing (task #12): TTFB measures how
+            # long the engine took to start responding; total + chunk
+            # count + byte count summarise the whole stream. This is the
+            # ground-truth engine latency, independent of how promptly
+            # the JS consumer re-polls.
+            req_start = time.monotonic()
+            ttfb_ms: float | None = None
+            chunk_count = 0
+            byte_count = 0
             try:
                 with httpx.stream(
                     method,
@@ -586,6 +621,14 @@ class BridgeServer:
                     timeout=httpx.Timeout(30.0, read=None),
                     follow_redirects=True,
                 ) as resp:
+                    ttfb_ms = monotonic_ms(req_start)
+                    log_timing(
+                        logger,
+                        "stream.ttfb",
+                        ttfb_ms,
+                        stream_id=stream_id[:8],
+                        status=resp.status_code,
+                    )
                     q.put(
                         {
                             "type": "headers",
@@ -598,6 +641,8 @@ class BridgeServer:
                     )
                     for chunk in resp.iter_text():
                         if chunk:
+                            chunk_count += 1
+                            byte_count += len(chunk)
                             q.put({"type": "chunk", "data": chunk})
             except Exception as exc:
                 logger.exception(
@@ -605,6 +650,15 @@ class BridgeServer:
                 )
                 q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
             finally:
+                log_timing(
+                    logger,
+                    "stream.total",
+                    monotonic_ms(req_start),
+                    stream_id=stream_id[:8],
+                    chunks=chunk_count,
+                    bytes=byte_count,
+                    ttfb_ms=None if ttfb_ms is None else round(ttfb_ms, 1),
+                )
                 q.put({"type": "done"})
 
         thread = threading.Thread(
@@ -640,6 +694,13 @@ class BridgeServer:
         # 60s upper bound — keeps the bridge thread from blocking on
         # a worker that has wedged (e.g. the engine started streaming
         # and then went unresponsive). The JS side can retry.
+        #
+        # The wait here is the consumer-perceived per-chunk latency:
+        # with the JS side re-polling immediately, it equals the engine's
+        # inter-chunk gap. ``stream.chunk_wait`` is the single most
+        # useful line for diagnosing "the chat feels slow" — sum it over
+        # a turn to see total engine streaming time (task #12).
+        wait_start = time.monotonic()
         try:
             event = q.get(timeout=60.0)
         except queue.Empty:
@@ -647,7 +708,21 @@ class BridgeServer:
                 "proxy_stream_next: 60s wait elapsed for %s — returning timeout",
                 stream_id,
             )
+            log_timing(
+                logger,
+                "stream.chunk_wait",
+                monotonic_ms(wait_start),
+                stream_id=stream_id[:8],
+                event="timeout",
+            )
             return {"type": "timeout"}
+        log_timing(
+            logger,
+            "stream.chunk_wait",
+            monotonic_ms(wait_start),
+            stream_id=stream_id[:8],
+            event=event.get("type"),
+        )
         if event.get("type") == "done":
             with self._streams_lock:
                 self._streams.pop(stream_id, None)
