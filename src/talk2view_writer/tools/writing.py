@@ -35,7 +35,10 @@ from talk2view_writer.tools._constants import (
     points_to_hmm,
     preview,
 )
-from talk2view_writer.uno_helpers.styles import word_to_libreoffice_style
+from talk2view_writer.uno_helpers.styles import (
+    canonical_style_name,
+    word_to_libreoffice_style,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,41 +124,68 @@ def _insert_paragraph_at_cursor(
     cleared its matched range.
 
     Pass ``doc`` so the paragraph-style assignment can suspend
-    ``RecordChanges`` for that single write — LibreOffice rejects
-    ``ParaStyleName`` mutations on a paragraph still inside an active
-    redline, which is exactly the state our track-changes envelope
-    puts every fresh insert in.
+    ``RecordChanges`` for that single write. The style is applied to the
+    still-empty paragraph BEFORE the text is inserted, and 'Normal' resolves
+    to the NAMED 'Text body' style rather than the pool default — both guard
+    against the LibreOffice 26.2 ``ParaStyleName`` rejection described below
+    (investigation #53).
     """
     if not _cursor_at_empty_paragraph(text_obj, cursor):
         text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
+    # Style-first ordering (investigation #53): assign the paragraph style to
+    # the now-empty target paragraph BEFORE inserting its text, then write the
+    # text below. LibreOffice 26.2 raises a message-less RuntimeException on a
+    # ``ParaStyleName`` write of the POOL-DEFAULT collection ('Default Paragraph
+    # Style') onto a paragraph in certain document states; named collections
+    # ('Heading 2', 'Text body') are accepted in the same call. The trigger is
+    # broader than this insert's own redline — the 2026-06-09 live log shows it
+    # firing with ``RecordChanges`` already off — so we defend in depth rather
+    # than rely on one cause: (1) ``word_to_libreoffice_style`` maps body
+    # ('Normal') to the named 'Text body', steering clear of the pool default;
+    # (2) we suspend RecordChanges for the write; (3) we style while the node is
+    # still empty. The subsequent insertString lands the TEXT as the reviewable
+    # redline the user expects when track changes is on (ADR-0035).
+    if style:
+        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+        from talk2view_writer.tools._base import suspend_record_changes
+
+        target = word_to_libreoffice_style(style)
+        style_cursor = text_obj.createTextCursorByRange(cursor.getStart())
+        style_cursor.gotoStartOfParagraph(False)
+        style_cursor.gotoEndOfParagraph(True)
+        # Skip the write when the empty paragraph already carries the target
+        # collection (e.g. consecutive body paragraphs that inherit 'Text body'
+        # via the heading Next-Style cascade): it is a no-op write that can
+        # itself trip the rejection, and skipping it avoids the noise entirely.
+        if getattr(style_cursor, "ParaStyleName", None) != target:
+            ctx = (
+                suspend_record_changes(doc)
+                if doc is not None
+                else contextlib.nullcontext()
+            )
+            with ctx:
+                try:
+                    style_cursor.ParaStyleName = target
+                except RuntimeException:
+                    # Last-resort fallback: a build/state that still rejects the
+                    # write (the pool-default constraint above, or a style
+                    # genuinely absent on this LO version) degrades to the
+                    # inherited style rather than failing the whole insert.
+                    # logger.exception() keeps the real UNO error + traceback —
+                    # never swallow it behind a bare message.
+                    logger.exception(
+                        "Could not apply paragraph style %r "
+                        "(LibreOffice rejected the ParaStyleName write); "
+                        "left the inherited style",
+                        style,
+                    )
     text_obj.insertString(cursor, paragraph_text, False)
     # Re-find the just-written paragraph via the cursor's current paragraph.
     # The XParagraphCursor interface gives us gotoStartOfParagraph / range.
     para_cursor = text_obj.createTextCursorByRange(cursor.getStart())
     para_cursor.gotoStartOfParagraph(False)
     para_cursor.gotoEndOfParagraph(True)
-    if style:
-        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
-
-        from talk2view_writer.tools._base import suspend_record_changes
-
-        ctx = suspend_record_changes(doc) if doc is not None else contextlib.nullcontext()
-        with ctx:
-            try:
-                para_cursor.ParaStyleName = word_to_libreoffice_style(style)
-            except RuntimeException:
-                # LO can still reject a ParaStyleName write on a paragraph
-                # that carries an active redline even with RecordChanges
-                # suspended (the redline already exists from the tracked
-                # insert above). The text is in; degrade to the default
-                # paragraph style rather than failing the whole insert.
-                # logger.exception() captures the actual UNO error + traceback
-                # — never swallow it behind a bare message.
-                logger.exception(
-                    "Could not apply paragraph style %r (track-changes redline "
-                    "constraint); left the default style",
-                    style,
-                )
     return para_cursor
 
 
@@ -265,6 +295,14 @@ def insert_content(
     # Case-insensitive enum arg (schema enum dropped — see Writer #5).
     location = lower_enum(location)
 
+    # Fold a LibreOffice display name the model may have echoed back from
+    # get_document (e.g. "Text body", "Heading 2") to its canonical Word name
+    # so it validates against VALID_STYLES instead of 400ing. Per-block styles
+    # are normalised in the coercion loop below; this covers the single-text
+    # ``style`` and the blocks-mode fallback style.
+    if style is not None:
+        style = canonical_style_name(style)
+
     # ----- Validation ------------------------------------------------------
     if text is not None and blocks is not None:
         return json.dumps(
@@ -351,8 +389,15 @@ def insert_content(
             if isinstance(block, str):
                 normalised.append({"text": block, "style": None})
             else:
+                bstyle = block.get("style")
                 normalised.append(
-                    {"text": block.get("text", ""), "style": block.get("style")}
+                    {
+                        "text": block.get("text", ""),
+                        # Fold LO display names ("Text body", "Heading 2") to
+                        # the canonical Word name so they validate below and the
+                        # previews/insert use a consistent vocabulary.
+                        "style": canonical_style_name(bstyle) if bstyle else None,
+                    }
                 )
         blocks = normalised
         for i, block in enumerate(blocks):
@@ -982,8 +1027,14 @@ def delete_content(
     structure), use ``search_document(query, replace_with="")`` instead
     — query mode is kept for back-compat only. For removing list
     FORMATTING without deleting text, use ``manage_list(action="remove")``.
-    Paragraph deletion shifts subsequent indices — re-call get_document
-    before further index-based edits.
+
+    When track changes is OFF the paragraphs are really removed and
+    subsequent indices shift — re-call get_document before further
+    index-based edits. When track changes is ON (the default while AI
+    edits land as redlines) the deletion is recorded as a tracked change:
+    the struck-through paragraphs still enumerate at the same indices
+    until the user accepts the change, so the indices do NOT shift. The
+    result's ``tracked_change`` flag distinguishes the two cases.
 
     Args:
         paragraph_index: Delete a single paragraph by zero-based index.
@@ -995,7 +1046,9 @@ def delete_content(
         match_case: Case-sensitive query matching. Defaults to False.
 
     Returns:
-        JSON string with success / mode / count / warning.
+        JSON string with success / mode / count, plus a ``tracked_change``
+        flag and matching ``warning`` (real removal) or ``hint`` (tracked
+        deletion pending acceptance) for the index-based modes.
 
     Raises:
         WriterDocumentRequiredError: If no Writer document is active.
@@ -1083,16 +1136,16 @@ def delete_content(
             )
         para = paragraphs[paragraph_index]
         deleted_text = para.getString()
+        count_before = len(paragraphs)
         _delete_paragraph(text_obj, para)
-        return json.dumps(
-            {
-                "success": True,
-                "mode": "paragraph",
-                "deleted_preview": preview(deleted_text),
-                "count": 1,
-                "warning": "Paragraph indices have shifted. Call get_document for updated indices.",
-            }
-        )
+        result = {
+            "success": True,
+            "mode": "paragraph",
+            "deleted_preview": preview(deleted_text),
+            "count": 1,
+        }
+        result.update(_deletion_outcome(doc, count_before))
+        return json.dumps(result)
 
     if has_range:
         paragraphs = _enumerate_paragraphs(doc)
@@ -1110,17 +1163,17 @@ def delete_content(
                 }
             )
         # Delete back-to-front to keep earlier indices stable.
+        count_before = len(paragraphs)
         for i in range(end_index, start_index - 1, -1):
             _delete_paragraph(text_obj, paragraphs[i])
-        return json.dumps(
-            {
-                "success": True,
-                "mode": "range",
-                "count": end_index - start_index + 1,
-                "deleted_range": {"start": start_index, "end": end_index},
-                "warning": "Paragraph indices have shifted. Call get_document for updated indices.",
-            }
-        )
+        result = {
+            "success": True,
+            "mode": "range",
+            "count": end_index - start_index + 1,
+            "deleted_range": {"start": start_index, "end": end_index},
+        }
+        result.update(_deletion_outcome(doc, count_before))
+        return json.dumps(result)
 
     # Query mode.
     assert query is not None
@@ -1155,6 +1208,48 @@ def delete_content(
             ),
         }
     )
+
+
+def _deletion_outcome(doc: Any, count_before: int) -> dict[str, Any]:
+    """Describe the actual post-edit state of a paragraph deletion.
+
+    ``delete_content`` is a mutating tool, so the track-changes envelope
+    (:func:`talk2view_writer.tools._base.with_track_changes`) forces
+    ``RecordChanges`` on for the call. Under active redlining a paragraph
+    "deletion" is recorded as a *tracked deletion*: the paragraph still
+    enumerates (struck through) until the user accepts the change, so the
+    indices do NOT shift. Reporting an unconditional "indices have shifted"
+    in that case misleads the agent into re-reading a document whose
+    structure is unchanged.
+
+    We re-enumerate after the edit and compare the paragraph count: if it
+    dropped, redlining was off and the paragraphs were really removed
+    (indices shifted); if it is unchanged, the deletion landed as a tracked
+    change pending acceptance.
+
+    Args:
+        doc: The active Writer document, post-edit.
+        count_before: Paragraph count captured immediately before the
+            deletion calls.
+
+    Returns:
+        A dict to merge into the tool result, carrying ``tracked_change``
+        plus the matching ``warning``/``hint`` guidance.
+    """
+    count_after = len(_enumerate_paragraphs(doc))
+    if count_after < count_before:
+        return {
+            "tracked_change": False,
+            "warning": "Paragraph indices have shifted. Call get_document for updated indices.",
+        }
+    return {
+        "tracked_change": True,
+        "hint": (
+            "Deletion recorded as a tracked change (track changes is on); the "
+            "struck-through paragraph(s) still enumerate at the same indices "
+            "until the user accepts the change. Indices have NOT shifted."
+        ),
+    }
 
 
 def _delete_paragraph(text_obj: Any, para: Any) -> None:

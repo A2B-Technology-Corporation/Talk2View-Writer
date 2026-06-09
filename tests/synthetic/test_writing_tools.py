@@ -142,6 +142,84 @@ class TestDeleteContent:
         result = json.loads(delete_content())
         assert "error" in result
 
+    def test_real_removal_reports_index_shift(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Redlining off — the paragraph really goes; indices shift."""
+        from talk2view_writer.tools.writing import delete_content
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("a"), FakeParagraph("b"), FakeParagraph("c")]
+        )
+        # Default synthetic _delete_paragraph actually removes the
+        # paragraph (models RecordChanges=False), so the count drops.
+        result = json.loads(delete_content(paragraph_index=1))
+        assert result["tracked_change"] is False
+        assert "indices have shifted" in result["warning"].lower()
+        assert "hint" not in result
+
+    def test_tracked_deletion_reports_pending_acceptance(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Redlining on — report a tracked change, not a false index shift.
+
+        The struck-through paragraph still enumerates until accepted, so the
+        count is unchanged and the tool must report a tracked change pending
+        acceptance.
+        """
+        from talk2view_writer.tools import writing
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("a"), FakeParagraph("b"), FakeParagraph("c")]
+        )
+
+        # Model a tracked deletion: LibreOffice records a redline but the
+        # paragraph keeps enumerating until accepted, so the deletion call
+        # leaves the paragraph list (and hence the count) unchanged.
+        def _tracked_delete(text_obj: object, para: object) -> None:
+            return None
+
+        monkeypatch.setattr(writing, "_delete_paragraph", _tracked_delete)
+
+        result = json.loads(writing.delete_content(paragraph_index=1))
+        assert result["tracked_change"] is True
+        # No false "indices have shifted" guidance.
+        assert "warning" not in result
+        hint = result["hint"].lower()
+        assert "tracked change" in hint
+        assert "not shifted" in hint
+        # Count is genuinely unchanged — the paragraph still enumerates.
+        assert len(synthetic_doc._text._paragraphs) == 3
+
+    def test_range_tracked_deletion_reports_pending_acceptance(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Range mode under redlining reports the tracked-change semantics."""
+        from talk2view_writer.tools import writing
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            FakeParagraph(f"para {i}") for i in range(5)
+        )
+
+        def _tracked_delete(text_obj: object, para: object) -> None:
+            return None
+
+        monkeypatch.setattr(writing, "_delete_paragraph", _tracked_delete)
+
+        result = json.loads(writing.delete_content(start_index=1, end_index=3))
+        assert result["tracked_change"] is True
+        assert "warning" not in result
+        assert "tracked change" in result["hint"].lower()
+
 
 # ---------------------------------------------------------------------------
 # insert_content — shape-only checks (real UNO covered in integration tests)
@@ -276,3 +354,49 @@ class TestInsertContent:
         # Per-block "Heading1" wins; second block inherits "Title".
         assert previews[0]["style"] == "Heading1"
         assert previews[1]["style"] == "Title"
+
+    def test_libreoffice_display_style_names_are_accepted(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """LO display names the engine echoes back validate, not 400.
+
+        Regression for Writer #2: get_document reports body paragraphs as
+        'Text body' and headings as 'Heading 2'; the model then re-sends
+        those raw LibreOffice names. They must normalise to the Word
+        vocabulary ('Normal' / 'Heading2') instead of returning
+        "unknown style" and burning a retry (observed in the 2026-06-09
+        live log). The previews echo the canonical Word name so the
+        write/read round-trip stays consistent.
+        """
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                blocks=[
+                    {"text": "A chapter heading", "style": "Heading 2"},
+                    {"text": "Some body prose.", "style": "Text body"},
+                ],
+                location="end",
+            )
+        )
+        assert "error" not in result, result
+        previews = result["previews"]
+        assert previews[0]["style"] == "Heading2", result
+        assert previews[1]["style"] == "Normal", result
+
+    def test_top_level_libreoffice_style_name_is_accepted(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """The single-``text`` path also folds an LO display name to Word."""
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(text="A chapter heading", style="Heading 2", location="end")
+        )
+        assert "error" not in result, result
+        # The single-text path echoes the resolved style on the top-level key.
+        assert result["style"] == "Heading2", result
