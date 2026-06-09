@@ -76,7 +76,21 @@ export function whenBridgeReady(): Promise<PywebviewApi> {
     const t0 = Date.now();
     const tick = () => {
       const api = window.pywebview?.api;
-      if (api) {
+      // A truthy ``api`` is NOT enough: pywebview can inject
+      // ``window.pywebview.api`` a beat before all of its methods are
+      // attached. SDK >=0.10.0 fetches the partner config eagerly the
+      // instant <Talk2View> mounts (usePartnerConfig), which raced
+      // ``proxy_fetch`` being undefined and threw "i.proxy_fetch is not a
+      // function" (investigation #54). Wait until the methods we actually
+      // call are present so an early proxied request can't see a partial
+      // bridge.
+      if (
+        api &&
+        typeof api.proxy_fetch === 'function' &&
+        typeof api.proxy_stream_open === 'function' &&
+        typeof api.proxy_stream_next === 'function' &&
+        typeof api.invoke_tool === 'function'
+      ) {
         resolve(api);
         return;
       }

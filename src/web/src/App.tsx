@@ -201,7 +201,12 @@ export function App() {
       <LogBridge />
       <div style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
         <UpdateBanner />
-        <ChatPanel />
+        {/* allowAnonymous defaults to true in the SDK (>=0.7.0), which would
+            show the composer to a logged-out user and silently start a
+            budget-capped anonymous demo session (with no tools, since
+            ToolRegistrar gates on isAuthenticated). Talk2View-Writer is a
+            login-gated host — force the login form for logged-out users. */}
+        <ChatPanel allowAnonymous={false} />
       </div>
     </Talk2View>
   );
