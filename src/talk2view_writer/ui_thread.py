@@ -116,7 +116,7 @@ class UIThreadDispatcher:
         done = threading.Event()
         slot: list[tuple[bool, Any]] = []  # [(success, value_or_exc)]
 
-        callback = _RunOnUIThreadCallback(fn, args, kwargs, slot, done)
+        callback = _RunOnUIThreadCallback(self, fn, args, kwargs, slot, done)
         with self._lock:
             self._callbacks.append(callback)
         # Timing (task #12): ``total`` spans submit -> completion;
@@ -126,6 +126,11 @@ class UIThreadDispatcher:
         # ``marshal_ms`` with a thin ``exec_ms`` means the UI thread was
         # busy, not the document operation.
         submit = time.monotonic()
+        # Default so the ``finally`` cleanup runs even if ``addCallback``
+        # raises before ``done.wait`` is reached: treat "never submitted"
+        # as fired=True so the strong ref is removed rather than leaked
+        # (no callback can fire if submission failed).
+        fired = True
         try:
             service.addCallback(callback, None)  # type: ignore[attr-defined]
             fired = done.wait(timeout)
@@ -143,6 +148,17 @@ class UIThreadDispatcher:
                 timed_out=not fired,
             )
             if not fired:
+                # The callback is still queued in LO's event loop and has
+                # NOT fired. ``self._callbacks`` holds the only strong
+                # Python ref keeping it alive across the marshalling hop
+                # (see "Resource lifetime" on the class). Removing it here
+                # could let it be GC'd while LO still holds a weak handle;
+                # a late fire would then run the wrapped UNO work after the
+                # caller gave up (phantom write) or crash. Instead, flag
+                # the callback cancelled and leave the strong ref in place.
+                # The callback self-cleans from ``_callbacks`` when LO
+                # eventually fires it (see ``_RunOnUIThreadCallback.notify``).
+                callback._cancelled = True
                 raise UIThreadTimeoutError(
                     f"UI-thread call to {getattr(fn, '__name__', fn)!r} "
                     f"did not complete within {timeout}s"
@@ -153,9 +169,14 @@ class UIThreadDispatcher:
             # value is an Exception; preserve traceback chain
             raise value
         finally:
-            with self._lock:
-                if callback in self._callbacks:
-                    self._callbacks.remove(callback)
+            # Only remove on the non-timeout path. On a timeout the callback
+            # is still pending; it removes itself when it eventually fires
+            # (the cancelled branch in ``notify``), so the strong ref must
+            # survive here.
+            if fired:
+                with self._lock:
+                    if callback in self._callbacks:
+                        self._callbacks.remove(callback)
 
 
 class _RunOnUIThreadCallback(unohelper.Base, XCallback):
@@ -167,17 +188,24 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
 
     def __init__(
         self,
+        parent: UIThreadDispatcher,
         fn: Callable[..., Any],
         args: tuple[Any, ...],
         kwargs: dict,
         slot: list[tuple[bool, Any]],
         done: threading.Event,
     ) -> None:
+        self._parent = parent
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
         self._slot = slot
         self._done = done
+        # Set by ``run_sync`` on its timeout path. A cancelled callback that
+        # later fires must NOT run the wrapped function (the caller has
+        # already given up — running it would be a phantom UNO write); it
+        # only self-cleans from the parent's ``_callbacks`` and returns.
+        self._cancelled = False
         # Set on the UI thread once ``notify`` runs ``fn``; stays None
         # if the callback never fires (timeout). Read by ``run_sync``
         # for the ``exec_ms`` timing field.
@@ -191,6 +219,16 @@ class _RunOnUIThreadCallback(unohelper.Base, XCallback):
         # (where it's useless). Don't add logger.exception here: it
         # duplicates noise; the worker-thread raise gives the real
         # location.
+        if self._cancelled:
+            # ``run_sync`` timed out and gave up before LO fired us. Do NOT
+            # run ``fn`` (phantom write) and do NOT touch ``slot``/``done``
+            # — the caller has moved on. Self-clean the strong ref that
+            # ``run_sync``'s timeout path deliberately left in place so
+            # ``_callbacks`` cannot grow unbounded.
+            with self._parent._lock:
+                if self in self._parent._callbacks:
+                    self._parent._callbacks.remove(self)
+            return
         started = time.monotonic()
         try:
             result = self._fn(*self._args, **self._kwargs)

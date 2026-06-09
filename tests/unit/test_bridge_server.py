@@ -242,6 +242,26 @@ class TestSocketLifecycle:
             f"socket file should be unlinked after stop(), still at {path}"
         )
 
+    def test_stop_removes_tempdir(
+        self, stub_tool: list[tuple[str, dict[str, Any]]]
+    ) -> None:
+        """stop() removes the per-instance tempdir, not just the socket.
+
+        start() creates a fresh tempfile.mkdtemp(prefix='talk2view-bridge-')
+        and puts the socket inside it. Unlinking only the socket would
+        leave an empty /tmp/talk2view-bridge-XXXX/ dir behind on every run.
+        """
+        import os
+
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        path = srv.start()
+        tmpdir = os.path.dirname(path)
+        assert os.path.isdir(tmpdir)
+        srv.stop()
+        assert not os.path.exists(tmpdir), (
+            f"tempdir should be removed after stop(), still at {tmpdir}"
+        )
+
     def test_start_twice_raises(
         self, stub_tool: list[tuple[str, dict[str, Any]]]
     ) -> None:
@@ -527,28 +547,134 @@ class TestProxyStream:
             )
         )
         stream_id = opened["result"]["stream_id"]
-        # First (and only) event should be an error, then a done.
-        events: list[dict[str, Any]] = []
-        for next_id in range(2, 10):
-            r = json.loads(
-                srv._dispatch_line(
-                    json.dumps(
-                        {
-                            "id": next_id,
-                            "method": "proxy_stream_next",
-                            "params": {"stream_id": stream_id},
-                        }
-                    )
+        # The first event the consumer sees is the error; that is the
+        # terminal event for the error path (the JS side stops pulling
+        # after it), and the registry entry is dropped at that point so
+        # the worker's trailing 'done' is no longer reachable — a further
+        # poll returns an 'unknown stream' error rather than 'done'.
+        first = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 2,
+                        "method": "proxy_stream_next",
+                        "params": {"stream_id": stream_id},
+                    }
                 )
             )
-            events.append(r["result"])
-            if r["result"]["type"] == "done":
+        )
+        assert first["result"]["type"] == "error"
+        assert "connection refused" in first["result"]["message"]
+        # A consumer that keeps polling after the error gets 'unknown
+        # stream', confirming the registry was cleaned up on 'error'.
+        second = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 3,
+                        "method": "proxy_stream_next",
+                        "params": {"stream_id": stream_id},
+                    }
+                )
+            )
+        )
+        assert second["result"]["type"] == "error"
+        assert "unknown" in second["result"]["message"].lower()
+
+    def test_stream_error_event_cleans_up_registry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An 'error' event drops the stream even if 'done' is never drained.
+
+        The worker enqueues 'error' then 'done' on failure, but the JS
+        consumer stops draining after 'error'. If we only popped the
+        registry on 'done', the trailing 'done' would never be read and
+        the entry would leak forever. Popping on 'error' too removes it
+        immediately — verified by reading ``self._streams`` directly.
+        """
+        import httpx
+
+        self._patch_httpx_stream(
+            monkeypatch,
+            raise_exc=httpx.ConnectError("connection refused"),
+        )
+        srv = self._server()
+        opened = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 1,
+                        "method": "proxy_stream_open",
+                        "params": {
+                            "url": "https://example.test/x",
+                            "method": "GET",
+                            "headers": {},
+                            "body": None,
+                        },
+                    }
+                )
+            )
+        )
+        stream_id = opened["result"]["stream_id"]
+        # Drain exactly one event — the error — and stop, mirroring the
+        # JS consumer's error path (which does not pull the trailing
+        # 'done').
+        first = json.loads(
+            srv._dispatch_line(
+                json.dumps(
+                    {
+                        "id": 2,
+                        "method": "proxy_stream_next",
+                        "params": {"stream_id": stream_id},
+                    }
+                )
+            )
+        )
+        assert first["result"]["type"] == "error"
+        # The stream must be gone from the registry now, not lingering
+        # until a 'done' that the consumer never reads.
+        with srv._streams_lock:
+            assert stream_id not in srv._streams
+
+    def test_stream_request_has_finite_read_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The streaming httpx request uses a finite (non-None) read timeout.
+
+        ``read=None`` would let a wedged engine block ``iter_text()``
+        forever, never enqueueing 'error'/'done', so the JS side
+        re-polls indefinitely. The read timeout must mirror the
+        non-streaming path's finite bound.
+        """
+        import httpx
+
+        calls = self._patch_httpx_stream(monkeypatch, chunks=[])
+        srv = self._server()
+        srv._dispatch_line(
+            json.dumps(
+                {
+                    "id": 1,
+                    "method": "proxy_stream_open",
+                    "params": {
+                        "url": "https://example.test/x",
+                        "method": "POST",
+                        "headers": {},
+                        "body": None,
+                    },
+                }
+            )
+        )
+        # Wait for the worker thread to issue the httpx.stream call.
+        for _ in range(50):
+            if calls:
                 break
-        types = [e["type"] for e in events]
-        assert "error" in types
-        assert types[-1] == "done"
-        err = next(e for e in events if e["type"] == "error")
-        assert "connection refused" in err["message"]
+            time.sleep(0.01)
+        assert len(calls) == 1
+        timeout = calls[0]["timeout"]
+        assert isinstance(timeout, httpx.Timeout)
+        # The read timeout must be finite, not None.
+        assert timeout.read is not None
+        assert timeout.read == pytest.approx(300.0)
 
 
 @pytest.mark.unit

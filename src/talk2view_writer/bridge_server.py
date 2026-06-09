@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import queue
+import shutil
 import socket
 import tempfile
 import threading
@@ -98,6 +99,7 @@ class BridgeServer:
     def __init__(self, ctx: XComponentContext) -> None:
         self.ctx = ctx
         self.socket_path: str | None = None
+        self._tmpdir: str | None = None
         self._sock: socket.socket | None = None
         self._accept_thread: threading.Thread | None = None
         self._conn_thread: threading.Thread | None = None
@@ -121,8 +123,8 @@ class BridgeServer:
         if self.socket_path is not None:
             raise RuntimeError("BridgeServer.start called twice")
 
-        tmpdir = tempfile.mkdtemp(prefix="talk2view-bridge-")
-        self.socket_path = os.path.join(tmpdir, "sock")
+        self._tmpdir = tempfile.mkdtemp(prefix="talk2view-bridge-")
+        self.socket_path = os.path.join(self._tmpdir, "sock")
         self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._sock.bind(self.socket_path)
         os.chmod(self.socket_path, 0o600)
@@ -140,7 +142,7 @@ class BridgeServer:
         return self.socket_path
 
     def stop(self) -> None:
-        """Shut down the server and remove the socket file."""
+        """Shut down the server, remove the socket file and its tempdir."""
         logger.info("BridgeServer.stop: shutting down")
         self._stop.set()
         if self._sock is not None:
@@ -154,6 +156,16 @@ class BridgeServer:
             except OSError:
                 logger.exception(
                     "BridgeServer.stop: unlink %s failed", self.socket_path
+                )
+        # Remove the per-instance tempdir created in start(). Unlinking
+        # only the socket above would leave an empty
+        # /tmp/talk2view-bridge-XXXX/ dir behind on every run.
+        if self._tmpdir is not None and os.path.exists(self._tmpdir):
+            try:
+                shutil.rmtree(self._tmpdir)
+            except OSError:
+                logger.exception(
+                    "BridgeServer.stop: rmtree %s failed", self._tmpdir
                 )
 
     # ----- Internals ------------------------------------------------------
@@ -640,7 +652,14 @@ class BridgeServer:
                     url,
                     headers=clean_headers,
                     content=content,
-                    timeout=httpx.Timeout(30.0, read=None),
+                    # Finite read timeout mirrors ``_proxy_fetch`` (300 s
+                    # for slow SSE / engine-thinking reads). ``read=None``
+                    # would let a wedged engine block ``iter_text()``
+                    # forever — never enqueueing "error"/"done", so the JS
+                    # side re-polls ``q.get`` timeouts indefinitely.
+                    timeout=httpx.Timeout(
+                        connect=30.0, read=300.0, write=30.0, pool=30.0
+                    ),
                     follow_redirects=True,
                 ) as resp:
                     ttfb_ms = monotonic_ms(req_start)
@@ -745,7 +764,12 @@ class BridgeServer:
             stream_id=stream_id[:8],
             event=event.get("type"),
         )
-        if event.get("type") == "done":
+        # Drop the registry entry on the stream's terminal event. The
+        # worker enqueues "error" *then* "done" on failure, but the JS
+        # consumer stops draining after "error" — so the trailing
+        # "done" never arrives and the entry would leak forever if we
+        # only popped on "done". Pop on either terminal type.
+        if event.get("type") in ("done", "error"):
             with self._streams_lock:
                 self._streams.pop(stream_id, None)
         return event
