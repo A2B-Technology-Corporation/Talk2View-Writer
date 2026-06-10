@@ -469,6 +469,7 @@ def main() -> None:
     # button. Each patch self-guards by importing its own backend module,
     # so exactly one applies per OS and the others are no-ops (ADR-0041).
     _patch_webkitgtk_media_permission()  # Linux / WebKitGTK
+    _patch_cocoa_media_permission()  # macOS / WKWebView
     # Companion-window integration (ADR-0039): brand the GTK process as
     # "Talk2View" and (X11 only) make the window transient-for LO. Both
     # no-op on non-GTK platforms / Wayland.
@@ -936,6 +937,87 @@ def _patch_webkitgtk_media_permission() -> None:
     gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
     gtk_backend.BrowserView._t2v_media_patched = True  # type: ignore[attr-defined]
     logger.info("WebKitGTK media patch: BrowserView.__init__ wrapped")
+
+
+def _patch_cocoa_media_permission() -> None:
+    """Grant getUserMedia on macOS WKWebView via the WKUIDelegate callback.
+
+    On macOS 12+, WKWebView asks its ``WKUIDelegate`` to decide capture
+    permission through
+    ``webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:``;
+    if the delegate doesn't implement it, capture is denied. pywebview's
+    Cocoa backend uses ``BrowserView.BrowserDelegate`` (an ``NSObject``)
+    as the UI delegate but implements no media method. We subclass that
+    delegate to add the method (granting), then point the backend's
+    nested-class attribute at our subclass so pywebview instantiates it —
+    inheriting every existing delegate method unchanged.
+
+    NOTE: this is necessary but not always sufficient on macOS — WKWebView
+    also requires the *host* process (LibreOffice) to carry an
+    ``NSMicrophoneUsageDescription`` and the user's one-time TCC consent,
+    neither of which an ``.oxt`` can inject. Untested pre-release; see
+    docs/investigations.md #58. No-op off macOS (cocoa backend not
+    importable).
+    """
+    try:
+        from webview.platforms import cocoa as cocoa_backend
+    except ImportError:
+        logger.info(
+            "Cocoa media patch: pywebview.platforms.cocoa not importable — "
+            "assuming non-macOS backend; skipping"
+        )
+        return
+
+    if getattr(cocoa_backend.BrowserView, "_t2v_media_patched", False):
+        return
+
+    try:
+        import objc  # type: ignore[import-not-found]
+
+        base_delegate = cocoa_backend.BrowserView.BrowserDelegate
+
+        def _decide_media_capture(
+            self: Any,
+            _webview: Any,
+            _origin: Any,
+            _frame: Any,
+            _type: Any,
+            decision_handler: Any,
+        ) -> None:
+            # WKPermissionDecisionGrant == 1 (WKPermissionDecision is an
+            # NSInteger enum: prompt=0, grant=1, deny=2). Passing the raw
+            # int avoids importing the WebKit framework for one constant.
+            decision_handler(1)
+            logger.info("Cocoa media patch: granted WKWebView media capture")
+
+        # Explicit Obj-C type signature (untestable here, so be defensive):
+        # void return; self/_cmd; webView, origin, frame, type(q=NSInteger),
+        # decisionHandler(@?=block).
+        media_selector = objc.selector(_decide_media_capture, signature=b"v@:@@@q@?")
+
+        # The macOS 12+ WKUIDelegate selector, split to stay under the line
+        # limit: webView:requestMediaCapturePermissionForOrigin:
+        # initiatedByFrame:type:decisionHandler:
+        sel_name = (
+            "webView_requestMediaCapturePermissionForOrigin"
+            "_initiatedByFrame_type_decisionHandler_"
+        )
+        delegate_cls = type(
+            "_T2VMediaBrowserDelegate", (base_delegate,), {sel_name: media_selector}
+        )
+        cocoa_backend.BrowserView.BrowserDelegate = delegate_cls  # type: ignore[assignment,misc]
+        cocoa_backend.BrowserView._t2v_media_patched = True  # type: ignore[attr-defined]
+        logger.info(
+            "Cocoa media patch: BrowserDelegate subclassed with "
+            "requestMediaCapturePermission grant"
+        )
+    except Exception:
+        logger.exception(
+            "Cocoa media patch: installing the media-capture delegate raised "
+            "— the webview still opens but the SDK voice button may fail "
+            "(also requires LibreOffice's own NSMicrophoneUsageDescription "
+            "+ TCC consent)"
+        )
 
 
 def _install_focus_signal_handler(webview_module: Any) -> None:
