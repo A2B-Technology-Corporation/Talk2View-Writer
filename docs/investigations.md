@@ -2211,3 +2211,43 @@ When a web feature "silently doesn't work" in an embedded view, suspect the host
 permission bridge before the web code. `NotAllowedError` (permission) vs
 `TypeError`/`navigator.mediaDevices===undefined` (insecure context) vs
 `NotFoundError` (no device) are the three distinguishable failure modes.
+
+## #59 — Speech-to-text upload 422s: the bridge proxy never handled FormData bodies (FIXED 2026-06-10)
+
+**What:** Right after the mic-permission fix (#58) let the SDK actually record
+audio, transcription failed: `POST /v1/audio/transcriptions` returned `422
+Unprocessable Content` with `{"detail":[{"loc":["body","file"]…},{"loc":
+["body","model"]…}]}` ("Field required"). The chat UI surfaced "Transcription
+failed: T2VError: Request failed".
+
+**Where:** the webview→Python fetch proxy. `src/web/src/bridge.ts::_bodyToString`
+and `bridge_server.py::_proxy_fetch`.
+
+**Why:** the SDK posts the audio as `multipart/form-data` (a `file` blob + a
+`model` field). bridge.ts's `_bodyToString` only handled string / URLSearchParams
+/ Blob / ArrayBuffer; for a `FormData` body it fell through to `String(b)`,
+which yields the literal `"[object FormData]"` (the log's `body_len=17`). So the
+request that reached the engine had no `file`/`model` parts and no
+`Content-Type` boundary → 422. Every other request worked because they are JSON
+strings; transcription is the *only* FormData caller, so it only surfaced once
+the mic could record.
+
+**Fix:** teach both ends of the proxy about multipart. (1) `_bodyToString`
+detects `FormData`, walks its entries, base64-encodes file blobs (chunked, to
+avoid a call-stack overflow on large audio), and returns a sentinel JSON
+envelope `{"__t2v_multipart__": true, "fields": [...], "files":
+[{name,filename,type,b64}]}`. (2) `_proxy_fetch` decodes that envelope
+(`_decode_multipart_envelope`, guarded by a cheap substring check so ordinary
+JSON bodies are never parsed) and rebuilds a real request via httpx
+`data=`/`files=`, **dropping any client `Content-Type`** so httpx generates the
+`multipart/form-data; boundary=…` header itself. Tests:
+`tests/unit/test_proxy_fetch_multipart.py` (envelope decode round-trip +
+`_proxy_fetch` passes `data`/`files` and strips content-type; a JSON body still
+takes the `content=` path).
+
+**Lesson:** a `fetch`→RPC proxy must enumerate *every* body type the wrapped
+client can send, not just the common one. A silent `String()` fallback turns an
+unhandled `FormData`/`Blob`/`ReadableStream` into a plausible-looking but empty
+request that fails far downstream (a 422 from the server), nowhere near the
+`String()` that caused it. The `[fetch] unrecognised body type …` warning we'd
+left in was the breadcrumb that located it instantly.

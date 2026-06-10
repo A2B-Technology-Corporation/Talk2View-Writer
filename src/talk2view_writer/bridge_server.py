@@ -30,6 +30,7 @@ yet.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import errno
 import json
@@ -91,6 +92,60 @@ _MVP_TOOL_NAMES: tuple[str, ...] = (
     # Preferences
     "manage_preferences",
 )
+
+# Sentinel key bridge.ts puts on a serialised FormData body (see
+# src/web/src/bridge.ts::_bodyToString). The webview can't send raw
+# multipart over the JSON socket, so it encodes the fields + base64'd
+# file blobs into this envelope and _proxy_fetch rebuilds a real
+# multipart request from it. See docs/investigations.md #59.
+_MULTIPART_SENTINEL = "__t2v_multipart__"
+
+
+def _decode_multipart_envelope(
+    body: Any,
+) -> tuple[dict[str, str], list[tuple[str, tuple[str, bytes, str]]]] | None:
+    """Decode bridge.ts's FormData envelope into httpx ``(data, files)``.
+
+    Returns ``None`` for an ordinary (JSON-string / None) body so the
+    caller takes the normal ``content=`` path — the cheap substring guard
+    means non-multipart bodies are never even JSON-parsed.
+
+    The envelope shape (produced by ``_bodyToString``)::
+
+        {"__t2v_multipart__": true,
+         "fields": [{"name": "model", "value": "..."}],
+         "files":  [{"name": "file", "filename": "audio.webm",
+                     "type": "audio/webm", "b64": "..."}]}
+    """
+    if not isinstance(body, str) or _MULTIPART_SENTINEL not in body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or parsed.get(_MULTIPART_SENTINEL) is not True:
+        return None
+
+    data: dict[str, str] = {
+        str(field["name"]): str(field["value"])
+        for field in parsed.get("fields", [])
+        if isinstance(field, dict) and "name" in field
+    }
+    files: list[tuple[str, tuple[str, bytes, str]]] = []
+    for f in parsed.get("files", []):
+        if not isinstance(f, dict) or "name" not in f or "b64" not in f:
+            continue
+        files.append(
+            (
+                str(f["name"]),
+                (
+                    str(f.get("filename") or "blob"),
+                    base64.b64decode(f["b64"]),
+                    str(f.get("type") or "application/octet-stream"),
+                ),
+            )
+        )
+    return data, files
 
 
 class BridgeServer:
@@ -517,24 +572,49 @@ class BridgeServer:
         # ints / bools from JSON.
         clean_headers = {str(k): str(v) for k, v in headers.items()}
 
-        if body is None:
-            content: Any = None
-        elif isinstance(body, str):
-            content = body.encode("utf-8")
-        elif isinstance(body, (bytes, bytearray)):
-            content = bytes(body)
+        # The SDK's speech-to-text upload sends multipart/form-data (an audio
+        # ``file`` blob + a ``model`` field). bridge.ts can't put raw FormData
+        # over the JSON socket, so it serialises a sentinel envelope; rebuild a
+        # real multipart request so httpx sets the boundary content-type
+        # itself (investigations #59).
+        multipart = _decode_multipart_envelope(body)
+        if multipart is not None:
+            mp_data, mp_files = multipart
+            # Drop any client-supplied content-type so httpx generates the
+            # multipart boundary; keeping it would corrupt the parse.
+            request_kwargs: dict[str, Any] = {
+                "headers": {
+                    k: v for k, v in clean_headers.items() if k.lower() != "content-type"
+                },
+                "data": mp_data,
+                "files": mp_files,
+            }
+            logger.info(
+                "proxy_fetch: %s %s (multipart: %d field(s), %d file(s))",
+                method,
+                url,
+                len(mp_data),
+                len(mp_files),
+            )
         else:
-            # JSON-shaped body (dict/list) — re-serialise so the
-            # exact bytes hit the wire.
-            content = json.dumps(body).encode("utf-8")
-
-        logger.info(
-            "proxy_fetch: %s %s (header_count=%d body_len=%s)",
-            method,
-            url,
-            len(clean_headers),
-            len(content) if content is not None else None,
-        )
+            if body is None:
+                content: Any = None
+            elif isinstance(body, str):
+                content = body.encode("utf-8")
+            elif isinstance(body, (bytes, bytearray)):
+                content = bytes(body)
+            else:
+                # JSON-shaped body (dict/list) — re-serialise so the
+                # exact bytes hit the wire.
+                content = json.dumps(body).encode("utf-8")
+            request_kwargs = {"headers": clean_headers, "content": content}
+            logger.info(
+                "proxy_fetch: %s %s (header_count=%d body_len=%s)",
+                method,
+                url,
+                len(clean_headers),
+                len(content) if content is not None else None,
+            )
         # /resume can take 60-120 s when the engine runs the next LLM
         # turn on a tool result (multi-step plans + slow models). Pre-2026-05-25
         # this was 30 s which surfaced as ``httpx.ReadTimeout`` mid-conversation
@@ -547,8 +627,7 @@ class BridgeServer:
                 resp = client.request(
                     method=method,
                     url=url,
-                    headers=clean_headers,
-                    content=content,
+                    **request_kwargs,
                 )
         except httpx.RequestError as exc:
             logger.exception(
