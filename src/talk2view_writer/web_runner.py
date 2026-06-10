@@ -23,6 +23,7 @@ bundled ``webview`` package are importable.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -464,6 +465,12 @@ def main() -> None:
     import webview
 
     _patch_webkitgtk_cors_settings()
+    # Grant microphone (getUserMedia) for the SDK voice / speech-to-text
+    # button. Each patch self-guards by importing its own backend module,
+    # so exactly one applies per OS and the others are no-ops (ADR-0041).
+    _patch_webkitgtk_media_permission()  # Linux / WebKitGTK
+    _patch_cocoa_media_permission()  # macOS / WKWebView
+    _patch_edgechromium_media_permission()  # Windows / WebView2
     # Companion-window integration (ADR-0039): brand the GTK process as
     # "Talk2View" and (X11 only) make the window transient-for LO. Both
     # no-op on non-GTK platforms / Wayland.
@@ -832,6 +839,244 @@ def _patch_webkitgtk_cors_settings() -> None:
     gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
     gtk_backend.BrowserView._t2v_cors_patched = True  # type: ignore[attr-defined]
     logger.info("WebKitGTK patch: BrowserView.__init__ wrapped")
+
+
+# ---------------------------------------------------------------------------
+# Microphone / getUserMedia permission (ADR-0041)
+# ---------------------------------------------------------------------------
+#
+# The Talk2View SDK's voice button calls
+# ``navigator.mediaDevices.getUserMedia({audio: true})``. Every embedded
+# webview engine refuses that by default unless the host app explicitly
+# grants the capture permission; pywebview's backends don't, so the SDK
+# fails with "NotAllowedError" until we splice a grant in. The three
+# patches below cover WebKitGTK / WKWebView / WebView2; each is a no-op on
+# the wrong OS because its backend module isn't importable there.
+
+# Class names (no ``Webkit`` prefix under PyGObject) of the WebKitGTK
+# permission-request subclasses we grant: getUserMedia raises a
+# UserMedia request; enumerateDevices a DeviceInfo request. Matched by
+# name so this stays importable without ``gi`` (the venv has no gi — the
+# webview runs under system Python).
+_GRANTED_PERMISSION_REQUESTS = frozenset(
+    {
+        "WebKitUserMediaPermissionRequest",
+        "UserMediaPermissionRequest",
+        "WebKitDeviceInfoPermissionRequest",
+        "DeviceInfoPermissionRequest",
+    }
+)
+
+
+def _grant_media_permission(_webview: Any, request: Any) -> bool:
+    """WebKitGTK ``permission-request`` handler — allow mic / device-info.
+
+    Returns ``True`` (request handled, stop WebKit's default-deny
+    fall-through) for the media-capture / device-enumeration requests,
+    ``False`` for anything else so WebKit applies its own per-class
+    default. Duck-typed by class name so this module imports cleanly
+    without PyGObject. Shared with the CI check in
+    ``tests/integration/webkit_media_permission_check.py``.
+    """
+    name = type(request).__name__
+    if name in _GRANTED_PERMISSION_REQUESTS:
+        request.allow()
+        logger.info("media patch: allowed %s", name)
+        return True
+    return False
+
+
+def _patch_webkitgtk_media_permission() -> None:
+    """Grant getUserMedia on WebKitGTK by handling ``permission-request``.
+
+    WebKitGTK fires ``WebKitWebView::permission-request`` with a
+    ``WebKitUserMediaPermissionRequest``; per its docs an *unhandled*
+    request is denied by default, so getUserMedia rejects with
+    ``NotAllowedError``. pywebview's GTK backend connects no such handler,
+    so we splice one in (same monkey-patch style as the CORS patch).
+    Pure WebKit — no UNO, so no UIThreadDispatcher needed.
+
+    No-op on macOS / Windows (``webview.platforms.gtk`` not importable).
+    """
+    try:
+        from webview.platforms import gtk as gtk_backend
+    except ImportError:
+        logger.info(
+            "WebKitGTK media patch: pywebview.platforms.gtk not importable "
+            "on this platform — assuming non-Linux backend; skipping"
+        )
+        return
+
+    if getattr(gtk_backend.BrowserView, "_t2v_media_patched", False):
+        return
+
+    original_init = gtk_backend.BrowserView.__init__
+
+    def patched_init(self: Any, window: Any) -> None:
+        original_init(self, window)
+        try:
+            props = self.webview.get_settings().props
+            # Master gate (pywebview already sets this, but its default is
+            # version-dependent across WebKitGTK builds — set it ourselves).
+            props.enable_media_stream = True
+            with contextlib.suppress(AttributeError, TypeError):
+                # WebKitGTK 2.38+; documented to imply enable_media_stream.
+                # Absent on older builds — harmless to skip.
+                props.enable_webrtc = True
+            self.webview.connect("permission-request", _grant_media_permission)
+            logger.info(
+                "WebKitGTK media patch applied: enable_media_stream=True, "
+                "permission-request handler connected"
+            )
+        except Exception:
+            logger.exception(
+                "WebKitGTK media patch: enabling media-stream / connecting "
+                "permission-request raised — the webview still opens but the "
+                "SDK voice button will fail with NotAllowedError"
+            )
+
+    gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
+    gtk_backend.BrowserView._t2v_media_patched = True  # type: ignore[attr-defined]
+    logger.info("WebKitGTK media patch: BrowserView.__init__ wrapped")
+
+
+def _patch_cocoa_media_permission() -> None:
+    """Grant getUserMedia on macOS WKWebView via the WKUIDelegate callback.
+
+    On macOS 12+, WKWebView asks its ``WKUIDelegate`` to decide capture
+    permission through
+    ``webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:``;
+    if the delegate doesn't implement it, capture is denied. pywebview's
+    Cocoa backend uses ``BrowserView.BrowserDelegate`` (an ``NSObject``)
+    as the UI delegate but implements no media method. We subclass that
+    delegate to add the method (granting), then point the backend's
+    nested-class attribute at our subclass so pywebview instantiates it —
+    inheriting every existing delegate method unchanged.
+
+    NOTE: this is necessary but not always sufficient on macOS — WKWebView
+    also requires the *host* process (LibreOffice) to carry an
+    ``NSMicrophoneUsageDescription`` and the user's one-time TCC consent,
+    neither of which an ``.oxt`` can inject. Untested pre-release; see
+    docs/investigations.md #58. No-op off macOS (cocoa backend not
+    importable).
+    """
+    try:
+        from webview.platforms import cocoa as cocoa_backend
+    except ImportError:
+        logger.info(
+            "Cocoa media patch: pywebview.platforms.cocoa not importable — "
+            "assuming non-macOS backend; skipping"
+        )
+        return
+
+    if getattr(cocoa_backend.BrowserView, "_t2v_media_patched", False):
+        return
+
+    try:
+        import objc  # type: ignore[import-not-found]
+
+        base_delegate = cocoa_backend.BrowserView.BrowserDelegate
+
+        def _decide_media_capture(
+            self: Any,
+            _webview: Any,
+            _origin: Any,
+            _frame: Any,
+            _type: Any,
+            decision_handler: Any,
+        ) -> None:
+            # WKPermissionDecisionGrant == 1 (WKPermissionDecision is an
+            # NSInteger enum: prompt=0, grant=1, deny=2). Passing the raw
+            # int avoids importing the WebKit framework for one constant.
+            decision_handler(1)
+            logger.info("Cocoa media patch: granted WKWebView media capture")
+
+        # Explicit Obj-C type signature (untestable here, so be defensive):
+        # void return; self/_cmd; webView, origin, frame, type(q=NSInteger),
+        # decisionHandler(@?=block).
+        media_selector = objc.selector(_decide_media_capture, signature=b"v@:@@@q@?")
+
+        # The macOS 12+ WKUIDelegate selector, split to stay under the line
+        # limit: webView:requestMediaCapturePermissionForOrigin:
+        # initiatedByFrame:type:decisionHandler:
+        sel_name = (
+            "webView_requestMediaCapturePermissionForOrigin"
+            "_initiatedByFrame_type_decisionHandler_"
+        )
+        delegate_cls = type(
+            "_T2VMediaBrowserDelegate", (base_delegate,), {sel_name: media_selector}
+        )
+        cocoa_backend.BrowserView.BrowserDelegate = delegate_cls  # type: ignore[assignment,misc]
+        cocoa_backend.BrowserView._t2v_media_patched = True  # type: ignore[attr-defined]
+        logger.info(
+            "Cocoa media patch: BrowserDelegate subclassed with "
+            "requestMediaCapturePermission grant"
+        )
+    except Exception:
+        logger.exception(
+            "Cocoa media patch: installing the media-capture delegate raised "
+            "— the webview still opens but the SDK voice button may fail "
+            "(also requires LibreOffice's own NSMicrophoneUsageDescription "
+            "+ TCC consent)"
+        )
+
+
+def _patch_edgechromium_media_permission() -> None:
+    """Grant getUserMedia on Windows WebView2 via ``PermissionRequested``.
+
+    WebView2 raises ``CoreWebView2.PermissionRequested`` for mic / camera
+    and, if unhandled, defaults to deny. pywebview's EdgeChromium backend
+    subscribes no handler, so we wrap ``EdgeChrome.on_webview_ready``
+    (which runs once ``CoreWebView2`` exists) to attach one that grants
+    Microphone / Camera. Untested pre-release; see
+    docs/investigations.md #58. No-op off Windows (edgechromium backend
+    not importable).
+    """
+    try:
+        from webview.platforms import edgechromium as edge_backend
+    except ImportError:
+        logger.info(
+            "WebView2 media patch: pywebview.platforms.edgechromium not "
+            "importable — assuming non-Windows backend; skipping"
+        )
+        return
+
+    edge_chrome = edge_backend.EdgeChrome
+    if getattr(edge_chrome, "_t2v_media_patched", False):
+        return
+
+    original_ready = edge_chrome.on_webview_ready
+
+    def patched_ready(self: Any, sender: Any, args: Any) -> None:
+        original_ready(self, sender, args)
+        try:
+            from Microsoft.Web.WebView2.Core import (  # type: ignore[import-not-found]
+                CoreWebView2PermissionKind,
+                CoreWebView2PermissionState,
+            )
+
+            def _on_permission(_s: Any, event: Any) -> None:
+                if event.PermissionKind in (
+                    CoreWebView2PermissionKind.Microphone,
+                    CoreWebView2PermissionKind.Camera,
+                ):
+                    event.State = CoreWebView2PermissionState.Allow
+
+            self.webview.CoreWebView2.PermissionRequested += _on_permission
+            logger.info(
+                "WebView2 media patch: PermissionRequested handler attached "
+                "(grants Microphone / Camera)"
+            )
+        except Exception:
+            logger.exception(
+                "WebView2 media patch: attaching PermissionRequested handler "
+                "raised — the webview still opens but the SDK voice button "
+                "may fail with NotAllowedError"
+            )
+
+    edge_chrome.on_webview_ready = patched_ready  # type: ignore[method-assign]
+    edge_chrome._t2v_media_patched = True  # type: ignore[attr-defined]
+    logger.info("WebView2 media patch: EdgeChrome.on_webview_ready wrapped")
 
 
 def _install_focus_signal_handler(webview_module: Any) -> None:

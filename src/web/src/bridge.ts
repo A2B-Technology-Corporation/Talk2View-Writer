@@ -303,18 +303,51 @@ export function installHostLogging(): void {
     return out;
   }
 
+  function _arrayBufferToBase64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let binary = '';
+    // Chunk to avoid a call-stack overflow on large audio blobs.
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
   async function _bodyToString(init?: RequestInit): Promise<string | null> {
     const b = init?.body;
     if (b == null) return null;
     if (typeof b === 'string') return b;
     if (b instanceof URLSearchParams) return b.toString();
+    // FormData (the SDK's speech-to-text upload: an audio file + a model
+    // field). Raw multipart can't cross the JSON bridge, so serialise a
+    // sentinel envelope that bridge_server._proxy_fetch rebuilds into a real
+    // multipart request (investigations #59). Must precede the Blob branch.
+    if (typeof FormData !== 'undefined' && b instanceof FormData) {
+      const fields: Array<{ name: string; value: string }> = [];
+      const files: Array<{ name: string; filename: string; type: string; b64: string }> = [];
+      for (const [name, value] of (b as FormData).entries()) {
+        if (typeof value === 'string') {
+          fields.push({ name, value });
+        } else {
+          const buf = await value.arrayBuffer();
+          files.push({
+            name,
+            filename: (value as File).name || 'blob',
+            type: value.type || 'application/octet-stream',
+            b64: _arrayBufferToBase64(buf),
+          });
+        }
+      }
+      return JSON.stringify({ __t2v_multipart__: true, fields, files });
+    }
     if (b instanceof Blob) return await b.text();
     if (b instanceof ArrayBuffer) return new TextDecoder().decode(b);
     if (ArrayBuffer.isView(b)) {
       return new TextDecoder().decode(b as Uint8Array);
     }
-    // FormData / ReadableStream not commonly used by the SDK; fall back
-    // to String() and log a warning so we know if this hits.
+    // ReadableStream etc. — fall back to String() and log a warning so we
+    // know if this hits.
     logToHost(
       'warning',
       `[fetch] unrecognised body type ${b.constructor?.name ?? typeof b}; serialising via String()`,
