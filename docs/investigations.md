@@ -2154,3 +2154,60 @@ content via `FakeText.insertTextContent`. Live-LO render (arabic page →
 mirrors a dialog action, replicate the property the dialog sets — don't assume
 the freshly-created object inherits a sensible value. `SvxNumType(0)` being
 letters, not arabic, is the trap.
+
+## #58 — Microphone (getUserMedia) denied with NotAllowedError — webview default-deny, not OS/origin (FIXED Linux 2026-06-10; macOS/Windows wired, manual-verify)
+
+**What:** The SDK voice / speech-to-text button calls
+`navigator.mediaDevices.getUserMedia({audio: true})` and fails with
+`NotAllowedError: The request is not allowed by the user agent` ("Microphone
+access denied" in the SDK bundle). Reproduced live on WebKitGTK 2.52.3.
+
+**Where:** The chat UI in the pywebview subprocess (ADR-0030). The mic call is
+inside the compiled `@talk2view/sdk` bundle (not in our `src/web/`); the only
+lever is the host process `web_runner.py`.
+
+**Why (root cause, source-grounded + live-reproduced):** every embedded webview
+engine denies media capture by default unless the *host app* grants it, and
+pywebview grants it on **none** of its backends. On WebKitGTK, `getUserMedia`
+fires `WebKitWebView::permission-request` with a `WebKitUserMediaPermissionRequest`;
+the docs state an *unhandled* request is denied by default. pywebview connects
+no handler (and our code didn't either), so every request auto-denies.
+
+**Not the cause (each ruled out, mostly by live test):**
+- **Not the OS.** Linux unsandboxed reaches PulseAudio/PipeWire directly with no
+  per-app prompt; a missing device would be `NotFoundError`, not `NotAllowedError`.
+- **Not the `file://` origin.** `file://` *is* a secure context for getUserMedia
+  (`isSecureContext === true` confirmed live). An insecure origin makes
+  `navigator.mediaDevices` undefined and throws `TypeError` instead — we get
+  `NotAllowedError`, proving the request reached WebKit's permission layer.
+- **Not the SDK / web code.** The call is the standard API, used correctly.
+
+**Live proof:** a headless `WebKit2.WebView` loading a `file://` page and calling
+`getUserMedia({audio:true})` — *without* a `permission-request` handler →
+`NotAllowedError`; *with* the production handler connected → resolves with a live
+audio track (`tracks=1`). See `tests/integration/webkit_media_permission_check.py`.
+
+**Fix (ADR-0041):** three host-side per-OS grants in `web_runner.main()`, each
+guarded by its backend import so one applies per OS:
+- Linux/WebKitGTK: connect `permission-request` → `_grant_media_permission`
+  (duck-typed `allow()` of UserMedia/DeviceInfo requests) + set
+  `enable_media_stream`/`enable_webrtc`. **Verified live + in CI.**
+- macOS/WKWebView: subclass `BrowserView.BrowserDelegate` to add the
+  `requestMediaCapturePermission` WKUIDelegate grant. **Manual-verify post-release**
+  — also needs LibreOffice's own `NSMicrophoneUsageDescription` + TCC consent,
+  which an `.oxt` can't inject.
+- Windows/WebView2: wrap `EdgeChrome.on_webview_ready` to subscribe
+  `CoreWebView2.PermissionRequested` granting Microphone/Camera. **Manual-verify.**
+
+**Tests:** `tests/unit/test_web_runner_media.py` (all three patches vs fake
+backends) + `tests/integration/test_webkit_media_permission.py` (Linux gui_smoke,
+real `WebKit2.WebView` getUserMedia flip; CI best-effort provisions WebKit2 + a
+PulseAudio virtual mic, skips cleanly otherwise).
+
+**Lesson:** an embedded webview is not a browser with a permission prompt — it
+default-denies every capability (mic, camera, geolocation, clipboard) until the
+host wires a grant. pywebview's Qt/CEF backends already do; GTK/Cocoa/Edge don't.
+When a web feature "silently doesn't work" in an embedded view, suspect the host
+permission bridge before the web code. `NotAllowedError` (permission) vs
+`TypeError`/`navigator.mediaDevices===undefined` (insecure context) vs
+`NotFoundError` (no device) are the three distinguishable failure modes.
