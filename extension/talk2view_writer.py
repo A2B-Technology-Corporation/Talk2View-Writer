@@ -87,7 +87,7 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
     # `url.Protocol`.
     URL_PROTOCOL: str = "vnd.com.talk2view.writer:"
 
-    def __init__(self, ctx: "XComponentContext") -> None:
+    def __init__(self, ctx: XComponentContext) -> None:
         self.ctx = ctx
         logger.info(
             "Talk2ViewProtocolHandler constructed (ctx=%r) — "
@@ -103,7 +103,7 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
         url: object,  # com.sun.star.util.URL struct
         target_frame_name: str,
         search_flags: int,
-    ) -> "XDispatch | None":
+    ) -> XDispatch | None:
         """Return ``self`` if we own this URL scheme; else ``None``.
 
         LibreOffice calls this for every URL it tries to dispatch
@@ -124,8 +124,8 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
 
     def queryDispatches(  # noqa: N802 — UNO interface naming
         self,
-        descriptors: "tuple[object, ...]",
-    ) -> "tuple[XDispatch | None, ...]":
+        descriptors: tuple[object, ...],
+    ) -> tuple[XDispatch | None, ...]:
         """Batch form of queryDispatch — one entry per descriptor."""
         return tuple(
             self.queryDispatch(d.FeatureURL, d.FrameName, d.SearchFlags)
@@ -134,10 +134,10 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
 
     # ----- XDispatch -------------------------------------------------
 
-    def dispatch(  # noqa: N802 — UNO interface naming
+    def dispatch(
         self,
         url: object,
-        args: "tuple[PropertyValue, ...]",
+        args: tuple[PropertyValue, ...],
     ) -> None:
         """Execute the command encoded in the URL.
 
@@ -218,22 +218,63 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
     # ----- helpers ---------------------------------------------------
 
     def _show_error(self, title: str, message: str) -> None:
-        desktop = self.ctx.ServiceManager.createInstanceWithContext(
+        """Surface an error to the user via an ERRORBOX message box.
+
+        Runs inside :meth:`dispatch`'s ``except`` block, so it must
+        never raise — a failure here would re-enter the dispatcher with
+        a fresh exception that LibreOffice swallows silently, hiding the
+        original error from the user entirely.
+
+        When a document frame is focused, the box is parented over its
+        container window. When ``getCurrentFrame()`` returns ``None``
+        (e.g. the menu invoked with no focused document) — or the frame
+        yields no peer/toolkit — we fall back to a FRAMELESS box created
+        directly from the ``com.sun.star.awt.Toolkit`` service with a
+        ``None`` parent peer, mirroring :mod:`talk2view_writer.about`.
+        As a last resort, any toolkit failure is logged rather than
+        propagated.
+
+        Args:
+            title: Message box title.
+            message: Message box body text.
+        """
+        error_box = uno.Enum("com.sun.star.awt.MessageBoxType", "ERRORBOX")
+        smgr = self.ctx.ServiceManager
+        desktop = smgr.createInstanceWithContext(
             "com.sun.star.frame.Desktop", self.ctx
         )
         frame = desktop.getCurrentFrame()
-        if frame is None:
-            return
-        window = frame.getContainerWindow()
-        toolkit = window.getToolkit()
-        msgbox = toolkit.createMessageBox(
-            window,
-            uno.Enum("com.sun.star.awt.MessageBoxType", "ERRORBOX"),
-            1,  # OK button
-            title,
-            message,
-        )
-        msgbox.execute()
+
+        parent_peer = None
+        toolkit = None
+        if frame is not None:
+            window = frame.getContainerWindow()
+            if window is not None:
+                parent_peer = window
+                toolkit = window.getToolkit()
+
+        try:
+            if toolkit is None:
+                # No focused frame (or no peer/toolkit) — fall back to a
+                # frameless box from the Toolkit service, parent None.
+                toolkit = smgr.createInstanceWithContext(
+                    "com.sun.star.awt.Toolkit", self.ctx
+                )
+            msgbox = toolkit.createMessageBox(
+                parent_peer,
+                error_box,
+                1,  # OK button
+                title,
+                message,
+            )
+            msgbox.execute()
+        except Exception:
+            # _show_error must never raise (it runs inside dispatch()'s
+            # except block). Log the toolkit failure so the original
+            # error trail is preserved even when the UI box can't render.
+            logger.exception(
+                "_show_error: failed to display error box (title=%r)", title
+            )
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,13 @@ def _iter_annotations(doc: Any) -> list[Any]:
     them as ``com.sun.star.text.TextField.Annotation`` services. We
     filter by ``supportsService`` because ``getTextFields()`` also
     returns hyperlinks, page numbers, etc.
+
+    Every UNO ``XTextField`` implements ``XServiceInfo.supportsService``,
+    so the probe should not fail in practice. If a genuine fault does
+    occur (a broken / disposed UNO proxy, a marshalling error), we log
+    it via ``logger.exception`` — keeping enumeration resilient while
+    surfacing the fault instead of dropping annotations silently — and
+    skip the offending field.
     """
     out: list[Any] = []
     fields = doc.getTextFields()
@@ -77,7 +84,10 @@ def _iter_annotations(doc: Any) -> list[Any]:
             if f.supportsService("com.sun.star.text.TextField.Annotation"):
                 out.append(f)
         except Exception:
-            # Some text fields may not implement supportsService; skip them.
+            logger.exception(
+                "Skipping a text field whose supportsService() failed "
+                "during annotation enumeration"
+            )
             continue
     return out
 

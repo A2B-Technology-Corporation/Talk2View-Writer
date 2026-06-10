@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from talk2view_writer.uno_helpers.styles import (
+    canonical_style_name,
     libreoffice_to_word_style,
     word_to_libreoffice_style,
 )
@@ -14,7 +15,10 @@ from talk2view_writer.uno_helpers.styles import (
 @pytest.mark.parametrize(
     ("word_name", "lo_name"),
     [
-        ("Normal", "Default Paragraph Style"),
+        # 'Normal' maps to the NAMED 'Text body', not the pool default — the
+        # pool default's ParaStyleName write is rejected on LO 26.2 under
+        # track-changes / redline states (investigation #53).
+        ("Normal", "Text body"),
         ("Heading1", "Heading 1"),
         ("Heading2", "Heading 2"),
         ("Heading3", "Heading 3"),
@@ -33,6 +37,10 @@ def test_word_to_libreoffice_known_styles(word_name: str, lo_name: str) -> None:
     ("lo_name", "word_name"),
     [
         ("Default Paragraph Style", "Normal"),
+        # LibreOffice reports body paragraphs as 'Text body' (heading
+        # Next-Style cascade + our own 'Normal' write); fold it back to 'Normal'
+        # so get_document never surfaces a raw LO name the model can't re-send.
+        ("Text body", "Normal"),
         ("Heading 1", "Heading1"),
         ("Heading 2", "Heading2"),
         ("Title", "Title"),
@@ -43,6 +51,44 @@ def test_word_to_libreoffice_known_styles(word_name: str, lo_name: str) -> None:
 )
 def test_libreoffice_to_word_known_styles(lo_name: str, word_name: str) -> None:
     assert libreoffice_to_word_style(lo_name) == word_name
+
+
+@pytest.mark.unit
+def test_normal_round_trips_through_text_body() -> None:
+    """'Normal' → 'Text body' → 'Normal' is stable (no drift)."""
+    lo = word_to_libreoffice_style("Normal")
+    assert lo == "Text body"
+    assert libreoffice_to_word_style(lo) == "Normal"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("incoming", "expected"),
+    [
+        # Word names pass through unchanged.
+        ("Normal", "Normal"),
+        ("Heading2", "Heading2"),
+        ("Title", "Title"),
+        # LibreOffice display names the engine echoes back from get_document
+        # fold to the Word name (Writer #2 — avoids the wasted "unknown style"
+        # round-trip seen in the 2026-06-09 live log).
+        ("Text body", "Normal"),
+        ("Default Paragraph Style", "Normal"),
+        ("Standard", "Normal"),  # internal name of the pool default
+        ("Heading 2", "Heading2"),
+        ("Quotations", "Quote"),
+        # Case-insensitive on the LO side.
+        ("text body", "Normal"),
+        ("TEXT BODY", "Normal"),
+        ("heading 1", "Heading1"),
+        # Whitespace tolerated.
+        ("  Text body  ", "Normal"),
+        # Genuine custom styles pass through untouched.
+        ("MyCustom", "MyCustom"),
+    ],
+)
+def test_canonical_style_name(incoming: str, expected: str) -> None:
+    assert canonical_style_name(incoming) == expected
 
 
 @pytest.mark.unit

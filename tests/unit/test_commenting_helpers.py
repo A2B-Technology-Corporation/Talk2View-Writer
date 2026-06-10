@@ -8,6 +8,7 @@ helpers tested here probe the reply-chain grouping, ``Resolved`` /
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -77,12 +78,29 @@ class TestIterAnnotations:
         doc = _doc_with_text_fields(anns)
         assert _iter_annotations(doc) == anns
 
-    def test_swallows_supports_service_exceptions(self) -> None:
+    def test_logs_and_skips_supports_service_exceptions(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The commenting logger sets ``propagate=False`` (``_logging.py``),
+        # so attach caplog's handler directly to capture its records.
+        log = logging.getLogger("talk2view_writer.tools.commenting")
+        log.addHandler(caplog.handler)
+        log.setLevel(logging.ERROR)
+
         bad = MagicMock()
         bad.supportsService.side_effect = AttributeError("not implemented")
         good = _annotation_field("good")
         doc = _doc_with_text_fields([bad, good])
-        assert _iter_annotations(doc) == [good]
+
+        result = _iter_annotations(doc)
+
+        # The faulty field is skipped, valid annotations still returned.
+        assert result == [good]
+        # The fault is surfaced (logged with traceback), not silently dropped.
+        assert any(
+            "supportsService() failed" in rec.getMessage() and rec.exc_info is not None
+            for rec in caplog.records
+        )
 
 
 @pytest.mark.unit

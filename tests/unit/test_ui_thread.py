@@ -202,3 +202,52 @@ def test_run_sync_times_out_path_still_logs_timing(
     # No UI-thread exec happened, so exec is unknown -> 'na'.
     assert "exec_ms=na" in caplog.text
     assert "timed_out=True" in caplog.text
+
+
+@pytest.mark.unit
+def test_late_fire_after_timeout_does_not_run_wrapped_fn() -> None:
+    """A timed-out callback that fires LATE must not run the wrapped fn.
+
+    Regression: ``run_sync``'s timeout path used to unconditionally remove
+    the callback from ``_callbacks`` — the sole strong ref keeping the
+    still-queued ``XCallback`` alive. A late fire would then run the wrapped
+    UNO work after the caller had already given up (phantom write) or crash.
+
+    The cancellation-flag fix keeps the strong ref on timeout, marks the
+    callback cancelled, and has ``notify`` no-op + self-clean when it fires.
+    Here we capture the pending callback (without firing it), let ``run_sync``
+    time out, then fire it manually — the way LO's stuck event loop would
+    eventually do.
+    """
+    from talk2view_writer.ui_thread import UIThreadDispatcher, UIThreadTimeoutError
+
+    captured: list = []
+    ran = []
+
+    def capture_without_firing(callback: Any, data: Any) -> None:
+        # Mimic a stuck UI thread: the callback is queued but not run.
+        captured.append((callback, data))
+
+    ctx = _make_ctx(capture_without_firing)
+    dispatcher = UIThreadDispatcher(ctx)
+
+    def wrapped() -> str:
+        ran.append(True)
+        return "phantom"
+
+    # (a) run_sync raises the timeout error.
+    with pytest.raises(UIThreadTimeoutError):
+        dispatcher.run_sync(wrapped, timeout=0.05)
+
+    # The strong ref must survive the timeout — the callback is still pending.
+    assert len(dispatcher._callbacks) == 1
+    assert len(captured) == 1
+
+    # LO finally fires the long-queued callback.
+    callback, data = captured[0]
+    callback.notify(data)  # (d) must not raise
+
+    # (b) the late fire did NOT execute the wrapped function.
+    assert ran == []
+    # (c) the callback self-cleaned from _callbacks (no unbounded growth).
+    assert dispatcher._callbacks == []

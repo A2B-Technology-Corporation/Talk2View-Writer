@@ -58,15 +58,16 @@ steps:
           - penguin
         paragraph_style_at:
           # Title style on paragraph 0 (model may emit Title or
-          # Heading1 — both render as a title). Body paragraphs:
-          # "Standard" when model uses explicit style="Normal" or
-          # "Default Paragraph Style"; "Text body" when model inserts
-          # plain strings and LO applies the Title's next-style
-          # cascade. Both are valid body styles in LO.
+          # Heading1 — both render as a title). Body paragraphs read back
+          # as "Normal": Word "Normal" now maps to the named "Text body"
+          # (investigation #53/#56), and get_document folds "Text body"
+          # back through libreoffice_to_word_style -> "Normal" (reading.py).
+          # "Standard"/"Text body" are kept for older builds / explicit
+          # "Default Paragraph Style". All are valid body styles in LO.
           - { index: 0, style_in: ["Title", "Heading1"] }
-          - { index: 1, style_in: ["Standard", "Text body"] }
-          - { index: 2, style_in: ["Standard", "Text body"] }
-          - { index: 3, style_in: ["Standard", "Text body"] }
+          - { index: 1, style_in: ["Normal", "Standard", "Text body"] }
+          - { index: 2, style_in: ["Normal", "Standard", "Text body"] }
+          - { index: 3, style_in: ["Normal", "Standard", "Text body"] }
         paragraph_text_contains_at:
           - { index: 0, contains: "frosty march" }
       tool_calls:
@@ -109,7 +110,7 @@ steps:
       doc:
         exact_paragraphs: 5
         paragraph_style_at:
-          - { index: 4, style_in: ["Standard", "Text body"] }
+          - { index: 4, style_in: ["Normal", "Standard", "Text body"] }
       tool_calls:
         must_invoke:
           - insert_content

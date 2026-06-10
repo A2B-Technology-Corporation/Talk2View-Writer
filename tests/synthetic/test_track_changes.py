@@ -375,3 +375,91 @@ class TestEnvelopeOnFailure:
         # in finally returned us to the prior value. (Test the
         # round-trip; we don't care if observed contains [True, False].)
         del original
+
+
+class TestInsertParagraphStyleFirstOrdering:
+    """Regression for investigation #53 — the redline ParaStyleName fix.
+
+    ``_insert_paragraph_at_cursor`` must assign the paragraph style to the
+    still-empty paragraph BEFORE inserting its text, so the style write
+    never lands on a paragraph that already carries an insert-redline —
+    one of the states LibreOffice 26.2 rejects a ``ParaStyleName`` write in.
+    'Normal' now resolves to the NAMED 'Text body' (``word_to_libreoffice_
+    style``) rather than the pool default, which is the collection that gets
+    rejected; this test pins both the operation order AND that resolved name.
+
+    The synthetic document models insert loosely (insertString does not
+    write styles back to real paragraphs), so this asserts the OPERATION
+    ORDER directly with recording fakes: a styled block's ParaStyleName
+    must be set (to 'Text body') before its text is inserted. A revert to
+    insert-then-style flips the order and fails this test; a revert of the
+    'Normal' → 'Text body' mapping changes the recorded style name and also
+    fails it.
+    """
+
+    def test_style_is_applied_before_text_insert(self) -> None:
+        from talk2view_writer.tools.writing import _insert_paragraph_at_cursor
+
+        events: list[tuple[str, Any]] = []
+
+        class _RecCursor:
+            def __init__(self) -> None:
+                self._style: str | None = None
+
+            def getString(self) -> str:  # noqa: N802 — non-empty -> break inserted
+                return "anchor"
+
+            def getStart(self) -> _RecCursor:  # noqa: N802
+                return self
+
+            def gotoStartOfParagraph(self, expand: bool) -> bool:  # noqa: N802
+                return True
+
+            def gotoEndOfParagraph(self, expand: bool) -> bool:  # noqa: N802
+                return True
+
+            @property
+            def ParaStyleName(self) -> str | None:  # noqa: N802
+                return self._style
+
+            @ParaStyleName.setter
+            def ParaStyleName(self, value: str) -> None:  # noqa: N802
+                self._style = value
+                events.append(("style", value))
+
+        class _RecText:
+            def insertControlCharacter(  # noqa: N802
+                self, cur: Any, ch: Any, absorb: bool
+            ) -> None:
+                events.append(("break", None))
+
+            def insertString(  # noqa: N802
+                self, cur: Any, text: str, absorb: bool
+            ) -> None:
+                events.append(("insert", text))
+
+            def createTextCursorByRange(self, rng: Any) -> _RecCursor:  # noqa: N802
+                return _RecCursor()
+
+        class _RecDoc:
+            """Minimal doc so suspend_record_changes runs with redlining on."""
+
+            def __init__(self) -> None:
+                self._rec = True
+
+            def getPropertyValue(self, name: str) -> Any:  # noqa: N802
+                return self._rec if name == "RecordChanges" else None
+
+            def setPropertyValue(self, name: str, value: Any) -> None:  # noqa: N802
+                if name == "RecordChanges":
+                    self._rec = value
+
+        _insert_paragraph_at_cursor(
+            _RecText(), _RecCursor(), "the body text", style="Normal", doc=_RecDoc()
+        )
+
+        assert ("style", "Text body") in events, events
+        assert ("insert", "the body text") in events, events
+        assert events.index(("style", "Text body")) < events.index(
+            ("insert", "the body text")
+        ), f"style must be applied before the text insert: {events}"

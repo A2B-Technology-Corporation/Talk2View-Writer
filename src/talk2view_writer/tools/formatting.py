@@ -39,7 +39,11 @@ from talk2view_writer.tools.writing import (
     _apply_paragraph_format,
     _enumerate_paragraphs,
 )
-from talk2view_writer.uno_helpers.styles import word_to_libreoffice_style
+from talk2view_writer.uno_helpers.styles import (
+    canonical_style_name,
+    libreoffice_to_word_style,
+    word_to_libreoffice_style,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +109,12 @@ def _validate_format_fields(item: dict[str, Any]) -> dict[str, str] | None:
         return {
             "error": f'Invalid highlight color "{highlight}".',
             "recovery": f"Use one of: {', '.join(HIGHLIGHT_COLORS)}.",
+        }
+    underline_style = item.get("underline_style")
+    if isinstance(underline_style, str) and underline_style not in UNDERLINE_STYLE_UNO:
+        return {
+            "error": f'Invalid underline_style "{underline_style}".',
+            "recovery": f"Use one of: {', '.join(UNDERLINE_STYLE_UNO)}.",
         }
     return None
 
@@ -511,6 +521,12 @@ def format_paragraph(
                 "recovery": f"Include at least one of: {', '.join(_PARAGRAPH_FORMAT_KEYS)}.",
             }
         )
+    # Fold a LibreOffice display name the model echoed back from get_document
+    # ("Text body", "Heading 2") to its canonical Word name so it validates
+    # instead of 400ing; the downstream word_to_libreoffice_style call then
+    # re-maps it correctly.
+    if style is not None:
+        style = canonical_style_name(style)
     if style is not None and style not in VALID_STYLES:
         return json.dumps(
             {
@@ -645,11 +661,17 @@ def format_paragraph(
             right_indent=right_indent,
             first_line_indent=first_line_indent,
         )
-        # Best-effort flow properties.
+        # Best-effort flow properties. UNO ParagraphProperties semantics:
+        #   ParaSplit=False        → keep all LINES of this paragraph together
+        #                            (don't split it across a page break).
+        #   ParaKeepTogether=True  → keep this paragraph together with the
+        #                            NEXT one (keep-with-next).
+        # So keep_together drives ParaSplit (inverted) and keep_with_next
+        # drives ParaKeepTogether. ParaKeepWithNext is not a real UNO
+        # property — writing it silently no-ops on every build.
         for attr_name, value in (
-            ("ParaKeepTogether", keep_together),
             ("ParaSplit", None if keep_together is None else not keep_together),
-            ("ParaKeepWithNext", keep_with_next),
+            ("ParaKeepTogether", keep_with_next),
             ("BreakType", None if page_break_before is None else (4 if page_break_before else 0)),
         ):
             if value is None:
@@ -663,7 +685,13 @@ def format_paragraph(
                 "index": idx,
                 "success": True,
                 "text": preview(p.getString()),
-                "resulting_style": getattr(p, "ParaStyleName", "") or "",
+                # Report the Word-vocabulary name (e.g. 'Normal', 'Heading2'),
+                # consistent with get_document (reading.py), so the model never
+                # sees a raw LO display name like 'Text body' it would then
+                # re-send and get rejected (Writer #56).
+                "resulting_style": libreoffice_to_word_style(
+                    getattr(p, "ParaStyleName", "") or ""
+                ),
             }
         )
 
@@ -978,6 +1006,10 @@ def manage_list(
         rules = _build_numbering_rules(doc, list_type or "bullet", level)
         style_name = _try_resolve_list_style(doc, list_type or "")
 
+    # Per-paragraph outcomes — mirrors set_header_footer / insert_page_numbers
+    # so a list that could not be cleared surfaces success=False with a
+    # per-paragraph error instead of an unconditional success.
+    per_paragraph: list[dict[str, Any]] = []
     for idx in paragraph_indices:
         p = paragraphs[idx]
         with suspend_record_changes(doc):
@@ -990,16 +1022,38 @@ def manage_list(
                     p.NumberingLevel = level
                 except Exception:
                     logger.debug("NumberingLevel not settable on this build")
+                per_paragraph.append({"paragraph_index": idx, "success": True})
             else:
+                # The NumberingRules clear is load-bearing: it is what
+                # actually removes the list marker. If it fails the paragraph
+                # is still a list item, so the removal did NOT succeed and
+                # must not be reported as success.
                 try:
                     p.NumberingRules = None
-                except Exception:
-                    logger.debug("NumberingRules not clearable on this build")
+                except Exception as exc:
+                    logger.exception(
+                        "Could not clear NumberingRules on paragraph %d", idx
+                    )
+                    per_paragraph.append(
+                        {
+                            "paragraph_index": idx,
+                            "error": (
+                                f"Could not remove list from paragraph {idx}: {exc}"
+                            ),
+                            "recovery": (
+                                "The paragraph's numbering could not be cleared "
+                                "on this build; check for a tracked change or "
+                                "protected section, then retry."
+                            ),
+                        }
+                    )
+                    continue
                 p.NumberingIsNumber = False
                 try:
                     p.ParaStyleName = "Default Paragraph Style"
                 except Exception:
                     logger.debug("Default Paragraph Style not settable")
+                per_paragraph.append({"paragraph_index": idx, "success": True})
         if left_indent is not None:
             p.ParaLeftMargin = points_to_hmm(left_indent)
         if right_indent is not None:
@@ -1007,10 +1061,11 @@ def manage_list(
 
     return json.dumps(
         {
-            "success": True,
+            "success": all(r.get("success") for r in per_paragraph),
             "action": action,
             "list_type": list_type if action == "add" else None,
-            "paragraphs_affected": len(paragraph_indices),
+            "paragraphs_affected": sum(1 for r in per_paragraph if r.get("success")),
+            "results": per_paragraph,
             "level": level if action == "add" else None,
             "left_indent": left_indent,
             "right_indent": right_indent,

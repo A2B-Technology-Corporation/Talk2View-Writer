@@ -863,6 +863,10 @@ class FakeTextDocument(_Service):
             "ParagraphStyles": {
                 "Standard": _PropBag(),
                 "Default Paragraph Style": _PropBag(),
+                # The named body style real LO 26.2 ships and that 'Normal'
+                # resolves to (word_to_libreoffice_style); keep the fake in
+                # sync so format_paragraph(style="Normal") resolves here.
+                "Text body": _PropBag(),
                 "Heading 1": _PropBag(),
                 "Heading 2": _PropBag(),
                 "Heading 3": _PropBag(),

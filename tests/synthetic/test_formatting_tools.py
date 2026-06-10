@@ -93,6 +93,42 @@ class TestFormatText:
         result = json.loads(format_text(query="hello", color="not-a-color"))
         assert "error" in result
 
+    def test_invalid_underline_style_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """An unsupported underline_style must be rejected, not silently dropped.
+
+        Pre-fix, ``_apply_inline_formatting`` only applied the style when it
+        was in ``UNDERLINE_STYLE_UNO``; an unrecognised value (e.g. "wavy"
+        instead of the supported "wave") was ignored while the tool still
+        reported success echoing the bogus value. The validator now rejects
+        it up front with a recovery listing the valid styles.
+        """
+        from talk2view_writer.tools._constants import UNDERLINE_STYLE_UNO
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("hello world"))
+        result = json.loads(format_text(query="hello", underline_style="wavy"))
+        assert "error" in result
+        assert "wavy" in result["error"]
+        assert "success" not in result
+        # Recovery enumerates the supported styles.
+        assert "wave" in result["recovery"]
+        for valid in UNDERLINE_STYLE_UNO:
+            assert valid in result["recovery"]
+
+    def test_valid_underline_style_still_applies(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("hello world"))
+        result = json.loads(format_text(query="hello", underline_style="wave"))
+        assert "error" not in result, result
+        assert result.get("success") is True
+
     def test_format_by_query_finds_and_applies(
         self,
         patched_extension: object,
@@ -221,6 +257,92 @@ class TestFormatParagraph:
         assert result.get("success") is True
         assert result["resulting_style"] in ("Heading 1", "Heading1")
 
+    def test_libreoffice_display_style_name_is_accepted(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """format_paragraph accepts an LO display name, not just Word names.
+
+        Regression for Writer #2: the model echoes 'Heading 2' / 'Text body'
+        back from get_document; these must normalise to the Word vocabulary
+        and apply, instead of failing the schema check with "Unknown style".
+        Pre-fix, 'Heading 2' (with the space) was not in VALID_STYLES and was
+        rejected outright.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("head me"))
+        result = json.loads(
+            format_paragraph(paragraph_index=1, style="Heading 2")
+        )
+        assert "error" not in result, result
+        assert result.get("success") is True
+        assert result["resulting_style"] in ("Heading 2", "Heading2")
+
+    def test_normal_resolves_to_text_body(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """style='Normal' lands on the named 'Text body', not the pool default.
+
+        Regression for investigation #53: 'Normal' must map to a NAMED style
+        so the ParaStyleName write survives the LO 26.2 pool-default rejection.
+        Also pins Writer #56 — resulting_style is reported in the Word
+        vocabulary ('Normal'), consistent with get_document, not the raw LO
+        name. The two assertions have distinct teeth: the raw ParaStyleName
+        proves the named mapping; resulting_style proves the read-back fold.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("body me"))
+        result = json.loads(
+            format_paragraph(paragraph_index=1, style="Normal")
+        )
+        assert "error" not in result, result
+        assert result.get("success") is True
+        # Raw UNO style landed on the NAMED 'Text body' (mapping has teeth).
+        assert synthetic_doc._text._paragraphs[1].ParaStyleName == "Text body"
+        # Reported style is folded to the Word vocabulary (cross-tool parity).
+        assert result["resulting_style"] == "Normal"
+
+    def test_keep_together_drives_only_para_split(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """keep_together = keep-lines-together → ParaSplit False, NOT keep-with-next.
+
+        UNO semantics: ``ParaSplit=False`` keeps all LINES of the paragraph
+        together (no page-break split), while ``ParaKeepTogether=True`` is
+        keep-with-NEXT. Pre-fix the loop wrote ``ParaKeepTogether =
+        keep_together`` (wrong axis) and a bogus ``ParaKeepWithNext``. A
+        keep_together request must touch only ParaSplit.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("hold my lines"))
+        para = synthetic_doc._text._paragraphs[1]
+        json.loads(format_paragraph(paragraph_index=1, keep_together=True))
+        assert para.getPropertyValue("ParaSplit") is False
+        # keep_with_next was not requested → ParaKeepTogether untouched.
+        assert para.getPropertyValue("ParaKeepTogether") is None
+
+    def test_keep_with_next_drives_para_keep_together(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """keep_with_next = keep-with-NEXT → ParaKeepTogether True.
+
+        And it must NOT touch ParaSplit (which is the keep-lines axis).
+        ``ParaKeepWithNext`` is not a real UNO property and must never be
+        written.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("stay with next"))
+        para = synthetic_doc._text._paragraphs[1]
+        json.loads(format_paragraph(paragraph_index=1, keep_with_next=True))
+        assert para.getPropertyValue("ParaKeepTogether") is True
+        # keep_together was not requested → ParaSplit untouched.
+        assert para.getPropertyValue("ParaSplit") is None
+        # The non-existent UNO property must never be written.
+        assert para.getPropertyValue("ParaKeepWithNext") is None
+
 
 class TestManageList:
     def test_empty_paragraph_indices_returns_error(
@@ -336,9 +458,39 @@ class TestManageList:
         manage_list(action="add", list_type="bullet", paragraph_indices=[1])
         result = json.loads(manage_list(action="remove", paragraph_indices=[1]))
         assert "error" not in result, result
+        assert result["success"] is True
         para = synthetic_doc._text._paragraphs[1]
         assert para.getPropertyValue("NumberingRules") is None
         assert para.getPropertyValue("NumberingIsNumber") is False
+
+    def test_remove_reports_failure_when_clear_raises(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A swallowed NumberingRules clear must surface success=False.
+
+        Pre-fix, ``p.NumberingRules = None`` was wrapped in
+        ``except Exception: logger.debug(...)`` and the tool still returned
+        ``{"success": True, ...}`` unconditionally — a false success when the
+        load-bearing clear was swallowed. The result must now reflect the
+        per-paragraph failure (success=False + a per-paragraph error),
+        consistent with how set_header_footer reports per-section outcomes.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        class _UnclearableParagraph(FakeParagraph):
+            """Paragraph whose NumberingRules clear raises (as real LO can)."""
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if name == "NumberingRules" and value is None:
+                    raise RuntimeError("NumberingRules clear rejected")
+                super().__setattr__(name, value)
+
+        synthetic_doc._text._paragraphs.append(_UnclearableParagraph("item one"))
+        result = json.loads(manage_list(action="remove", paragraph_indices=[1]))
+        assert result["success"] is False
+        assert result["paragraphs_affected"] == 0
+        assert "error" in result["results"][0]
+        assert result["results"][0]["paragraph_index"] == 1
 
     def test_number_submits_only_minimal_props(
         self, patched_extension: object, synthetic_doc: FakeTextDocument

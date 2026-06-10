@@ -1887,3 +1887,213 @@ out-of-range. Synthetic ParagraphStyles gained `"Default Paragraph Style"`
 registered styles varies by build and by track-changes state. The codebase
 already knew this in `writing.py`; the fix was to make `format_paragraph`
 consistent.
+
+## #53 — `insert_content` body paragraphs degraded to 'Text body' under track changes (FIXED 2026-06-09; root-cause revised + real fix 2026-06-09, see UPDATE)
+
+**What:** In the 2026-06-09 live guided-tour log, every body paragraph that
+`insert_content` styled as Word `Normal` (→ LibreOffice `Default Paragraph
+Style`) hit a message-less `com.sun.star.uno.RuntimeException` on the
+`ParaStyleName` write and silently degraded to `Text body`. Title / Subtitle /
+Heading 1 in the SAME call succeeded. The error was caught by the existing
+`try/except RuntimeException` in `_insert_paragraph_at_cursor`, so the story
+still rendered — but the body paragraphs carried the wrong collection.
+
+**Where:** `tools/writing.py:_insert_paragraph_at_cursor`. The track-changes
+envelope (`_base._run_with_track_changes`, ADR-0035) forces `RecordChanges=True`
+for every mutating tool, so each fresh `insertString` lands as an active
+insert-redline. The old order was: insert the text (redline forms), THEN set
+`ParaStyleName` under `suspend_record_changes`. Suspending `RecordChanges` only
+stops NEW redlines from forming; it cannot dissolve the one already on the node,
+and LO 26.2's `SwXParagraph::setPropertyValue` refuses a `ParaStyleName` change
+on a node whose content is inside a live insert-redline.
+
+**Why only the default style:** The rejection correlates with the collection
+TRANSITION, not the redline alone. A freshly-inserted redlined body node is
+already on the pool default (`Standard` / `Default Paragraph Style`); asking it
+to take that same pool-default collection back while a redline is live is the
+case LO rejects. Title / Subtitle / Heading 1 are DISTINCT named collections, so
+switching a redlined node to one of those is a clean swap LO permits — which is
+exactly why the headings in the same loop succeeded while every body (`Normal` →
+`Default Paragraph Style`; `NoSpacing` would fail identically) raised.
+
+**Why it matters:** `ai_track_changes_enabled` defaults True, so the envelope is
+on for almost every real edit — meaning almost every body paragraph the AI
+writes was silently getting the wrong style. The visible document looked
+plausible (`Text body` is a reasonable body style), which made it easy to miss.
+
+**Fix:** Style-first ordering. `_insert_paragraph_at_cursor` now assigns
+`ParaStyleName` to the still-EMPTY target paragraph (under
+`suspend_record_changes`) BEFORE `insertString`, so the style write lands on a
+node that carries no content-redline yet — accepted for the default AND named
+styles. The subsequent `insertString` still records the TEXT as the reviewable
+redline (ADR-0035 preserved). A skip-if-equal guard avoids re-asserting the pool
+default onto a paragraph that already inherited it (the one same-collection
+transition LO still rejects, e.g. consecutive body paragraphs). The existing
+`try/except RuntimeException` is kept as defence-in-depth. Regression guard:
+`test_track_changes.py::TestInsertParagraphStyleFirstOrdering` asserts the
+operation ORDER (style applied before the text insert) — the synthetic rig
+models insert loosely, so an order assertion has more teeth than a final-style
+assertion. Live soffice re-verification by the user is pending.
+
+**Lesson:** Under the track-changes envelope, set the paragraph collection
+BEFORE inserting content, never after — a redline cannot be re-styled once its
+content exists, and the failure is invisible because the degrade path is silent.
+This is the third LO-redline-vs-`ParaStyleName` trap after #50 and #52; the
+unifying rule is "style the empty node first, guard the write second."
+
+**UPDATE 2026-06-09 (live re-verify — root cause revised, real fix shipped):**
+The user re-ran the guided tour against the installed `.oxt` carrying the
+style-first fix. The log proved the fix above was **necessary but not
+sufficient** — the `ParaStyleName` rejection still fired **7×**, once per body
+block, and on two points the original "Why only the default style" theory was
+wrong:
+
+1. **It fires with `RecordChanges` OFF.** The failing `insert_content` ran with
+   the tool-level `track_changes=False` (the user had toggled
+   `ai_track_changes_enabled` off mid-session). So the rejection is **not**
+   purely "a live insert-redline on this node" — the trigger is broader (likely
+   residual unaccepted redlines elsewhere in the doc, and/or a blanket LO 26.2
+   constraint on writing the pool-default collection). Root cause is **not fully
+   isolated**; what IS robust across every observation is the next point.
+2. **It is the pool-default *collection* that is refused, not a same-collection
+   re-assert.** In the failing call the nodes carried `Heading 2`'s Next-Style
+   (`Text body`), and the rejected write was `… → Default Paragraph Style` — a
+   genuine transition, still refused. In the very same call, every
+   `… → Heading 2` write (a NAMED collection) succeeded. Named styles are
+   accepted; the pool default is not.
+
+**Real fix:** map Word `Normal` → the NAMED LibreOffice style **`Text body`**
+(not `Default Paragraph Style`) in `uno_helpers/styles.py::_WORD_TO_LO`. The
+named-style write survives the constraint that kills the pool default, so the
+7× errors stop and the body collection is correct by design rather than by the
+silent degrade path. `Text body` is also the style LO's heading Next-Style
+cascade already lands body paragraphs on, so the document is unchanged in the
+common heading+body case — only now it's deliberate. Style-first ordering, the
+`suspend_record_changes` wrap, the skip-if-equal guard, and the `try/except`
+fallback are all KEPT as defence-in-depth (the fallback's message no longer
+overclaims "track-changes redline constraint"). `NoSpacing` still maps to the
+pool default (no named "no spacing" style exists in stock LO) and will still hit
+the constraint under redline — it degrades gracefully and is rare.
+
+Regression guards: `test_style_translation.py` pins `Normal ↔ "Text body"`;
+`test_track_changes.py::…StyleFirstOrdering` now asserts the recorded style name
+is `"Text body"`; `test_formatting_tools.py::test_normal_resolves_to_text_body`
+pins `format_paragraph(style="Normal")` → `Text body`. Live soffice
+re-verification (7× errors gone) is still the user's final gate.
+
+**Revised lesson:** for body text under track changes, route `Normal` to a
+NAMED style — never the pool default. "Style the empty node first" still holds,
+but it is the *named-vs-pool-default* axis, not redline timing alone, that
+decides whether the `ParaStyleName` write is accepted.
+
+## #54 — Bridge race: SDK 0.10.0 fetches partner config before pywebview attaches `proxy_fetch` (FIXED 2026-06-09)
+
+**What:** After upgrading the bundled `@talk2view/sdk` to 0.10.0, the chat
+window logged `Failed to fetch partner config: NetworkError: ... i.proxy_fetch
+is not a function` three times at mount. Non-fatal (the turn still ran and the
+engine applies the partner system prompt server-side), but the client never
+loaded the partner config on first paint.
+
+**Where:** `src/web/src/bridge.ts:whenBridgeReady`. The patched `window.fetch`
+routes engine-host requests through `window.pywebview.api.proxy_fetch`, awaiting
+`whenBridgeReady()` first. But `whenBridgeReady` resolved as soon as
+`window.pywebview.api` was *truthy* — and pywebview attaches the api object a
+beat before its methods. SDK 0.10.0's `<Talk2View>` provider calls
+`usePartnerConfig` eagerly at mount (GET /v1/config), firing inside that narrow
+window; 0.5.1 fetched config later, after the bridge had settled, so the race
+never surfaced.
+
+**Why it matters:** Any proxied request issued in the first tens of ms after
+mount could see a partial bridge and throw. As the SDK moves more work to
+mount-time (single-flight `getConfig`, Platform #95), the window matters more.
+
+**Fix:** `whenBridgeReady` now polls until the methods we actually call are
+functions (`proxy_fetch`, `proxy_stream_open`, `proxy_stream_next`,
+`invoke_tool`), not merely until `window.pywebview.api` is truthy. An early
+proxied request now awaits the complete bridge instead of a partial one.
+
+**Lesson:** "bridge object exists" != "bridge is ready". Gate on the specific
+capabilities a caller needs — the host can inject the namespace and its methods
+in separate ticks, and every SDK bump can move work earlier into mount.
+
+## #55 — Engine `/resume` returns 404 "Session not found" after redeploy (in-memory session state) (NEW 2026-06-09, Platform)
+
+**What:** In the 2026-06-09 post-deploy live test the turn died at the first
+tool resume: `POST /v1/sessions/{id}/messages` streamed a plan + a `get_document`
+tool call (200), `get_document` ran locally, then `POST /v1/sessions/{id}/resume`
+returned `404 {"error":{"type":"not_found","message":"Session not found"}}` — for
+the session that had just been created seconds earlier. The same scenario worked
+before Andy's engine redeploy.
+
+**Where:** Talk2View-Platform `packages/server`. `api/sessions.py` (~line 199)
+404s when `get_session_manager(...).get_session(partner_id, user_id)` returns
+None or a mismatched id; `core/agent.py:253` builds the LangGraph agent with an
+in-memory `MemorySaver()` checkpointer. Both the `SessionManager` registry and
+the thread checkpoint are per-process RAM. So a session created on one engine
+process/replica is invisible to whichever process serves the follow-up `/resume`
+— the classic in-memory-state + multiple-replicas (or a restart between calls)
+failure, freshly exposed by the redeploy.
+
+**Why it matters:** Every multi-step (tool-calling) turn does messages → tool →
+resume. With no shared/persistent session state and no session affinity, resume
+lands on the wrong replica and the whole turn fails after the first tool call —
+which is most useful turns.
+
+**Next step (Platform, NOT Writer):** persistent checkpointer + session store
+(Postgres/Redis/Sqlite saver) OR pin a session to its origin replica
+(affinity/sticky routing by session_id). Recurrence of #45/#47; confirm with
+@andy9t7 before any change. The Writer side is correct — it sends the same
+`/resume` the engine then can't find.
+
+**UPDATE 2026-06-09:** filed as Platform issue
+[#102](https://github.com/A2B-Technology-Corporation/Talk2View-Platform/issues/102)
+(cross-linked from #66). The user later reported the 404 cleared after signing
+out and back in — with **no Platform change**. That is consistent with, not a
+contradiction of, this diagnosis: by then the rolling-deploy overlap had ended,
+the service was back to a single steady-state task, and the LB routed the whole
+fresh session to the one task holding it. The bug is **latent**, not fixed — it
+recurs on the next deploy-overlap window or autoscale-up. Immediate no-code
+mitigation = ALB `lb_cookie` target-group stickiness; proper fix = persistent
+checkpointer + shared session store + `/resume` looking up by URL `session_id`
+instead of get-or-create.
+
+## #56 — Style names round-trip asymmetrically: `Normal` write → `Text body` read → "unknown style" retry (FIXED 2026-06-09)
+
+**What:** In the same 2026-06-09 live tour, after `insert_content(style="Normal")`
+the body paragraphs ended up as LibreOffice `Text body` (see #53). The model
+then called `get_document`, which reported those paragraphs' style as the raw LO
+name `"Text body"`, and on a subsequent edit the model re-sent
+`insert_content(blocks=[{… "style": "Text body"}])`. The tool's validator only
+accepted Word names (`VALID_STYLES`), so it returned
+`blocks[1] has unknown style "Text body"` — a wasted round-trip (~7 s) before the
+model fell back to `Normal`.
+
+**Where:** Two asymmetries. (1) `uno_helpers/styles.py`: `Normal` wrote out to a
+body collection but `libreoffice_to_word_style` had no entry folding the LO body
+name back to `Normal`, so `tools/reading.py:get_document` surfaced a raw LO name
+the agent's vocabulary doesn't contain. (2) `tools/writing.py` + `formatting.py`
+validators rejected anything not literally in `VALID_STYLES`, so the LO display
+name the engine echoed back round-tripped straight into an error.
+
+**Why it matters:** every "unknown style" bounce is a full extra engine
+round-trip (~3 s each under the #88 latency umbrella) and erodes trust in the
+agent. Coupled with #53, the `Normal`/body style was the most common path, so
+this fired on ordinary multi-paragraph edits.
+
+**Fix:** close the loop both ways. (1) `_WORD_TO_LO["Normal"] = "Text body"` and
+`_LO_TO_WORD["Text body"] = "Normal"` make the write/read symmetric — a body
+paragraph now reads back as `Normal`. (2) new
+`uno_helpers/styles.py::canonical_style_name()` folds known LibreOffice display
+names (`Text body`, `Heading 2`, `Default Paragraph Style`, `Standard`, …),
+case-insensitively, to their Word name; `insert_content` and `format_paragraph`
+run incoming `style`/block styles through it before the `VALID_STYLES` check, so
+an LO name the engine echoes back validates instead of 400ing. Custom styles
+still pass through untouched. Regression guards:
+`test_style_translation.py::test_canonical_style_name`,
+`test_writing_tools.py::test_libreoffice_display_style_names_are_accepted`,
+`test_formatting_tools.py::test_libreoffice_display_style_name_is_accepted`.
+
+**Lesson:** a translation layer must be bijective on the names the other side
+can emit. If `get_document` can hand the model a name, every tool that accepts a
+`style` must also accept that exact name — validate against the union of both
+vocabularies, normalising to one canonical form first.

@@ -9,7 +9,7 @@
     "watch": "webpack --mode development --watch"
   },
   "dependencies": {
-    "@talk2view/sdk": "^0.5.1",
+    "@talk2view/sdk": "^0.10.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },

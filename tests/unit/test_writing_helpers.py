@@ -265,9 +265,10 @@ class TestSuspendRecordChanges:
 class TestStyleAssignmentResilience:
     """insert_content degrades gracefully when ParaStyleName is rejected.
 
-    LO can reject a ParaStyleName write on a redline-bearing paragraph
-    even with RecordChanges suspended. The text is already inserted, so
-    we log + keep the default style rather than failing the whole tool.
+    LO can reject a ParaStyleName write even with RecordChanges
+    suspended. Style-first ordering (investigation #53) attempts the
+    write on the still-empty paragraph; if the build still rejects it we
+    log + keep the inherited style rather than failing the whole tool.
     """
 
     def test_para_style_runtimeexception_is_swallowed(self) -> None:
@@ -289,11 +290,68 @@ class TestStyleAssignmentResilience:
         cursor = MagicMock()
         probe = MagicMock()
         probe.getString.return_value = "existing"
-        para_cursor = _RaisingParaCursor()
-        text_obj.createTextCursorByRange.side_effect = [probe, para_cursor]
+        style_cursor = _RaisingParaCursor()
+        returned = MagicMock()
+        # Style-first ordering (investigation #53) calls
+        # createTextCursorByRange three times: (1) the empty-paragraph
+        # probe, (2) the style cursor written BEFORE the text insert —
+        # this is the one whose ParaStyleName write raises — and (3) the
+        # cursor over the just-written paragraph that the function returns.
+        text_obj.createTextCursorByRange.side_effect = [probe, style_cursor, returned]
 
-        # Must NOT raise — graceful degradation, returns the cursor.
+        # Must NOT raise — graceful degradation, returns the new cursor.
         result = _insert_paragraph_at_cursor(
             text_obj, cursor, "Hello", style="Heading 1", doc=None
         )
-        assert result is para_cursor
+        assert result is returned
+
+
+@pytest.mark.unit
+class TestInsertParagraphSkipsRedundantStyleWrite:
+    """Skip-if-equal guard (investigation #53) skips a redundant style write.
+
+    When the empty target paragraph already carries the resolved style,
+    ``_insert_paragraph_at_cursor`` must NOT re-write ``ParaStyleName`` —
+    re-asserting the same collection can itself trip the LO 26.2 rejection,
+    and it is a no-op anyway; the text insert still happens. 'Normal' resolves
+    to 'Text body', so a style cursor already reporting 'Text body' must be
+    left untouched.
+    """
+
+    def test_redundant_style_write_is_skipped(self) -> None:
+        wrote: list[str] = []
+
+        class _StyleCursor:
+            def gotoStartOfParagraph(self, expand: bool) -> None:  # noqa: N802
+                pass
+
+            def gotoEndOfParagraph(self, expand: bool) -> None:  # noqa: N802
+                pass
+
+            @property
+            def ParaStyleName(self) -> str:  # noqa: N802
+                # Already the resolved target for 'Normal' (word_to_libreoffice
+                # _style('Normal') == 'Text body'), so the guard must skip.
+                return "Text body"
+
+            @ParaStyleName.setter
+            def ParaStyleName(self, value: str) -> None:  # noqa: N802
+                wrote.append(value)
+
+        text_obj = MagicMock()
+        cursor = MagicMock()
+        probe = MagicMock()
+        probe.getString.return_value = ""  # empty paragraph -> no leading break
+        returned = MagicMock()
+        text_obj.createTextCursorByRange.side_effect = [probe, _StyleCursor(), returned]
+
+        result = _insert_paragraph_at_cursor(
+            text_obj, cursor, "the body text", style="Normal", doc=None
+        )
+
+        # The redundant ParaStyleName write was skipped...
+        assert wrote == [], "redundant ParaStyleName write must be skipped"
+        # ...but the text insert and the empty-paragraph (no-break) path ran.
+        text_obj.insertControlCharacter.assert_not_called()
+        text_obj.insertString.assert_called_once_with(cursor, "the body text", False)
+        assert result is returned

@@ -16,7 +16,18 @@ from __future__ import annotations
 
 # Word → LibreOffice
 _WORD_TO_LO = {
-    "Normal": "Default Paragraph Style",
+    # 'Normal' maps to the NAMED body style 'Text body', NOT the pool-default
+    # collection 'Default Paragraph Style'. LibreOffice 26.2 rejects a
+    # ``ParaStyleName`` write of the pool default onto a paragraph in certain
+    # document states with a message-less RuntimeException — observed both on
+    # inserts under the track-changes envelope and, in the 2026-06-09 live log,
+    # with ``RecordChanges`` already off (so the trigger is broader than an
+    # active insert-redline; named collections like 'Heading 2' are accepted in
+    # the same call). 'Text body' is also the style LibreOffice's heading
+    # Next-Style cascade already lands body paragraphs on, so routing 'Normal'
+    # through it makes the style write succeed AND keeps the write/read-back
+    # round-trip symmetric (see investigations #53).
+    "Normal": "Text body",
     "Heading1": "Heading 1",
     "Heading2": "Heading 2",
     "Heading3": "Heading 3",
@@ -35,6 +46,11 @@ _WORD_TO_LO = {
 # of styles that map to "Default Paragraph Style" from multiple sources)
 _LO_TO_WORD = {
     "Default Paragraph Style": "Normal",
+    # LibreOffice reports body paragraphs as 'Text body' (the heading
+    # Next-Style cascade, and our own 'Normal' → 'Text body' write). Fold it
+    # back to 'Normal' so get_document never surfaces a raw LO name the agent's
+    # vocabulary doesn't contain (which it would then re-send and get rejected).
+    "Text body": "Normal",
     "Heading 1": "Heading1",
     "Heading 2": "Heading2",
     "Heading 3": "Heading3",
@@ -64,3 +80,29 @@ def libreoffice_to_word_style(name: str) -> str:
     original names).
     """
     return _LO_TO_WORD.get(name, name)
+
+
+# LibreOffice display name (lower-cased) → Word name. Lets the tool validators
+# accept a style name the engine sometimes echoes back from ``get_document``
+# (e.g. 'Text body', 'Heading 2') instead of the Word vocabulary, rather than
+# rejecting it with "unknown style" and forcing the model to retry — observed
+# in the 2026-06-09 live log, where a ``style: "Text body"`` block cost a wasted
+# round-trip before the model fell back to 'Normal'. Built from ``_LO_TO_WORD``
+# plus the pool default's internal name 'Standard'.
+_LO_DISPLAY_TO_WORD: dict[str, str] = {
+    lo_name.lower(): word_name for lo_name, word_name in _LO_TO_WORD.items()
+}
+_LO_DISPLAY_TO_WORD["standard"] = "Normal"  # internal name of the pool default
+
+
+def canonical_style_name(name: str) -> str:
+    """Normalise an incoming paragraph-style name to its canonical Word name.
+
+    Word names ('Normal', 'Heading2', 'Title', …) pass through unchanged.
+    Known LibreOffice display names ('Text body', 'Heading 2', 'Default
+    Paragraph Style', 'Standard') — matched case-insensitively — fold back to
+    the Word name the agent's vocabulary uses, so validators accept them.
+    Unknown names (genuine custom styles) pass through unchanged; UNO raises
+    its own error later if the style is truly absent from the document.
+    """
+    return _LO_DISPLAY_TO_WORD.get(name.strip().lower(), name)
