@@ -443,6 +443,36 @@ jobs:
         timeout-minutes: 5
         run: uv run pytest -m integration -s --tb=short
 
+      # Best-effort: install WebKitGTK + a PulseAudio virtual microphone so
+      # the real getUserMedia permission test (gui_smoke) actually runs.
+      # The test (tests/integration/test_webkit_media_permission.py) skips
+      # cleanly if WebKit2 or an audio-input device is unavailable, so this
+      # step is continue-on-error and every command is non-fatal — it can
+      # only ever turn a skip into a real run, never break the job. Skipped
+      # on the Debian container variant (apt sources / no host audio differ);
+      # there the mic test simply skips. ADR-0041.
+      - name: Provision WebKitGTK + virtual mic (mic permission test)
+        if: matrix.run_gui_smoke == true && !matrix.container
+        continue-on-error: true
+        run: |
+          set -x
+          sudo apt-get update || true
+          sudo apt-get install -y --no-install-recommends \
+            python3-gi gir1.2-webkit2-4.1 \
+            gstreamer1.0-plugins-good gstreamer1.0-pulseaudio \
+            pulseaudio pulseaudio-utils || true
+          export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/pulse-runtime}"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          # Share the runtime dir with the test step so the WebKit web
+          # process reaches the same PulseAudio instance.
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          pulseaudio --start --exit-idle-time=-1 || true
+          sleep 2
+          pactl load-module module-null-sink sink_name=dummy || true
+          pactl load-module module-virtual-source \
+            source_name=virtmic master=dummy.monitor || true
+          pactl list short sources || true
+
       - name: GUI smoke test (Linux only)
         if: matrix.run_gui_smoke == true
         env:

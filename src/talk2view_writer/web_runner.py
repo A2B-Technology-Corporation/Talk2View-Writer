@@ -23,6 +23,7 @@ bundled ``webview`` package are importable.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -464,6 +465,10 @@ def main() -> None:
     import webview
 
     _patch_webkitgtk_cors_settings()
+    # Grant microphone (getUserMedia) for the SDK voice / speech-to-text
+    # button. Each patch self-guards by importing its own backend module,
+    # so exactly one applies per OS and the others are no-ops (ADR-0041).
+    _patch_webkitgtk_media_permission()  # Linux / WebKitGTK
     # Companion-window integration (ADR-0039): brand the GTK process as
     # "Talk2View" and (X11 only) make the window transient-for LO. Both
     # no-op on non-GTK platforms / Wayland.
@@ -832,6 +837,105 @@ def _patch_webkitgtk_cors_settings() -> None:
     gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
     gtk_backend.BrowserView._t2v_cors_patched = True  # type: ignore[attr-defined]
     logger.info("WebKitGTK patch: BrowserView.__init__ wrapped")
+
+
+# ---------------------------------------------------------------------------
+# Microphone / getUserMedia permission (ADR-0041)
+# ---------------------------------------------------------------------------
+#
+# The Talk2View SDK's voice button calls
+# ``navigator.mediaDevices.getUserMedia({audio: true})``. Every embedded
+# webview engine refuses that by default unless the host app explicitly
+# grants the capture permission; pywebview's backends don't, so the SDK
+# fails with "NotAllowedError" until we splice a grant in. The three
+# patches below cover WebKitGTK / WKWebView / WebView2; each is a no-op on
+# the wrong OS because its backend module isn't importable there.
+
+# Class names (no ``Webkit`` prefix under PyGObject) of the WebKitGTK
+# permission-request subclasses we grant: getUserMedia raises a
+# UserMedia request; enumerateDevices a DeviceInfo request. Matched by
+# name so this stays importable without ``gi`` (the venv has no gi — the
+# webview runs under system Python).
+_GRANTED_PERMISSION_REQUESTS = frozenset(
+    {
+        "WebKitUserMediaPermissionRequest",
+        "UserMediaPermissionRequest",
+        "WebKitDeviceInfoPermissionRequest",
+        "DeviceInfoPermissionRequest",
+    }
+)
+
+
+def _grant_media_permission(_webview: Any, request: Any) -> bool:
+    """WebKitGTK ``permission-request`` handler — allow mic / device-info.
+
+    Returns ``True`` (request handled, stop WebKit's default-deny
+    fall-through) for the media-capture / device-enumeration requests,
+    ``False`` for anything else so WebKit applies its own per-class
+    default. Duck-typed by class name so this module imports cleanly
+    without PyGObject. Shared with the CI check in
+    ``tests/integration/webkit_media_permission_check.py``.
+    """
+    name = type(request).__name__
+    if name in _GRANTED_PERMISSION_REQUESTS:
+        request.allow()
+        logger.info("media patch: allowed %s", name)
+        return True
+    return False
+
+
+def _patch_webkitgtk_media_permission() -> None:
+    """Grant getUserMedia on WebKitGTK by handling ``permission-request``.
+
+    WebKitGTK fires ``WebKitWebView::permission-request`` with a
+    ``WebKitUserMediaPermissionRequest``; per its docs an *unhandled*
+    request is denied by default, so getUserMedia rejects with
+    ``NotAllowedError``. pywebview's GTK backend connects no such handler,
+    so we splice one in (same monkey-patch style as the CORS patch).
+    Pure WebKit — no UNO, so no UIThreadDispatcher needed.
+
+    No-op on macOS / Windows (``webview.platforms.gtk`` not importable).
+    """
+    try:
+        from webview.platforms import gtk as gtk_backend
+    except ImportError:
+        logger.info(
+            "WebKitGTK media patch: pywebview.platforms.gtk not importable "
+            "on this platform — assuming non-Linux backend; skipping"
+        )
+        return
+
+    if getattr(gtk_backend.BrowserView, "_t2v_media_patched", False):
+        return
+
+    original_init = gtk_backend.BrowserView.__init__
+
+    def patched_init(self: Any, window: Any) -> None:
+        original_init(self, window)
+        try:
+            props = self.webview.get_settings().props
+            # Master gate (pywebview already sets this, but its default is
+            # version-dependent across WebKitGTK builds — set it ourselves).
+            props.enable_media_stream = True
+            with contextlib.suppress(AttributeError, TypeError):
+                # WebKitGTK 2.38+; documented to imply enable_media_stream.
+                # Absent on older builds — harmless to skip.
+                props.enable_webrtc = True
+            self.webview.connect("permission-request", _grant_media_permission)
+            logger.info(
+                "WebKitGTK media patch applied: enable_media_stream=True, "
+                "permission-request handler connected"
+            )
+        except Exception:
+            logger.exception(
+                "WebKitGTK media patch: enabling media-stream / connecting "
+                "permission-request raised — the webview still opens but the "
+                "SDK voice button will fail with NotAllowedError"
+            )
+
+    gtk_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
+    gtk_backend.BrowserView._t2v_media_patched = True  # type: ignore[attr-defined]
+    logger.info("WebKitGTK media patch: BrowserView.__init__ wrapped")
 
 
 def _install_focus_signal_handler(webview_module: Any) -> None:
