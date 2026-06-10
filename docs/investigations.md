@@ -2097,3 +2097,60 @@ still pass through untouched. Regression guards:
 can emit. If `get_document` can hand the model a name, every tool that accepts a
 `style` must also accept that exact name — validate against the union of both
 vocabularies, normalising to one canonical form first.
+
+## #57 — Page-number fields render as letters ("a of b") because createInstance leaves NumberingType at 0 (FIXED 2026-06-10)
+
+**What:** `insert_page_numbers` produced page numbers shown as lowercase letters
+("Page a of b") on the live LO 26.2 build instead of arabic ("Page 1 of 2").
+Surfaced by the user during the 2026-06-09 guided tour. The chat model
+misdiagnosed it as a `View → Field Names` / `Ctrl+F9` toggle — wrong; that
+controls field *shading*, not the number format.
+
+**Where:** `tools/structure.py::insert_page_numbers`. It created the
+`com.sun.star.text.TextField.PageNumber` and `...PageCount` fields via
+`doc.createInstance(...)`, set `SubType` on the page-number field, but never
+set `NumberingType` on either.
+
+**Why it renders letters:** confirmed against LibreOffice source
+(`sw/source/core/unocore/unofield.cxx`, master). `SwFieldProperties_Impl`
+defaults `nFormat = 0`; `SwXTextField::attach` for a page-number field casts
+that straight to `SvxNumType(0)`, which is `SVX_NUM_CHARS_UPPER_LETTER`
+(== `css::style::NumberingType::CHARS_UPPER_LETTER` = 0) — letters, NOT arabic
+(`ARABIC` = 4). The `bFormatIsDefault` re-base that User/SetExp/Table fields use
+never fires for PageNumber, so it stays at 0. The manual Insert → Field → Page
+Number path differs because the dialog passes an explicit format = "As Page
+Style" = `PAGE_DESCRIPTOR` (7), so the field follows the page style, which
+defaults to arabic. We set nothing → fell to the letters default.
+
+**Why it matters:** every document the agent numbers comes out visibly wrong
+(letters) unless the page style happens to override it, undermining the
+"looks professional" promise of document-creation.
+
+**Fix:** pin `field.NumberingType = 7` (`PAGE_DESCRIPTOR`) on BOTH the
+PageNumber and PageCount fields — replicating the UI's "As Page Style" default.
+This makes the field FOLLOW the page style: arabic on a default page (fixing the
+symptom), roman/letter on a deliberately roman/letter-numbered page style (so
+the field never disagrees with the page it sits on). `SwPageNumberFieldType::Expand`
+honours this: `nTmpFormat = (SVX_NUM_PAGEDESC == nFormat) ? m_nNumberingType :
+nFormat`. Rejected alternatives: **(A)** hard-pin `ARABIC=4` — would freeze
+"1, 2, 3" onto an intentional roman preface page; **(C)** add a per-field
+`number_format` arg — diverges from Talk2View-Word, whose `insert_page_numbers`
+exposes no numbering-style option (literal-template `format` enum only,
+`structure.ts:247`), breaking the one-for-one parity rule. The numeral style
+belongs on the page style, where `PAGE_DESCRIPTOR` delegates it.
+
+**Tests:** `test_structure_tools.py::TestInsertPageNumbers::test_fields_pin_page_descriptor_numbering`
+asserts both fields carry `NumberingType == 7`. This also **de-vacuumed** the
+synthetic page-number coverage: the prior `test_footer_centered_returns_dict`
+never reached field creation — the synthetic page style returned `None` for
+`FooterText`, the tool errored at `setString` and swallowed it into a
+per-section error, and the test asserted only `isinstance(result, dict)`. The
+fake now gives the Default Page Style real Header/FooterText `FakeText`, adds
+`createInstance` branches for the two field services, and records inserted
+content via `FakeText.insertTextContent`. Live-LO render (arabic page →
+"1 of N") remains the gold-standard gate per the engineering standard.
+
+**Lesson:** UNO `createInstance` defaults are NOT the UI defaults. When a tool
+mirrors a dialog action, replicate the property the dialog sets — don't assume
+the freshly-created object inherits a sensible value. `SvxNumType(0)` being
+letters, not arabic, is the trap.

@@ -116,6 +116,48 @@ class TestInsertPageNumbers:
         )
         assert isinstance(result, dict)
 
+    def test_fields_pin_page_descriptor_numbering(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Both page-number fields pin NumberingType = PAGE_DESCRIPTOR (7).
+
+        A PageNumber/PageCount field made via createInstance leaves
+        NumberingType at its property default 0 (CHARS_UPPER_LETTER), so
+        page numbers render as letters ("a of b") instead of arabic. The
+        tool must pin PAGE_DESCRIPTOR so each field follows the page style —
+        arabic on an ordinary page, roman on a roman-numbered page style
+        (investigations.md #57). This mirrors the Insert > Field > Page
+        Number "As Page Style" default; a blunt ARABIC pin was rejected
+        because it would clobber a deliberately roman-numbered page.
+        """
+        from talk2view_writer.tools.structure import insert_page_numbers
+
+        result = json.loads(
+            insert_page_numbers(
+                location="footer",
+                alignment="center",
+                format="Page {PAGE} of {NUMPAGES}",
+            )
+        )
+        assert result.get("success") is True, result
+
+        page_style = (
+            synthetic_doc.getStyleFamilies()
+            .getByName("PageStyles")
+            .getByName("Default Page Style")
+        )
+        # One PageNumber ({PAGE}) then one PageCount ({NUMPAGES}); literals
+        # go through insertString, not insertTextContent.
+        fields = page_style.FooterText._inserted_contents
+        assert len(fields) == 2, fields
+        page_field, count_field = fields
+        assert page_field.NumberingType == 7  # PAGE_DESCRIPTOR
+        assert count_field.NumberingType == 7
+        # The current-page field still carries SubType = CURRENT (1).
+        assert page_field.SubType == 1
+
 
 class TestSetPageSetup:
     def test_invalid_orientation_returns_error(
