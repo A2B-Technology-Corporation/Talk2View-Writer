@@ -470,6 +470,7 @@ def main() -> None:
     # so exactly one applies per OS and the others are no-ops (ADR-0041).
     _patch_webkitgtk_media_permission()  # Linux / WebKitGTK
     _patch_cocoa_media_permission()  # macOS / WKWebView
+    _patch_edgechromium_media_permission()  # Windows / WebView2
     # Companion-window integration (ADR-0039): brand the GTK process as
     # "Talk2View" and (X11 only) make the window transient-for LO. Both
     # no-op on non-GTK platforms / Wayland.
@@ -1018,6 +1019,64 @@ def _patch_cocoa_media_permission() -> None:
             "(also requires LibreOffice's own NSMicrophoneUsageDescription "
             "+ TCC consent)"
         )
+
+
+def _patch_edgechromium_media_permission() -> None:
+    """Grant getUserMedia on Windows WebView2 via ``PermissionRequested``.
+
+    WebView2 raises ``CoreWebView2.PermissionRequested`` for mic / camera
+    and, if unhandled, defaults to deny. pywebview's EdgeChromium backend
+    subscribes no handler, so we wrap ``EdgeChrome.on_webview_ready``
+    (which runs once ``CoreWebView2`` exists) to attach one that grants
+    Microphone / Camera. Untested pre-release; see
+    docs/investigations.md #58. No-op off Windows (edgechromium backend
+    not importable).
+    """
+    try:
+        from webview.platforms import edgechromium as edge_backend
+    except ImportError:
+        logger.info(
+            "WebView2 media patch: pywebview.platforms.edgechromium not "
+            "importable — assuming non-Windows backend; skipping"
+        )
+        return
+
+    edge_chrome = edge_backend.EdgeChrome
+    if getattr(edge_chrome, "_t2v_media_patched", False):
+        return
+
+    original_ready = edge_chrome.on_webview_ready
+
+    def patched_ready(self: Any, sender: Any, args: Any) -> None:
+        original_ready(self, sender, args)
+        try:
+            from Microsoft.Web.WebView2.Core import (  # type: ignore[import-not-found]
+                CoreWebView2PermissionKind,
+                CoreWebView2PermissionState,
+            )
+
+            def _on_permission(_s: Any, event: Any) -> None:
+                if event.PermissionKind in (
+                    CoreWebView2PermissionKind.Microphone,
+                    CoreWebView2PermissionKind.Camera,
+                ):
+                    event.State = CoreWebView2PermissionState.Allow
+
+            self.webview.CoreWebView2.PermissionRequested += _on_permission
+            logger.info(
+                "WebView2 media patch: PermissionRequested handler attached "
+                "(grants Microphone / Camera)"
+            )
+        except Exception:
+            logger.exception(
+                "WebView2 media patch: attaching PermissionRequested handler "
+                "raised — the webview still opens but the SDK voice button "
+                "may fail with NotAllowedError"
+            )
+
+    edge_chrome.on_webview_ready = patched_ready  # type: ignore[method-assign]
+    edge_chrome._t2v_media_patched = True  # type: ignore[attr-defined]
+    logger.info("WebView2 media patch: EdgeChrome.on_webview_ready wrapped")
 
 
 def _install_focus_signal_handler(webview_module: Any) -> None:
