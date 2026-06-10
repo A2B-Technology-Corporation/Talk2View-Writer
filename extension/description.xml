@@ -4,7 +4,7 @@
              xmlns:xlink="http://www.w3.org/1999/xlink"
              xmlns:l="http://libreoffice.org/extensions/description/2011">
     <identifier value="com.talk2view.writer"/>
-    <version value="1.0.3"/>
+    <version value="1.0.4"/>
     <!-- LibreOffice "Check for Updates" reads this feed. The URL always
          resolves to the newest non-prerelease release's update.xml (so
          alphas are never offered); release.yml generates that update.xml. -->
