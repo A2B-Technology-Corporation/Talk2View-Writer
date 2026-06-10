@@ -586,6 +586,9 @@ class FakeText:
     def __init__(self, paragraphs: list[FakeParagraph]) -> None:
         self._paragraphs: _ParagraphList = _ParagraphList(self, list(paragraphs))
         self._inserted_strings: list[str] = []
+        # XTextContent objects (e.g. page-number fields) inserted via
+        # insertTextContent, in order — lets tests assert on field props.
+        self._inserted_contents: list[Any] = []
 
     def createEnumeration(self) -> FakeEnumeration:  # noqa: N802
         return FakeEnumeration(self._paragraphs)
@@ -640,6 +643,15 @@ class FakeText:
         # For ParagraphBreak this would split — we just append a new
         # blank paragraph so iteration sees one more entry.
         self._paragraphs.append(FakeParagraph(""))
+
+    def insertTextContent(  # noqa: N802 — UNO API
+        self, cursor: FakeTextCursor, content: Any, absorb: bool
+    ) -> None:
+        # XText.insertTextContent — used by insert_page_numbers to drop
+        # PageNumber / PageCount fields into a header/footer. Record the
+        # content object so tests can inspect its properties (e.g. that
+        # NumberingType was pinned).
+        self._inserted_contents.append(content)
 
     def removeTextContent(self, content: Any) -> None:  # noqa: N802
         if isinstance(content, FakeParagraph) and content in self._paragraphs:
@@ -873,7 +885,17 @@ class FakeTextDocument(_Service):
                 "List Bullet": _PropBag(),
                 "Quotations": _PropBag(),
             },
-            "PageStyles": {"Default Page Style": _PropBag()},
+            "PageStyles": {
+                # Real Header/FooterText XText so the header-footer and
+                # page-number tools actually run their mutation path
+                # (a bare _PropBag returns None for these, which the tool's
+                # per-section try/except silently swallowed — masking field
+                # creation entirely).
+                "Default Page Style": _PropBag(
+                    HeaderText=FakeText([FakeParagraph("")]),
+                    FooterText=FakeText([FakeParagraph("")]),
+                )
+            },
         }
         # Page-style URP map needed by structure tools.
         self._page_styles_in_use: list[str] = ["Default Page Style"]
@@ -965,6 +987,14 @@ class FakeTextDocument(_Service):
             return _PropBag(GraphicURL="", AnchorType=0)
         if service == "com.sun.star.text.NumberingRules":
             return FakeNumberingRules()
+        if service in (
+            "com.sun.star.text.TextField.PageNumber",
+            "com.sun.star.text.TextField.PageCount",
+        ):
+            # Bare property bag — accepts SubType / NumberingType writes and
+            # is recorded by FakeText.insertTextContent so a test can read
+            # the field's pinned properties back.
+            return _PropBag()
         raise RuntimeError(
             f"FakeTextDocument.createInstance: no synthetic for {service!r}. "
             "Extend tests/synthetic/synthetic_uno.py."

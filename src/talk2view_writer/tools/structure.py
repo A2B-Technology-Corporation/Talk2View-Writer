@@ -52,6 +52,18 @@ _PAPER_SIZES_HMM: dict[str, tuple[int, int]] = {
     "a5": (14800, 21000),
 }
 
+# com.sun.star.style.NumberingType.PAGE_DESCRIPTOR (7): the page-number field
+# follows the page style's own number format ("As Page Style" in the
+# Insert > Field > Page Number dialog — which is that dialog's DEFAULT).
+# A field made via createInstance leaves NumberingType at its property default
+# 0 (== CHARS_UPPER_LETTER), so page numbers render as letters ("a of b")
+# instead of arabic. Pinning PAGE_DESCRIPTOR replicates the manual default:
+# arabic on an ordinary page, roman on a deliberately roman-numbered page
+# style — the field never disagrees with the page it sits on. The numeral
+# style is then controlled where it belongs, on the page style. See
+# docs/investigations.md #57.
+_NUMBERING_TYPE_PAGE_DESCRIPTOR = 7
+
 
 def _list_page_styles_in_use(doc: Any) -> list[str]:
     """Return distinct PageDescriptorName values used by document paragraphs.
@@ -463,9 +475,13 @@ def insert_page_numbers(
                 if part == "{PAGE}":
                     field = doc.createInstance("com.sun.star.text.TextField.PageNumber")
                     field.SubType = 1  # PageNumberType.CURRENT
+                    # Follow the page style's number format (see constant) so
+                    # the field renders arabic by default instead of letters.
+                    field.NumberingType = _NUMBERING_TYPE_PAGE_DESCRIPTOR
                     target_text.insertTextContent(cursor, field, False)
                 elif part == "{NUMPAGES}":
                     field = doc.createInstance("com.sun.star.text.TextField.PageCount")
+                    field.NumberingType = _NUMBERING_TYPE_PAGE_DESCRIPTOR
                     target_text.insertTextContent(cursor, field, False)
                 elif part:
                     target_text.insertString(cursor, part, False)
