@@ -173,19 +173,10 @@ extensions.libreoffice.org.
 
 ## Before you submit — items to double-check
 
-- **Stale in-extension description — RESOLVED.**
-  `extension/description/description_en.txt` (bundled in the `.oxt` and shown by
-  the Extension Manager) now states **21 document tools** and a **docked chat
-  panel** — matching the copy above. (The literal sidebar deck was abandoned for
-  a companion window; see `docs/adrs/0029`/`0030`/`0039`.)
-- **License consistency — RESOLVED.** `description_en.txt` now names MPL-2.0,
-  consistent with the bundled `LICENSE` and the in-app About dialog. (The "all
-  rights reserved" copyright line is ownership; MPL-2.0 is the grant.)
-- **macOS / Windows verification — STILL OPEN (manual).** The `.oxt` ships
-  runtime wheels for Linux, macOS, and Windows, and the OS list above reflects
-  that. Linux is fully verified end-to-end; macOS and Windows are wired and
-  unit-tested but await **manual verification on real hardware** — and on macOS
-  the microphone also needs LibreOffice's own microphone usage entitlement + a
-  one-time system consent (see `docs/adrs/0041`). This one cannot be resolved
-  from the repo; verify on macOS/Windows before advertising them, or list Linux
-  only for now.
+- **macOS / Windows verification.** The `.oxt` ships runtime wheels for Linux,
+  macOS, and Windows, and the OS list above reflects that. Linux is fully
+  verified end-to-end; macOS and Windows are wired and unit-tested but await
+  **manual verification on real hardware** — and on macOS the microphone also
+  needs LibreOffice's own microphone usage entitlement + a one-time system
+  consent (see `docs/adrs/0041`). Verify on macOS/Windows before advertising
+  them, or list Linux only for now.
