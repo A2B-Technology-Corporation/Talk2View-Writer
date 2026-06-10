@@ -20,3 +20,4 @@ Requirements:
 For more information, visit https://talk2view.com
 
 Copyright (c) 2026 A2B Technology Corporation Pty Ltd. All rights reserved.
+Licensed under the Mozilla Public License 2.0 (MPL-2.0).
