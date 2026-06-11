@@ -95,16 +95,34 @@ def log_file_path() -> Path:
 _BEARER_RE = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-]+")
 _PARTNER_KEY_RE = re.compile(r"(pk_(?:live|test)_)[A-Za-z0-9]+")
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+# Defence in depth for the auth payloads the bridge proxies: the login
+# body is ``{"email": ..., "password": ...}`` and the refresh body is
+# ``{"refresh_token": ...}``. A plaintext password is not a JWT and an
+# opaque refresh token is not an ``eyJ...`` triple, so neither matches
+# the patterns above. These scrub the JSON field value in place so that
+# even a DEBUG-level dump (T2V_WRITER_DEBUG) or a future call site that
+# logs a raw body cannot leak the credential. Matches both ``"key": "v"``
+# (JSON) and ``'key': 'v'`` (Python repr) quoting.
+_PASSWORD_FIELD_RE = re.compile(
+    r"""(['"](?:password|new_password|current_password)['"]\s*:\s*)['"][^'"]*['"]""",
+    re.IGNORECASE,
+)
+_REFRESH_TOKEN_FIELD_RE = re.compile(
+    r"""(['"]refresh_token['"]\s*:\s*)['"][^'"]*['"]""",
+    re.IGNORECASE,
+)
 
 
 def redact_secrets(text: str) -> str:
-    """Scrub bearer tokens, partner keys, and raw JWTs from a log string.
+    """Scrub bearer tokens, partner keys, JWTs, and auth fields from a log line.
 
     Idempotent: re-running over already-redacted text is a no-op.
     """
     text = _BEARER_RE.sub(r"\1<redacted>", text)
     text = _PARTNER_KEY_RE.sub(r"\1<redacted>", text)
     text = _JWT_RE.sub("<redacted-jwt>", text)
+    text = _PASSWORD_FIELD_RE.sub(r'\1"<redacted>"', text)
+    text = _REFRESH_TOKEN_FIELD_RE.sub(r'\1"<redacted>"', text)
     return text
 
 
