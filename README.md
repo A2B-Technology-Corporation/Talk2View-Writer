@@ -58,7 +58,7 @@ full roadmap. The current branch covers:
   as a docked side panel where the platform allows (ADR-0039); the React
   UI handles every SDK event type (`text`, `status`, `todos`,
   `tool_call`, `error`, `done`).
-- All 20 tools registered with the SDK; tool-call interrupts
+- All 21 tools registered with the SDK; tool-call interrupts
   auto-execute on the worker thread and marshal UNO calls back to the
   UI thread (ADRs 0008, 0009, 0018, 0020).
 - Cross-platform universal `.oxt` (Linux, macOS x86_64 + arm64,
