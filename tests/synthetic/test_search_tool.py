@@ -28,8 +28,13 @@ class TestSearchDocument:
             ]
         )
         result = json.loads(search_document(query="needle"))
-        assert result.get("matches", 0) == 2 or result.get("count", 0) == 2 \
-            or result.get("total_matches", 0) == 2 or "matches" in result
+        # Exact shape — the old assertion ended in `or "matches" in result`,
+        # which is always true for a find response (the key is always
+        # present), so it verified nothing. The find path returns count +
+        # the matched strings + a null hint when there are matches.
+        assert result["count"] == 2
+        assert result["matches"] == ["needle", "needle"]
+        assert result["hint"] is None
 
     def test_find_with_no_matches_returns_zero(
         self,
