@@ -2384,3 +2384,36 @@ in-process, and add real-soffice integration tests for insert_content anchors
 **Where:** `bridge_server.py::_dns_reachable` / `_proxy_fetch` /
 `_proxy_stream_open` / `_handle_connection`; `web_runner._BridgeClient`;
 `bridge.ts::_proxyStream`.
+
+
+## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (NEW 2026-06-11)
+
+**What:** The `Integration (windows-latest)` CI job fails at the
+"Install Talk2View-Writer .oxt" step: `unopkg.com add` reports
+`ERROR: Exception occurred: Error while adding:
+file:///D:/.../dist/Talk2ViewWriter.oxt` then `ERROR: unopkg failed.`
+(exit 1). This is **not** caused by the Node-24 actions bump (PR #23) —
+it fails identically on `main` at v1.0.6 (CI run 27330847307), so it
+predates the bump. The bump PR's CI was otherwise all-green; this was
+its only red check.
+
+**Where:** `.github/workflows/ci.yml` Integration matrix, windows-latest
+leg; `scripts/install_oxt.sh` invoking the bundled
+`/c/Program Files/LibreOffice/program/unopkg.com`.
+
+**Why it matters:** Windows is a shipping target. A persistently-red
+Windows integration job is noise that masks real Windows regressions
+(same failure mode as #36 for Playwright), and it means the .oxt install
+path is effectively unverified on Windows in CI. The unopkg error gives
+no detail at default verbosity, so the actual cause (profile lock,
+path/quoting under Git-bash, a genuine packaging incompatibility, or the
+known unopkg-on-live-profile hazard) is unknown.
+
+**Next step:** re-run the install step with `unopkg add -v` (verbose) on
+the Windows runner to capture the real exception; check whether a
+soffice/quickstarter process is holding the user-profile registry, and
+whether the `file:///D:/...` URL needs different quoting under the
+Git-for-Windows bash the step uses. Until diagnosed, consider marking
+the windows-latest integration leg `continue-on-error` so it reports
+without blocking, mirroring the #36 treatment — but only after one
+verbose-log capture, not as a first move.
