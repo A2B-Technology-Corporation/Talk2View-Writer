@@ -46,6 +46,7 @@ import uuid
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from talk2view_writer.perf import log_timing, monotonic_ms
 
@@ -107,6 +108,53 @@ _MULTIPART_SENTINEL = "__t2v_multipart__"
 # headroom: in practice at most one streaming read plus a handful of
 # concurrent fetches / tool calls are ever in flight at once.
 _MAX_DISPATCH_WORKERS = 16
+
+# Hard deadline for resolving the engine hostname before each proxied
+# request. httpx's connect timeout does NOT bound getaddrinfo on the sync
+# transport, so on a bad connection a DNS lookup can retry for ~25 s before
+# failing — which is what the user waits through. We resolve on a throwaway
+# thread with this deadline and, if it elapses, fail fast with a friendly
+# message instead. 8 s leaves headroom for a slow-but-working resolver while
+# bounding the dead-connection case. See docs/investigations.md #63.
+_DNS_RESOLVE_TIMEOUT_S = 8.0
+
+
+def _dns_reachable(url: str, timeout_s: float = _DNS_RESOLVE_TIMEOUT_S) -> bool:
+    """Return True if ``url``'s host resolves within ``timeout_s``.
+
+    Resolution runs on a throwaway daemon thread so a wedged ``getaddrinfo``
+    (the unbounded part of an httpx request on a bad connection) can't make us
+    wait longer than the deadline. A lookup still in flight when the deadline
+    elapses is abandoned — it ends on its own when the OS resolver finally
+    returns. Returns True for a URL with no host (degrade to letting httpx
+    handle it) so this never blocks a legitimate request.
+    """
+    host = urlparse(url).hostname
+    if not host:
+        return True
+    port = urlparse(url).port or (443 if url.lower().startswith("https") else 80)
+
+    result: dict[str, bool] = {}
+    done = threading.Event()
+
+    def _resolve() -> None:
+        try:
+            socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+            result["ok"] = True
+        except OSError:
+            result["ok"] = False
+        finally:
+            done.set()
+
+    threading.Thread(target=_resolve, name="bridge-dns", daemon=True).start()
+    if not done.wait(timeout_s):
+        logger.warning(
+            "DNS resolution of %s exceeded %ss — treating as unreachable",
+            host,
+            timeout_s,
+        )
+        return False
+    return result.get("ok", False)
 
 
 def _decode_multipart_envelope(
@@ -647,6 +695,19 @@ class BridgeServer:
         # tests don't need to drag it in just to dispatch invoke_tool.
         import httpx
 
+        # Bound DNS up front. httpx's connect timeout doesn't cover
+        # getaddrinfo on the sync transport, so on a dead connection the
+        # lookup retries for ~25 s before the request even fails. Resolving
+        # on a deadline-bounded thread lets us fail fast with a friendly
+        # message (investigations #63).
+        if not _dns_reachable(url):
+            logger.info(
+                "proxy_fetch: %s %s — DNS unreachable, returning friendly error",
+                method,
+                url,
+            )
+            return _network_error_envelope(_DNS_UNREACHABLE_MESSAGE)
+
         # Coerce header values to str — they sometimes arrive as
         # ints / bools from JSON.
         clean_headers = {str(k): str(v) for k, v in headers.items()}
@@ -714,19 +775,7 @@ class BridgeServer:
                 method,
                 url,
             )
-            friendly = _friendly_network_error(exc)
-            # Return an engine-shaped error envelope (``{"error": {...}}``) so
-            # the SDK surfaces our clear, actionable message to the user
-            # instead of its generic "Request failed" fallback (which is what
-            # an empty body produced). 503 = "service unavailable".
-            return {
-                "status": 503,
-                "statusText": friendly,
-                "headers": {"content-type": "application/json"},
-                "body": json.dumps(
-                    {"error": {"message": friendly, "type": "network"}}
-                ),
-            }
+            return _network_error_envelope(_friendly_network_error(exc))
 
         logger.info(
             "proxy_fetch: %s %s → %d %s (body_len=%d)",
@@ -802,6 +851,20 @@ class BridgeServer:
             self._streams[stream_id] = q
 
         def worker() -> None:
+            # Bound DNS the same way ``_proxy_fetch`` does — httpx's connect
+            # timeout doesn't cover getaddrinfo, so a dead connection would
+            # otherwise stall the stream open for ~25 s (investigations #63).
+            # Emit error+done so the JS consumer's poll loop terminates with a
+            # friendly message instead of hanging.
+            if not _dns_reachable(url):
+                logger.info(
+                    "proxy_stream_open: %s %s — DNS unreachable, failing early",
+                    method,
+                    url,
+                )
+                q.put({"type": "error", "message": _DNS_UNREACHABLE_MESSAGE})
+                q.put({"type": "done"})
+                return
             # Producer-side engine timing (task #12): TTFB measures how
             # long the engine took to start responding; total + chunk
             # count + byte count summarise the whole stream. This is the
@@ -1030,6 +1093,31 @@ def _friendly_network_error(exc: Exception) -> str:
         "Couldn't reach Talk2View because of a network problem. Please check "
         "your internet connection and try again."
     )
+
+
+# Shown when the engine hostname can't be resolved within the DNS deadline —
+# the same plain-language wording as a transport-level ConnectError, since a
+# failed lookup is just an earlier point on the same "can't reach it" path.
+_DNS_UNREACHABLE_MESSAGE = (
+    "Couldn't reach Talk2View. Please check your internet connection "
+    "and try again."
+)
+
+
+def _network_error_envelope(friendly: str) -> dict[str, Any]:
+    """Build the engine-shaped 503 error envelope for a network failure.
+
+    Returns the ``{"error": {...}}`` body the SDK expects so it surfaces our
+    clear, actionable message to the user instead of its generic "Request
+    failed" fallback (which is what an empty body produced). 503 = "service
+    unavailable".
+    """
+    return {
+        "status": 503,
+        "statusText": friendly,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps({"error": {"message": friendly, "type": "network"}}),
+    }
 
 
 def _truncate(value: Any, limit: int = 240) -> str:

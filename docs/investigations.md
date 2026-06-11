@@ -2338,7 +2338,7 @@ faithful (split at the cursor) so this class of regression is catchable
 in-process, and add real-soffice integration tests for insert_content anchors
 (tests/integration/test_writing.py, still unwritten).
 
-## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (FIXED 2026-06-11; DNS-bound latency remains)
+## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (FIXED 2026-06-11)
 
 **What:** On a flaky/offline connection a chat send showed a generic
 "Request failed" after a long delay. Two issues:
@@ -2367,15 +2367,53 @@ in-process, and add real-soffice integration tests for insert_content anchors
    call, so the chat send runs concurrently with the startup calls and the
    ~60s wait collapses to a single request's latency.
 
-3. **DNS/connect latency itself (NOT fixed):** even concurrent, a request on
-   a bad connection can take ~20–25s because `getaddrinfo` (DNS) retries and
+3. **DNS/connect latency itself (FIXED):** even concurrent, a request on
+   a bad connection took ~20–25s because `getaddrinfo` (DNS) retries and
    httpx's `connect=10s` timeout does not bound DNS resolution on the sync
-   transport.
+   transport. Fixed by a bounded DNS pre-check (`_dns_reachable`): before
+   each proxied request (both `_proxy_fetch` and the `_proxy_stream_open`
+   worker) the engine host is resolved on a throwaway daemon thread with an
+   8s hard deadline (`_DNS_RESOLVE_TIMEOUT_S`). If it doesn't resolve in
+   time we abandon the wedged lookup and return the friendly network-error
+   envelope (`_network_error_envelope` / error+done event) immediately,
+   instead of waiting through the OS resolver's full retry schedule. The
+   pre-check only bounds DNS — once the host resolves, the request proceeds
+   with the existing `read=300s` timeout, so legitimate slow engine reads
+   (`/resume`) are unaffected.
 
-**Where:** `bridge_server.py::_proxy_fetch` / `_proxy_stream_open` /
-`_handle_connection`; `web_runner._BridgeClient`; `bridge.ts::_proxyStream`.
+**Where:** `bridge_server.py::_dns_reachable` / `_proxy_fetch` /
+`_proxy_stream_open` / `_handle_connection`; `web_runner._BridgeClient`;
+`bridge.ts::_proxyStream`.
 
-**Next step for (3):** bound DNS — resolve on a thread with a hard deadline,
-or move proxy_fetch to an async/threaded httpx so the connect timeout
-actually caps total time; optionally `navigator.onLine` fast-fail in
-bridge.ts (unreliable in WebKitGTK, so only as a hint).
+
+## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (NEW 2026-06-11)
+
+**What:** The `Integration (windows-latest)` CI job fails at the
+"Install Talk2View-Writer .oxt" step: `unopkg.com add` reports
+`ERROR: Exception occurred: Error while adding:
+file:///D:/.../dist/Talk2ViewWriter.oxt` then `ERROR: unopkg failed.`
+(exit 1). This is **not** caused by the Node-24 actions bump (PR #23) —
+it fails identically on `main` at v1.0.6 (CI run 27330847307), so it
+predates the bump. The bump PR's CI was otherwise all-green; this was
+its only red check.
+
+**Where:** `.github/workflows/ci.yml` Integration matrix, windows-latest
+leg; `scripts/install_oxt.sh` invoking the bundled
+`/c/Program Files/LibreOffice/program/unopkg.com`.
+
+**Why it matters:** Windows is a shipping target. A persistently-red
+Windows integration job is noise that masks real Windows regressions
+(same failure mode as #36 for Playwright), and it means the .oxt install
+path is effectively unverified on Windows in CI. The unopkg error gives
+no detail at default verbosity, so the actual cause (profile lock,
+path/quoting under Git-bash, a genuine packaging incompatibility, or the
+known unopkg-on-live-profile hazard) is unknown.
+
+**Next step:** re-run the install step with `unopkg add -v` (verbose) on
+the Windows runner to capture the real exception; check whether a
+soffice/quickstarter process is holding the user-profile registry, and
+whether the `file:///D:/...` URL needs different quoting under the
+Git-for-Windows bash the step uses. Until diagnosed, consider marking
+the windows-latest integration leg `continue-on-error` so it reports
+without blocking, mirroring the #36 treatment — but only after one
+verbose-log capture, not as a first move.
