@@ -2278,3 +2278,27 @@ committed JSON keyed by wheel filename) and verify in `_download_pyobjc`
 before extraction, mirroring `_verify_wheel`. Trust-on-first-use is
 acceptable for the initial population so long as subsequent release builds
 verify against the committed digests.
+
+## #61 — e2e streaming-chat progressive-render assertion fails locally (~6ms gap) (NEW 2026-06-11)
+
+**What:** `tests/e2e/specs/streaming-chat.spec.ts` asserts the assistant
+text grows incrementally — the gap between the first chunk landing in the
+DOM and the last must be > 200ms (the mock engine schedules 300ms gaps
+between chunks). Locally it fails deterministically with a gap of ~5–15ms:
+the full reply renders correctly, but all chunks arrive batched, not
+progressively.
+
+**Where:** `tests/e2e/specs/streaming-chat.spec.ts:64`; the streaming path
+is `bridge.ts::_proxyStream` → SDK SSE consumer.
+
+**Why it matters:** either the test is environment-sensitive (headless
+Chromium / the installed `@talk2view/sdk` buffers the SSE body before
+handing chunks to the UI, defeating progressive render) or progressive
+streaming genuinely regressed. Confirmed PRE-EXISTING — fails identically
+on pristine `HEAD` bridge.ts, so it is not caused by the stream-error
+infinite-loop fix.
+
+**Next step:** trace whether the mock engine's `delayMs` reaches the wire
+(SSE flush per chunk) and whether the SDK yields per-chunk or buffers;
+if the batching is real, fix the streaming proxy/SDK; if it's a CI-vs-local
+timing artifact, relax the assertion or gate it on a slower scripted gap.

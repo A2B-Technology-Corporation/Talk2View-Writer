@@ -401,10 +401,13 @@ export function installHostLogging(): void {
         'error',
         `[fetch:${reqId}] (proxy-stream) !! ${first.message} (${Date.now() - t0}ms) ${url}`,
       );
-      // Drain the trailing done.
-      while ((await api.proxy_stream_next(stream_id)).type !== 'done') {
-        // loop
-      }
+      // Do NOT drain for a trailing 'done'. The bridge removes the stream
+      // from its registry the moment it hands out a terminal event —
+      // proxy_stream_next pops on both 'error' and 'done'
+      // (bridge_server.py). So once we've received 'error', every further
+      // poll hits the unknown-stream branch and returns another 'error',
+      // never 'done' — a former drain loop spun forever, one socket
+      // round-trip per iteration, and the chat hung. Just surface it.
       throw new Error(`Bridge stream error: ${first.message}`);
     }
     if (first.type === 'done') {
