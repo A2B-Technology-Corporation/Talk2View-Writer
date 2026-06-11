@@ -2419,7 +2419,7 @@ without blocking, mirroring the #36 treatment — but only after one
 verbose-log capture, not as a first move.
 
 
-## #65 — `Live E2E (Linux)` live-scenarios suite is non-deterministically red (NEW 2026-06-11)
+## #65 — `Live E2E (Linux)` live-scenarios suite is non-deterministically red (FIX 2026-06-11)
 
 **What:** The `Live E2E (Linux, real soffice + bridge)` job's
 `live-scenarios.spec.ts` cases (`walks the scripted scenario; hard-fails
@@ -2444,9 +2444,37 @@ also blocks clean release-gating (v1.0.7 shipped with this red, judged
 unrelated because the failures are pure engine content non-determinism
 that the DNS-timeout change cannot influence).
 
-**Next step:** make the live-scenario assertions tolerant of benign LLM
-variance — assert *capability* (the doc ended with a table; the edit
-landed) rather than exact counts / exact tool sequences — or split the
-strict-equality scenarios into a separate non-blocking "engine-behaviour
-drift" job. Cross-reference Platform #62 / #63 (the tool-call-count
-overshoot the penguin_story failure cites).
+**FIX (2026-06-11):** both halves of the documented next step.
+
+1. **Structural split (the real fix).** The `Live E2E` job ran ALL
+   `live-*` specs in one step, so a non-deterministic scenario flake
+   reddened the whole job and buried the health of the deterministic
+   specs. `.github/workflows/ci.yml` now runs two steps:
+   - *blocking* — `live-bridge-smoke` + `live-pywebview-shim` (real
+     soffice + bridge + extension, NO engine dependency; reproducible,
+     so a failure is a genuine regression that fails the job);
+   - *advisory* — `live-scenarios` with `continue-on-error: true`. The
+     scenarios still run and still upload artifacts + `scenario-failure`
+     annotations, so engine-behaviour drift (and any real Platform
+     regression) stays visible — but it no longer gates. Writer-side
+     regressions still surface in the blocking smoke step and the
+     Integration matrix.
+2. **Assertion relaxation (noise reduction).** `penguin_story.yaml` — the
+   repeat offender — switched its three `exact_paragraphs` assertions to
+   `min_paragraphs` (the model legitimately writes a longer story / a
+   multi-paragraph conclusion) and raised step_03's `max_count` 2 → 4 (a
+   benign read-only `get_document` pushed it past 1). The style/text/
+   content assertions are unchanged, so real regressions still fail the
+   scenario; only the brittle exact-count gates were loosened, per the
+   scenario header's "loosen only with a documented reason" rule.
+
+The non-deterministic assertions in the OTHER scenarios (exact tool
+sequences, `exact_tables`) were left as-is deliberately: they now run
+advisory, so their drift is reported without eroding the merge signal;
+tightening vs. relaxing each is a follow-up best driven by observed
+drift in the advisory job, not guessed up front. Cross-reference
+Platform #62 / #63 (the tool-call-count overshoot penguin_story cited).
+
+**Note:** this is inherently un-validatable locally (no live engine); the
+proof is that the blocking smoke step stays green run-to-run while the
+advisory step absorbs engine variance.
