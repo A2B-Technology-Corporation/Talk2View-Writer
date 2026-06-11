@@ -22,7 +22,21 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import talk2view_writer.bridge_server as bs
 from talk2view_writer.bridge_server import _MVP_TOOL_NAMES, BridgeServer
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin DNS resolution to success across this module.
+
+    ``_proxy_fetch`` / ``proxy_stream_open`` now run a ``_dns_reachable``
+    pre-check (investigations #63). These tests use non-resolving hosts
+    (``example.test``, reserved per RFC 6761) with a mocked httpx, so without
+    this stub the pre-check would short-circuit before httpx is reached. The
+    DNS-bound behaviour has dedicated tests in ``test_dns_reachable.py``.
+    """
+    monkeypatch.setattr(bs, "_dns_reachable", lambda *_a, **_k: True)
 
 
 @pytest.fixture

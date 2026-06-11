@@ -15,9 +15,22 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import talk2view_writer.bridge_server as bs
 from talk2view_writer.bridge_server import BridgeServer, _decode_multipart_envelope
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin DNS resolution to success so the tests reach the mocked httpx.
+
+    ``_proxy_fetch`` now runs a ``_dns_reachable`` pre-check up front
+    (investigations #63); without this stub it would short-circuit before
+    reaching the (mocked) httpx client. The DNS-bound path has its own
+    dedicated tests in ``test_dns_reachable.py``.
+    """
+    monkeypatch.setattr(bs, "_dns_reachable", lambda *_a, **_k: True)
 
 
 def _envelope(*, fields: list[dict[str, str]], files: list[dict[str, str]]) -> str:
