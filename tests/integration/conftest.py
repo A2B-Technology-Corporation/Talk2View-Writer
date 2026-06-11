@@ -322,6 +322,36 @@ def tool_doc(desktop: Any, uno_context: Any, monkeypatch: Any) -> Iterator[Any]:
         "get_preferences",
         lambda: {prefs_mod.PREF_AI_TRACK_CHANGES: False},
     )
+
+    # Pin get_writer_document to THIS doc everywhere it is used. The
+    # production resolver goes through desktop.getCurrentComponent(), which
+    # does NOT reliably return a freshly-loaded doc across environments (it
+    # returned None on the ubuntu CI legs where soffice starts with --writer)
+    # and can drift to another open doc between tests. Pinning it makes every
+    # tool operate on — and every test assert against — the SAME document.
+    # The tool body still runs all its real UNO logic; only the trivial doc
+    # lookup is bypassed. Patch each tool module's local binding plus _base's
+    # own (used by the mutating undo / track-changes envelope).
+    import talk2view_writer.tools._base as base_mod
+
+    def _resolve(_ctx: Any) -> Any:
+        return doc
+
+    monkeypatch.setattr(base_mod, "get_writer_document", _resolve)
+    for _mod_name in (
+        "writing",
+        "formatting",
+        "structure",
+        "reading",
+        "search",
+        "commenting",
+    ):
+        _mod = __import__(
+            f"talk2view_writer.tools.{_mod_name}",
+            fromlist=["get_writer_document"],
+        )
+        if hasattr(_mod, "get_writer_document"):
+            monkeypatch.setattr(_mod, "get_writer_document", _resolve)
     try:
         yield doc
     finally:
