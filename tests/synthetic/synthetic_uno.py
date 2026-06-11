@@ -1037,7 +1037,12 @@ class FakeTextDocument(_Service):
                 name=f"Table{self._tables.getCount() + 1}",
             )
         if service == "com.sun.star.text.TextField.Annotation":
-            return FakeAnnotation(name="__synthetic__", content="")
+            # Real LibreOffice (24.x/26.x) returns API-created annotations
+            # with an EMPTY Name — modelling that faithfully is what lets the
+            # stable-id backfill (_annotation_id, Investigation #66) be tested
+            # here. A fixed fake Name previously masked the dead-manage_comment
+            # bug. Name is settable on FakeAnnotation, so the backfill works.
+            return FakeAnnotation(name="", content="")
         if service == "com.sun.star.text.TextGraphicObject":
             return _PropBag(GraphicURL="", AnchorType=0)
         if service == "com.sun.star.text.NumberingRules":

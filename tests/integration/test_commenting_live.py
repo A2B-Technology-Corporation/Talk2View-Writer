@@ -153,6 +153,95 @@ class TestAnchorComment:
         }
 
 
+class TestCommentLifecycleIds:
+    """Investigation #66: get_comments ids must survive to manage_comment.
+
+    API-created annotations have an EMPTY Name on real LO 24.x/26.x, so the
+    old ``str(id(ann))`` fallback id changed on every re-enumeration and
+    manage_comment could never find a comment by the id get_comments handed
+    out — resolve/reply/edit/delete were all dead. ``_annotation_id`` now
+    assigns a stable, persisted ``t2v-…`` Name. These tests exercise the
+    real C++ Name-assignment path the synthetic model cannot.
+    """
+
+    def _add(self, doc: Any, anchor: str, body: str) -> None:
+        from talk2view_writer.tools.commenting import _anchor_comment
+
+        rng = _find_first(doc, anchor)
+        _anchor_comment(rng.getText(), rng, _new_annotation(doc, body))
+
+    def test_ids_are_stable_distinct_and_survive_re_enumeration(
+        self, comment_doc: Any
+    ) -> None:
+        from talk2view_writer.tools.commenting import (
+            _annotation_id,
+            _iter_annotations,
+        )
+
+        self._add(comment_doc, "Captain Elena Vance", "protagonist")
+        self._add(comment_doc, "dead moon of Aethel", "setting")
+
+        ids1 = [_annotation_id(a) for a in _iter_annotations(comment_doc)]
+        ids2 = [_annotation_id(a) for a in _iter_annotations(comment_doc)]
+        assert all(i for i in ids1), "ids must be non-empty"
+        assert len(set(ids1)) == 2, "ids must be distinct"
+        assert ids1 == ids2, "ids must be stable across re-enumeration"
+        # And NOT the old unstable python-proxy-id fallback.
+        assert all(i.startswith("t2v-") for i in ids1)
+
+    def test_manage_comment_round_trip_resolve_and_delete_by_id(
+        self, comment_doc: Any
+    ) -> None:
+        from talk2view_writer.tools.commenting import (
+            _annotation_id,
+            _find_by_id,
+            _iter_annotations,
+        )
+
+        self._add(comment_doc, "Captain Elena Vance", "protagonist")
+        self._add(comment_doc, "dead moon of Aethel", "setting")
+
+        # "get_comments" hands out ids; a SEPARATE "manage_comment" finds them.
+        ids = [_annotation_id(a) for a in _iter_annotations(comment_doc)]
+        targets = [_find_by_id(comment_doc, cid) for cid in ids]
+        assert all(t is not None for t in targets), "every id must resolve"
+
+        # resolve by id
+        targets[0].Resolved = True
+        assert _find_by_id(comment_doc, ids[0]).Resolved is True
+
+        # delete by id (the manage_comment delete path)
+        tgt = _find_by_id(comment_doc, ids[1])
+        anchor_text = tgt.getAnchor().getText() if tgt.getAnchor() else comment_doc.getText()
+        anchor_text.removeTextContent(tgt)
+        remaining = [_annotation_id(a) for a in _iter_annotations(comment_doc)]
+        assert ids[1] not in remaining
+        assert ids[0] in remaining
+
+    def test_reply_nests_under_parent(self, comment_doc: Any, uno_context: Any) -> None:
+        from talk2view_writer.tools.commenting import (
+            _annotation_id,
+            _find_by_id,
+            _insert_reply,
+            _iter_annotations,
+        )
+
+        self._add(comment_doc, "Captain Elena Vance", "protagonist")
+        parent_id = _annotation_id(_iter_annotations(comment_doc)[0])
+        parent = _find_by_id(comment_doc, parent_id)
+
+        _insert_reply(uno_context, comment_doc, parent, "still needs work")
+
+        # The reply carries ParentName == the parent's id (nested), not "".
+        parent_names = {
+            _annotation_id(a): getattr(a, "ParentName", "")
+            for a in _iter_annotations(comment_doc)
+        }
+        assert parent_id in parent_names.values(), (
+            "reply did not nest — its ParentName should equal the parent id"
+        )
+
+
 class TestRangeAbsorbCanary:
     """Document WHY we use point-anchor: range-absorb is broken upstream."""
 

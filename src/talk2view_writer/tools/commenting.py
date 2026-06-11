@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -93,15 +94,41 @@ def _iter_annotations(doc: Any) -> list[Any]:
 
 
 def _annotation_id(ann: Any) -> str:
-    """Stable identifier for an Annotation TextField.
+    """Stable, persisted identifier for an Annotation TextField.
 
-    LibreOffice exposes a string ``Name`` property (LO ≥ 4.x). Older
-    builds occasionally return ``""`` — we fall back to ``str(id(ann))``
-    so the agent can still round-trip a handle within one session.
-    See Investigation #23.
+    Returns the annotation's ``Name`` — but API-created annotations come
+    back with an EMPTY ``Name`` on LibreOffice 24.x/26.x (verified on
+    26.2), and the previous ``str(id(ann))`` fallback used the Python UNO
+    proxy id, which CHANGES on every re-enumeration. So an id handed out by
+    ``get_comments`` never matched in a later ``manage_comment`` call —
+    resolve / reply / edit / delete all failed with "not found", i.e. the
+    whole comment-management surface was dead on these builds
+    (Investigation #66).
+
+    Fix: the first time we see a nameless annotation, assign a stable
+    unique ``Name`` and persist it in the document (verified settable +
+    stable across re-enumeration). Subsequent calls — including a separate
+    ``manage_comment`` bridge call — read the same persisted Name, so the
+    id round-trips. Idempotent: an annotation that already has a Name (ours
+    from a prior call, or a UI-created comment) is returned unchanged.
+    See Investigation #23 for the reply-chain history.
     """
     name = getattr(ann, "Name", "") or ""
-    return name if name else str(id(ann))
+    if name:
+        return name
+    new_name = f"t2v-{uuid.uuid4().hex}"
+    try:
+        ann.Name = new_name
+    except Exception:
+        # A build that rejects the Name write falls back to the old
+        # (unstable) behaviour rather than crashing — manage_comment may
+        # still miss it, but get_comments / add_comment keep working.
+        logger.warning(
+            "Could not assign a stable Name to an annotation; manage_comment "
+            "may not resolve it by id on this LibreOffice build."
+        )
+        return str(id(ann))
+    return getattr(ann, "Name", "") or new_name
 
 
 def _annotation_resolved(ann: Any) -> bool | None:
@@ -655,7 +682,12 @@ def _insert_reply(ctx: Any, doc: Any, parent: Any, content: str) -> None:
     reply.Content = content
     _stamp_authorship(ctx, reply)
 
-    parent_name = getattr(parent, "Name", "") or ""
+    # Use _annotation_id (not raw getattr) so the parent gets a stable,
+    # persisted Name if it lacked one — otherwise ParentName would be set
+    # to "" and the reply would NOT nest under the parent in the Writer UI
+    # (the parent's Name is empty for API-created comments on LO 24.x/26.x;
+    # Investigation #66 / #23).
+    parent_name = _annotation_id(parent)
     if parent_name and hasattr(reply, "ParentName"):
         reply.ParentName = parent_name
 

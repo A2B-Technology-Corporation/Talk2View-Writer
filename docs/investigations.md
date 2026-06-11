@@ -2537,3 +2537,71 @@ Platform #62 / #63 (the tool-call-count overshoot penguin_story cited).
 **Note:** this is inherently un-validatable locally (no live engine); the
 proof is that the blocking smoke step stays green run-to-run while the
 advisory step absorbs engine variance.
+
+
+## #66 — `manage_comment` dead on real LO: empty annotation Name + unstable id fallback (FIXED 2026-06-11)
+
+**What:** Found while auditing the tool surface for more bugs of the #38
+class (success path tested only against the synthetic fake). On real
+LibreOffice 24.x/26.x (reproduced on 26.2.3.2), an annotation created via
+`doc.createInstance("com.sun.star.text.TextField.Annotation")` comes back
+with an **empty `Name`**. `_annotation_id` fell back to `str(id(ann))` —
+the Python UNO **proxy** id — which is **not stable across
+re-enumeration**: enumerating the annotations twice yields different ids
+(verified: pass 1 ≠ pass 2). So:
+
+- `get_comments` handed out ids like `"140052831961808"`;
+- a later, separate `manage_comment(comment_id=…)` bridge call
+  re-enumerated, computed *different* ids, and `_find_by_id` never
+  matched → **every `resolve`/`reply`/`edit`/`unresolve`/`delete` failed
+  with "Comment … not found"**.
+
+The whole comment-management surface was effectively dead on these builds.
+A second symptom: `_insert_reply` set `ParentName` from the parent's
+(empty) `Name`, so **replies never nested** under their parent in the
+Writer UI (they showed as standalone comments).
+
+**Why it slipped through:** the synthetic `FakeAnnotation` returned by
+`createInstance` had a *fixed* non-empty Name (`"__synthetic__"`), so
+`_annotation_id` returned a stable value in tests — masking the real-LO
+empty-Name reality. The `manage_comment` success path (find-by-id) had no
+live integration test. Exactly the #38 pattern.
+
+**Where:** `commenting.py::_annotation_id` (id scheme), `_insert_reply`
+(ParentName); `tests/synthetic/synthetic_uno.py` (the unfaithful fake).
+
+**FIX (2026-06-11):** `_annotation_id` now assigns a stable unique
+`Name` (`"t2v-" + uuid4().hex`) the first time it sees a nameless
+annotation and **persists it in the document** (verified settable +
+stable across re-enumeration). Idempotent — an annotation that already
+has a Name is returned unchanged. Because `get_comments`, `add_comment`,
+and `_find_by_id` all route through `_annotation_id`, ids now round-trip
+across bridge calls and `manage_comment` resolves them. `_insert_reply`
+uses `_annotation_id(parent)` (not raw `getattr`) so the parent gets a
+stable Name and the reply nests. A build that rejects the Name write
+degrades to the old `str(id())` (logged) rather than crashing.
+
+**Tests added:**
+- `tests/integration/test_commenting_live.py::TestCommentLifecycleIds` —
+  real-soffice tests: ids are stable/distinct/survive re-enumeration, the
+  full add → find-by-id → resolve → delete round-trip works, and replies
+  nest (`ParentName` == parent id).
+- `tests/synthetic/test_commenting_tools.py::TestCommentIdStability` — the
+  same round-trip at unit speed; the synthetic `createInstance` now
+  returns an **empty-Name** annotation like real LO (the fake was made
+  faithful so the backfill is exercised).
+- `tests/unit/test_commenting_helpers.py` — `_annotation_id` assigns +
+  persists a `t2v-` Name; degrades to `str(id())` when the Name write is
+  rejected.
+
+**Audit outcome:** the broader audit's other top candidates were
+live-reproduced and found to be **false alarms** on real LO —
+`manage_comment` delete/resolve/edit work on point-anchored comments;
+`search_document` regex (`SearchRegularExpression`) and whole-word
+(`SearchWords`) are honoured correctly; writing char properties under
+Track Changes does not throw. The one residual robustness gap noted but
+not reproduced: `formatting.py::format_text` applies
+`_apply_inline_formatting` with no per-item try/except, so a single
+genuinely-rejected write (e.g. a write-protected section) would abort the
+whole batch and leave partial formatting — worth hardening if a real
+repro surfaces.
