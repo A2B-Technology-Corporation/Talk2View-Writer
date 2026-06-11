@@ -158,6 +158,87 @@ class TestFormatText:
         )
         assert isinstance(result, dict)
 
+    def test_string_paragraph_index_is_coerced_not_selection(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A numeric-string paragraph_index targets that paragraph.
+
+        It must NOT fall through to the current selection.
+        """
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("first"), FakeParagraph("second target")]
+        )
+        result = json.loads(
+            format_text(queries=[{"paragraph_index": "1", "bold": True}])
+        )
+        assert result["success"] is True
+        # The targeted paragraph's text is reported (not a selection).
+        assert "second target" in json.dumps(result)
+
+    def test_non_numeric_paragraph_index_errors_not_selection(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("only para"))
+        result = json.loads(
+            format_text(queries=[{"paragraph_index": "abc", "bold": True}])
+        )
+        # Per-item error, not a silent format of the current selection.
+        assert result["success"] is False
+        assert any(
+            "paragraph_index" in (r.get("error") or "") for r in result["results"]
+        )
+
+
+class TestInlineEscapement:
+    """Superscript/subscript are independent toggles — neither cancels the other.
+
+    Direct helper-level regression: applying the flags sequentially used
+    to let {superscript: true, subscript: false} set superscript and then
+    immediately wipe it via the subscript=false baseline reset.
+    """
+
+    def _cursor(self) -> object:
+        import types
+
+        return types.SimpleNamespace()
+
+    def test_superscript_true_subscript_false_stays_superscript(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"superscript": True, "subscript": False})
+        assert cur.CharEscapement == 33  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 58  # type: ignore[attr-defined]
+
+    def test_subscript_true_superscript_false_stays_subscript(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"subscript": True, "superscript": False})
+        assert cur.CharEscapement == -33  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 58  # type: ignore[attr-defined]
+
+    def test_both_false_resets_to_baseline(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"superscript": False, "subscript": False})
+        assert cur.CharEscapement == 0  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 100  # type: ignore[attr-defined]
+
+    def test_no_escapement_keys_leaves_escapement_untouched(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"bold": True})
+        assert not hasattr(cur, "CharEscapement")
+
 
 class TestFormatParagraph:
     def test_invalid_alignment_returns_error(
@@ -206,6 +287,38 @@ class TestFormatParagraph:
             "ParaStyleName"
         )
         assert applied in ("Heading 1", "Heading1")
+
+    def test_batch_all_out_of_range_reports_failure(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A batch where every paragraph fails must NOT report success:true.
+
+        The single source-document paragraph means indices 10/11/12 are all
+        out of range. The batch used to hardcode success:true with
+        paragraphs_formatted:0, so an LLM checking only `success` believed
+        the formatting was applied.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        result = json.loads(
+            format_paragraph(paragraph_indices=[10, 11, 12], alignment="center")
+        )
+        assert result["success"] is False
+        assert result["paragraphs_formatted"] == 0
+        assert all("error" in r for r in result["results"])
+
+    def test_batch_partial_success_reports_false(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("real paragraph"))
+        result = json.loads(
+            format_paragraph(paragraph_indices=[1, 99], alignment="center")
+        )
+        # One succeeded, one out of range -> overall success is False.
+        assert result["success"] is False
+        assert result["paragraphs_formatted"] == 1
 
     def test_missing_style_single_target_degrades_not_raises(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
@@ -461,6 +574,26 @@ class TestManageList:
         assert result["success"] is True
         para = synthetic_doc._text._paragraphs[1]
         assert para.getPropertyValue("NumberingRules") is None
+        assert para.getPropertyValue("NumberingIsNumber") is False
+
+    def test_remove_preserves_a_non_list_paragraph_style(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Removing numbering from a heading must NOT flatten its style.
+
+        A numbered Heading 2 (its style was never set by manage_list) must
+        keep Heading 2 after remove — the tool removes list formatting, not
+        the paragraph's style. Previously remove unconditionally forced the
+        pool default, destroying the heading.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("Chapter One", style="Heading 2")
+        )
+        manage_list(action="remove", paragraph_indices=[1])
+        para = synthetic_doc._text._paragraphs[1]
+        assert para.getPropertyValue("ParaStyleName") == "Heading 2"
         assert para.getPropertyValue("NumberingIsNumber") is False
 
     def test_remove_reports_failure_when_clear_raises(

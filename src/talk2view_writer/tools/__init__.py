@@ -5,7 +5,7 @@ calls (via the ``interrupt → resume`` loop) when the cloud agent decides
 to use a tool. Function signatures + Google-style docstrings drive the
 schema the LLM sees, so type hints and arg descriptions matter.
 
-The 20 tools mirror ``Talk2View-Word/src/taskpane/tools/*.ts`` — see the
+The 21 tools mirror ``Talk2View-Word/src/taskpane/tools/*.ts`` — see the
 mapping table in the project plan and ``CLAUDE.md`` for the
 TypeScript-to-UNO equivalence. (The Phase A plan's "26 tools" figure
 was a miscount; see ``Phase D Group 1`` commit message for the correction.)
@@ -14,8 +14,10 @@ Phase D Group 1 shipped the Reading group (``get_document``,
 ``get_selection``, ``select_text``). Group 2 ships the Writing group:
 ``insert_content`` (now enriched to full Word schema),
 ``insert_table``, ``insert_image``, ``undo_redo``, ``delete_content``,
-``edit_table``. Groups 3-6 add the remaining 11 across formatting /
-search / structure / commenting.
+``edit_table``. Groups 3-6 add the remaining 12 across formatting /
+search / structure / commenting / preferences (``manage_preferences``,
+added after the original Phase D plan for the ADR-0035 track-changes
+toggle).
 """
 
 from __future__ import annotations

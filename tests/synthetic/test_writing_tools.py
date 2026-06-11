@@ -82,6 +82,35 @@ class TestUndoRedo:
         assert "before" in pc
         assert "after" in pc
 
+    def test_success_reports_steps_applied(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import undo_redo
+
+        result = json.loads(undo_redo("undo", count=3))
+        assert result["success"] is True
+        assert result["steps_requested"] == 3
+        assert result["steps_applied"] == 3
+
+    def test_zero_available_steps_reports_failure(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A redo with nothing to redo must report success:false, not true.
+
+        Previously undo_redo returned success:true with a 'may be a
+        formatting-only change' hint even when zero steps ran.
+        """
+        from talk2view_writer.tools.writing import undo_redo
+
+        # Make redo impossible on the synthetic undo manager.
+        undo_manager = synthetic_doc.getUndoManager()
+        undo_manager.isRedoPossible = lambda: False  # type: ignore[method-assign]
+        result = json.loads(undo_redo("redo", count=2))
+        assert result["success"] is False
+        assert result["steps_applied"] == 0
+        assert "error" in result
+        assert undo_manager.redo_calls == 0
+
 
 # ---------------------------------------------------------------------------
 # delete_content
@@ -177,6 +206,9 @@ class TestDeleteContent:
         synthetic_doc._text._paragraphs.extend(
             [FakeParagraph("a"), FakeParagraph("b"), FakeParagraph("c")]
         )
+        # Redlining is ON — this is what makes an unchanged count a genuine
+        # tracked deletion rather than a stray empty paragraph.
+        synthetic_doc.setPropertyValue("RecordChanges", True)
 
         # Model a tracked deletion: LibreOffice records a redline but the
         # paragraph keeps enumerating until accepted, so the deletion call
@@ -196,6 +228,52 @@ class TestDeleteContent:
         # Count is genuinely unchanged — the paragraph still enumerates.
         assert len(synthetic_doc._text._paragraphs) == 3
 
+    def test_emptied_node_with_redlining_off_is_not_a_tracked_change(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: object,
+    ) -> None:
+        """Count unchanged + redlining OFF == emptied last paragraph, not a redline.
+
+        Previously delete_content inferred a tracked change purely from the
+        unchanged count, so deleting the last paragraph (whose trailing
+        break can't be swallowed) falsely reported a pending tracked change
+        even with track changes off.
+        """
+        import talk2view_writer.preferences as prefs_mod
+        from talk2view_writer.preferences import (
+            PREF_AI_TRACK_CHANGES,
+            Preferences,
+            get_preferences,
+        )
+        from talk2view_writer.tools import writing
+
+        # Disable the AI track-changes envelope so it does not force
+        # RecordChanges=True for the call — model a user with redlining off.
+        monkeypatch.setattr(
+            prefs_mod, "_INSTANCE", Preferences(tmp_path / "preferences.json")  # type: ignore[operator]
+        )
+        get_preferences().set(PREF_AI_TRACK_CHANGES, False)
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("a"), FakeParagraph("b")]
+        )
+        synthetic_doc.setPropertyValue("RecordChanges", False)
+
+        # Model the last-paragraph case: text emptied, node remains.
+        def _empty_in_place(text_obj: object, para: object) -> None:
+            return None
+
+        monkeypatch.setattr(writing, "_delete_paragraph", _empty_in_place)
+
+        result = json.loads(writing.delete_content(paragraph_index=1))
+        assert result["tracked_change"] is False
+        assert "hint" not in result
+        assert "empty paragraph node remains" in result["warning"].lower()
+
     def test_range_tracked_deletion_reports_pending_acceptance(
         self,
         patched_extension: object,
@@ -209,6 +287,8 @@ class TestDeleteContent:
         synthetic_doc._text._paragraphs.extend(
             FakeParagraph(f"para {i}") for i in range(5)
         )
+
+        synthetic_doc.setPropertyValue("RecordChanges", True)
 
         def _tracked_delete(text_obj: object, para: object) -> None:
             return None
@@ -224,6 +304,80 @@ class TestDeleteContent:
 # ---------------------------------------------------------------------------
 # insert_content — shape-only checks (real UNO covered in integration tests)
 # ---------------------------------------------------------------------------
+
+
+class TestInsertContentValidation:
+    """insert_content must reject bad args BEFORE mutating the document.
+
+    Each of these used to either raise a raw exception after the content
+    was already inserted (alignment), silently place content at the wrong
+    spot (unknown location, negative index), or skip validation of the
+    blocks-mode fallback style.
+    """
+
+    def _para_count(self, doc: FakeTextDocument) -> int:
+        return len(doc._text._paragraphs)
+
+    def test_bad_alignment_returns_error_without_mutating(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(
+            insert_content(text="Body", location="end", alignment="middle")
+        )
+        assert "error" in result
+        assert "alignment" in result["error"].lower()
+        # No paragraph was inserted — validation ran before mutation.
+        assert self._para_count(synthetic_doc) == before
+
+    def test_titlecased_alignment_is_accepted(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(text="Centered", location="end", alignment="Center")
+        )
+        assert result.get("success") is True
+
+    def test_unknown_location_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(insert_content(text="Disclaimer", location="top"))
+        assert "error" in result
+        assert "location" in result["error"].lower()
+        assert self._para_count(synthetic_doc) == before
+
+    def test_negative_paragraph_index_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                text="Appendix", location="before_paragraph", paragraph_index=-1
+            )
+        )
+        assert "error" in result
+        assert "paragraph_index" in result["error"]
+
+    def test_blocks_mode_bad_fallback_style_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(
+            insert_content(blocks=["Methods"], style="BogusStyle", location="end")
+        )
+        assert "error" in result
+        assert "style" in result["error"].lower()
+        assert self._para_count(synthetic_doc) == before
 
 
 class TestInsertContent:
@@ -400,3 +554,47 @@ class TestInsertContent:
         assert "error" not in result, result
         # The single-text path echoes the resolved style on the top-level key.
         assert result["style"] == "Heading2", result
+
+
+class TestEditTableValidation:
+    """edit_table must reject bad row/column/count BEFORE touching the table.
+
+    A negative index used to reach getCellByPosition / removeByIndex and
+    raise a raw UNO error, and count=0 was silently clamped to 1 — deleting
+    a row the caller asked to leave alone.
+    """
+
+    def test_count_zero_is_rejected_not_clamped(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(table_index=0, action="delete_rows", row=2, count=0)
+        )
+        assert "error" in result
+        assert "count" in result["error"]
+
+    def test_negative_row_is_rejected(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(table_index=0, action="edit_cell", row=-1, column=0, value="x")
+        )
+        assert "error" in result
+        assert "row" in result["error"]
+
+    def test_negative_column_is_rejected(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(
+                table_index=0, action="delete_columns", column=-2, count=1
+            )
+        )
+        assert "error" in result
+        assert "column" in result["error"]

@@ -120,14 +120,24 @@ def ui_thread_tool(fn: _F) -> _F:
         # envelope. Read the preference before marshalling so a
         # disabled toggle skips the UI-thread overhead of resolving
         # the document.
-        track_changes = (
-            tool_name in _MUTATING_TOOL_NAMES
-            and bool(get_preferences().get(PREF_AI_TRACK_CHANGES))
+        is_mutating = tool_name in _MUTATING_TOOL_NAMES
+        track_changes = is_mutating and bool(
+            get_preferences().get(PREF_AI_TRACK_CHANGES)
         )
         start = time.monotonic()
-        if track_changes:
+        if is_mutating:
+            # Mutating tools run inside a single XUndoManager undo context so
+            # the whole tool call is ONE atomic Ctrl+Z (and a mid-call failure
+            # can be rolled back as a unit), plus — when enabled — the
+            # track-changes redline envelope.
             result = ext.ui_thread.run_sync(
-                _run_with_track_changes, fn, ext.ctx, args, kwargs
+                _run_mutating_on_ui_thread,
+                fn,
+                ext.ctx,
+                args,
+                kwargs,
+                track_changes=track_changes,
+                tool_name=tool_name,
             )
         else:
             result = ext.ui_thread.run_sync(fn, *args, **kwargs)
@@ -211,6 +221,60 @@ class suspend_record_changes:  # noqa: N801 — used like a function-style CM
                 self._doc.setPropertyValue("RecordChanges", True)
             except Exception:
                 logger.exception("Could not restore RecordChanges after suspend block")
+
+
+def _run_mutating_on_ui_thread(
+    fn: Callable[..., Any],
+    ctx: XComponentContext,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    track_changes: bool,
+    tool_name: str,
+) -> Any:
+    """Run a mutating tool body inside one undo context (+ optional redlining).
+
+    Must run on the LibreOffice UI thread. Wraps the call in
+    ``XUndoManager.enterUndoContext`` / ``leaveUndoContext`` so a multi-step
+    tool (insert_content with N blocks, a range delete, a batch format) is a
+    single atomic undo step: one user Ctrl+Z reverts the whole AI edit rather
+    than one fragment, and a mid-call failure leaves a unit that can be
+    rolled back programmatically.
+
+    If no Writer document is active, the tool body is called directly so it
+    raises :class:`WriterDocumentRequiredError` with its clearer message.
+    """
+    try:
+        doc = get_writer_document(ctx)
+    except WriterDocumentRequiredError:
+        return fn(*args, **kwargs)
+
+    undo_manager: Any | None = None
+    try:
+        undo_manager = doc.getUndoManager()
+        undo_manager.enterUndoContext(f"Talk2View: {tool_name}")
+    except Exception:
+        # Some embeddings (older builds, headless) may not expose a usable
+        # UndoManager. Degrade to running without grouping rather than
+        # failing the edit; the traceback is preserved for diagnosis.
+        logger.exception(
+            "Could not open undo context for %s; running without grouping",
+            tool_name,
+        )
+        undo_manager = None
+
+    try:
+        if track_changes:
+            return _run_with_track_changes(fn, ctx, args, kwargs)
+        return fn(*args, **kwargs)
+    finally:
+        if undo_manager is not None:
+            try:
+                undo_manager.leaveUndoContext()
+            except Exception:
+                logger.exception(
+                    "Could not leave undo context for %s", tool_name
+                )
 
 
 def _run_with_track_changes(

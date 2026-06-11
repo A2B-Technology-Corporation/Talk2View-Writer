@@ -17,6 +17,12 @@ applied.
 | Deferred   | Will be revisited in a later phase; documented to avoid losing it.   |
 | Superseded | Replaced by a later ADR — link from the body of the new one.         |
 | Deprecated | Old decision; code being removed but not yet replaced.               |
+| Reverted   | Tried, then rolled back; the change is no longer in the code.         |
+
+> **Numbering gap:** there is no ADR-0032. The streaming-SSE-proxy decision
+> that early notes (e.g. ADR-0031) referred to as a future "ADR-0032" was
+> recorded as [ADR-0033](0033-streaming-sse-proxy-via-polled-queue.md); the
+> number 0032 was skipped.
 
 ## Index
 
@@ -46,7 +52,7 @@ applied.
 | [0022](0022-system-prompt-bundled-and-overridable.md) | Bundle SYSTEM_PROMPT.md in the .oxt, pass per-session | E | Accepted |
 | [0023](0023-vendor-pydantic-core-wheels.md) | Bundle pre-built pydantic_core wheels for the cross-platform matrix | F | Accepted |
 | [0024](0024-synthetic-uno-and-mock-chat-test-rig.md) | Synthetic-UNO + mock-engine test rig alongside the real-soffice integration suite | F | Accepted |
-| [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Superseded by 0027 |
+| [0025](0025-desktop-window-peer-for-panel-construction.md) | Use Toolkit.getDesktopWindow() as the XWindowPeer for sidebar panel construction | F | Superseded by 0026 |
 | [0026](0026-python-xwindowpeer-adapter.md) | Python XWindowPeer adapter for strict-PyUNO sidebar panel construction | F | Superseded by 0027 |
 | [0027](0027-canonical-toolpanel-pattern.md) | Follow LibreOffice's canonical Python toolpanel pattern verbatim | F | Superseded by 0029 |
 | [0028](0028-queryinterface-xwindowpeer.md) | Obtain XWindowPeer via queryInterface before createContainerWindow | F | Superseded by 0029 |
@@ -54,7 +60,7 @@ applied.
 | [0030](0030-web-chat-via-pywebview-subprocess.md) | Web chat UI via pywebview subprocess + Unix-socket bridge | F | Accepted |
 | [0031](0031-e2e-via-playwright-against-browser-bundle.md) | E2E via Playwright against the browser-bundle in Chromium, not pywebview | G | Accepted |
 | [0033](0033-streaming-sse-proxy-via-polled-queue.md) | Streaming SSE proxy via a polled per-stream queue | G | Accepted |
-| [0034](0034-reuse-word-partner-key-with-writer-system-prompt.md) | Reuse Word's partner key + override system prompt for Writer | G | Accepted |
+| [0034](0034-reuse-word-partner-key-with-writer-system-prompt.md) | Reuse Word's partner key + override system prompt for Writer | G | Reverted |
 | [0035](0035-track-changes-default-for-ai-edits.md) | Track changes by default for AI edits (per-call envelope, user preference) | G | Accepted |
 | [0036](0036-live-e2e-via-playwright-real-soffice.md) | Live E2E via Playwright + bridge-routed shim + real soffice + real engine | G | Accepted |
 | [0037](0037-comment-authorship-stamping.md) | Stamp author ("Talk2View on behalf of …") + date on AI-created comments | G | Accepted |

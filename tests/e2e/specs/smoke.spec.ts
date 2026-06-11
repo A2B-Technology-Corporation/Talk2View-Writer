@@ -59,4 +59,44 @@ test.describe('chat smoke', () => {
     );
     expect(chatRequests).toHaveLength(1);
   });
+
+  test('INFO logs do not leak the user email (PII) to the host log', async ({
+    appPage,
+  }) => {
+    // The appPage fixture pre-seeds a session for tester@example.com.
+    // Wait for the auth-state log to be emitted.
+    await expect
+      .poll(
+        async () => {
+          const logs = await appPage.evaluate(() => window.__t2vTestLogs);
+          return logs?.some((l) => l.message.startsWith('[auth] state'));
+        },
+        { timeout: 10_000, message: 'never logged [auth] state' },
+      )
+      .toBeTruthy();
+
+    const logs = (await appPage.evaluate(() => window.__t2vTestLogs)) ?? [];
+    const infoLogs = logs.filter((l) => l.level === 'info');
+
+    // No INFO log message or context may contain the email address.
+    for (const l of infoLogs) {
+      expect(l.message).not.toContain('tester@example.com');
+      expect(JSON.stringify(l.context ?? null)).not.toContain('tester@example.com');
+    }
+
+    // The auth-state log records presence, not the address.
+    const authLog = infoLogs.find((l) => l.message.startsWith('[auth] state'));
+    expect(authLog).toBeTruthy();
+    const ctx = (authLog?.context ?? {}) as Record<string, unknown>;
+    expect(ctx).toHaveProperty('has_email');
+    expect(ctx).not.toHaveProperty('email');
+
+    // remember_email logs presence only, never the address.
+    const rememberLog = infoLogs.find((l) =>
+      l.message.startsWith('[remember_email]'),
+    );
+    if (rememberLog) {
+      expect(rememberLog.message).not.toContain('@');
+    }
+  });
 });

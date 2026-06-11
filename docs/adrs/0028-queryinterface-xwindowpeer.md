@@ -1,6 +1,6 @@
 # ADR-0028: Obtain XWindowPeer via `queryInterface` before `createContainerWindow`
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0029](0029-floating-chat-window.md)
 **Date:** 2026-05-21
 **Phase:** F
 **Supersedes:** the "unsupported build" follow-up clause of ADR-0027

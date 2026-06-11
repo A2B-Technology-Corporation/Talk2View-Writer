@@ -164,3 +164,23 @@ class TestBridgeClientNotify:
         client.notify("log", {"message": "noise"})
         # The first real call still uses id=1 (the canned reply's id).
         assert client._call("list_tools", {}) == "ok"
+
+    def test_notify_not_blocked_by_in_flight_call_round_trip(self) -> None:
+        """A log must not queue behind a _call blocked on a slow reply.
+
+        Regression for the lock split: _call holds _call_lock for the
+        whole round-trip (including a proxy_stream_next read that can
+        block up to 60s), but notify takes only _write_lock. Simulate the
+        in-flight round-trip by holding _call_lock; notify must still send
+        promptly. If notify needed _call_lock this would deadlock and
+        pytest-timeout would fire.
+        """
+        client, sock = self._client()
+        client._call_lock.acquire()
+        try:
+            client.notify("log", {"message": "while a _call is in flight"})
+        finally:
+            client._call_lock.release()
+        sent = json.loads(sock.sent.rstrip(b"\n").decode())
+        assert sent["method"] == "log"
+        assert "id" not in sent

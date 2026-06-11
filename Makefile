@@ -89,10 +89,11 @@ test-e2e-install:
 # unit suite's coverage. Re-add ``-m "unit or synthetic or integration"``
 # once that conftest is rewritten.
 #
-# --cov-fail-under=58 ratchets the floor at the current measured value
-# (58.52% line+branch). Raise this number as tests are added; never
-# lower it without a documented reason. See task #29 — the path to
-# 100% is laid out in tests/COVERAGE_PLAN.md (TBD).
+# --cov-fail-under=68 ratchets the floor below the current measured value
+# (~70% line+branch). This Makefile is the single source of truth for the
+# floor. Raise this number as tests are added; never lower it without a
+# documented reason. See task #29 — the path to 100% is laid out in
+# tests/COVERAGE_PLAN.md (TBD).
 coverage:
 	uv run pytest -m "unit or synthetic" \
 	    --cov=src/talk2view_writer \
@@ -100,7 +101,7 @@ coverage:
 	    --cov-report=term \
 	    --cov-report=xml \
 	    --cov-branch \
-	    --cov-fail-under=58
+	    --cov-fail-under=68
 
 typecheck:
 	uv run mypy src/

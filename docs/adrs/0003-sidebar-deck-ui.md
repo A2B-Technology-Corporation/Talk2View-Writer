@@ -1,6 +1,6 @@
 # ADR-0003: Sidebar deck as the primary UI surface
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0029](0029-floating-chat-window.md)
 **Date:** 2026-05-17
 **Phase:** A
 

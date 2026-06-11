@@ -2251,3 +2251,125 @@ unhandled `FormData`/`Blob`/`ReadableStream` into a plausible-looking but empty
 request that fails far downstream (a 422 from the server), nowhere near the
 `String()` that caused it. The `[fetch] unrecognised body type …` warning we'd
 left in was the breadcrumb that located it instantly.
+
+## #60 — pyobjc vendored wheels are not integrity-pinned (NEW 2026-06-11)
+
+**What:** `scripts/vendor_wheels.py` now verifies every downloaded
+pydantic-core wheel against the SHA-256 digests `uv.lock` pins (the native
+Rust binary loaded into every user's LibreOffice). The pyobjc framework
+wheels bundled for the macOS Cocoa backend (ADR-0038) are *not* covered:
+pyobjc is not a dev dependency, so its hashes are absent from `uv.lock`,
+and `_vendor_pyobjc_for_macos_rows` extracts whatever `uvx pip download`
+returns with no digest check.
+
+**Where:** `scripts/vendor_wheels.py::_vendor_pyobjc_for_macos_rows` /
+`_download_pyobjc`; the gap is the macOS rows of `MATRIX`.
+
+**Why it matters:** pyobjc ships compiled Obj-C bindings that are extracted
+verbatim into the shipped `.oxt` and loaded into LibreOffice's Python on
+macOS. A compromised mirror / account takeover / MITM of those downloads
+would inject native code signed-and-shipped by the project — the same
+supply-chain risk just closed for pydantic-core. For an SaMD build pipeline
+this should fail closed too.
+
+**Next step:** add a committed digest lock for the pyobjc wheel set (e.g.
+generate `pip download --require-hashes` input, or record SHA-256s into a
+committed JSON keyed by wheel filename) and verify in `_download_pyobjc`
+before extraction, mirroring `_verify_wheel`. Trust-on-first-use is
+acceptable for the initial population so long as subsequent release builds
+verify against the committed digests.
+
+## #61 — e2e streaming-chat progressive-render assertion fails locally (~6ms gap) (NEW 2026-06-11)
+
+**What:** `tests/e2e/specs/streaming-chat.spec.ts` asserts the assistant
+text grows incrementally — the gap between the first chunk landing in the
+DOM and the last must be > 200ms (the mock engine schedules 300ms gaps
+between chunks). Locally it fails deterministically with a gap of ~5–15ms:
+the full reply renders correctly, but all chunks arrive batched, not
+progressively.
+
+**Where:** `tests/e2e/specs/streaming-chat.spec.ts:64`; the streaming path
+is `bridge.ts::_proxyStream` → SDK SSE consumer.
+
+**Why it matters:** either the test is environment-sensitive (headless
+Chromium / the installed `@talk2view/sdk` buffers the SSE body before
+handing chunks to the UI, defeating progressive render) or progressive
+streaming genuinely regressed. Confirmed PRE-EXISTING — fails identically
+on pristine `HEAD` bridge.ts, so it is not caused by the stream-error
+infinite-loop fix.
+
+**Next step:** trace whether the mock engine's `delayMs` reaches the wire
+(SSE flush per chunk) and whether the SDK yields per-chunk or buffers;
+if the batching is real, fix the streaming proxy/SDK; if it's a CI-vs-local
+timing artifact, relax the assertion or gate it on a slower scripted gap.
+
+## #62 — insert_content fused new text into existing paragraphs at start/before anchors (FIXED 2026-06-11)
+
+**What:** `insert_content(location='start'|'before_paragraph')` — and a
+mid-paragraph `target_query` replacement — on a NON-empty paragraph corrupted
+the document. `_insert_paragraph_at_cursor` always emitted the PARAGRAPH_BREAK
+BEFORE writing the text; at the start of a non-empty paragraph that splits the
+host at offset 0, leaving a phantom empty paragraph and fusing the new text
+into the user's existing prose, with the requested style applied to the
+user's text rather than the new paragraph.
+
+**Where:** `src/talk2view_writer/tools/writing.py::_insert_paragraph_at_cursor`.
+
+**Reproduced in real LibreOffice 26.2** (standalone PyUNO script): inserting a
+"My Story" Title at the start of `"Once upon a time"` produced
+`[('', 'Standard'), ('My StoryOnce upon a time', 'Title')]` — a blank line plus
+fused text, all in Title style.
+
+**Why the synthetic suite missed it:** the synthetic UNO model's
+`insertControlCharacter` ignores the cursor and appends a blank paragraph at
+the document end (investigation-tracked as a synthetic-model fidelity gap), so
+it can't model paragraph splitting at the cursor.
+
+**Fix:** branch on cursor position. Empty host paragraph -> write in place.
+Cursor at the END of a non-empty paragraph (append/after-anchors) -> break
+first, style the new empty paragraph, then write (unchanged behaviour).
+Cursor at the START/MIDDLE of a non-empty paragraph (before-anchors,
+mid-paragraph target_query) -> write the text FIRST, then the break, then style
+the paragraph just written. Verified in real LibreOffice: the start-anchor case
+now yields `[('My Story', 'Title'), ('Once upon a time', 'Standard')]`.
+
+**Next step:** make the synthetic `insertControlCharacter`/`insertString`
+faithful (split at the cursor) so this class of regression is catchable
+in-process, and add real-soffice integration tests for insert_content anchors
+(tests/integration/test_writing.py, still unwritten).
+
+## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (PARTIALLY FIXED 2026-06-11)
+
+**What:** On a flaky/offline connection a chat send showed a generic
+"Request failed" after a long delay. Two issues:
+
+1. **Unfriendly message (FIXED):** the bridge's proxy returned an empty body
+   with status 0 on an httpx network error; the SDK's fetchWithAuth reads
+   `body.error.message` and, finding nothing, fell back to "Request failed".
+   Fixed by mapping httpx network exceptions to plain language
+   (`_friendly_network_error`) and returning an engine-shaped error envelope
+   (`{"error": {"message": ..., "type": "network"}}`, status 503) the SDK
+   surfaces verbatim — for both the non-streaming proxy_fetch and the
+   streaming proxy path (bridge.ts `_proxyStream` returns the envelope rather
+   than throwing).
+
+2. **Long delay (NOT fixed):** each failed request took 20–25s, and the
+   user's message waited another ~40s behind the single-bridge-lock
+   serialization of the startup calls (tools/register, config, GitHub update
+   check). Total ~60s before the error surfaced.
+
+**Where:** `bridge_server.py::_proxy_fetch` / `_proxy_stream_open`;
+`web_runner._BridgeClient` (single `_call_lock`); `bridge.ts::_proxyStream`.
+
+**Why the delay is hard:** the 20–25s is `getaddrinfo` (DNS) retrying on a
+bad connection — httpx's `connect=10s` timeout does not bound DNS resolution
+on the sync transport. The serialization then compounds it: a real chat send
+queues behind the slow startup requests on the single bridge connection.
+
+**Next step:** (a) bound DNS — resolve on a thread with a hard deadline, or
+move proxy_fetch to an async/threaded httpx so the connect timeout actually
+caps total time; (b) reduce head-of-line blocking — let the user's message
+request not wait behind non-critical startup calls (separate lane, or make
+tools/register + config + update-check fire-and-forget with their own short
+timeout); (c) optional `navigator.onLine` fast-fail in bridge.ts (unreliable
+in WebKitGTK, so only as a hint).

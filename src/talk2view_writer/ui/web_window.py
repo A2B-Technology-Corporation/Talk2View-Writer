@@ -28,7 +28,9 @@ import sys
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+
+from talk2view_writer._paths import file_url_to_path
 
 if TYPE_CHECKING:
     from com.sun.star.uno import XComponentContext
@@ -320,7 +322,7 @@ class WebWindow:
         parsed = urlparse(html_url)
         if parsed.scheme != "file":
             raise RuntimeError(f"Talk2View web bundle URL must be file://, got {html_url!r}")
-        path = Path(unquote(parsed.path))
+        path = file_url_to_path(html_url)
         if not path.is_file():
             raise FileNotFoundError(
                 f"Talk2View web bundle missing: {path} (resolved from {html_url})"
@@ -349,7 +351,7 @@ class WebWindow:
                 extension_root_url,
             )
             return None
-        path = Path(unquote(parsed.path)) / "icons" / "talk2view.png"
+        path = file_url_to_path(extension_root_url) / "icons" / "talk2view.png"
         if not path.is_file():
             logger.warning(
                 "WebWindow._resolve_icon_path: icon missing at %s", path
@@ -367,7 +369,7 @@ class WebWindow:
         parsed = urlparse(extension_root_url)
         if parsed.scheme != "file":
             raise RuntimeError(f"Extension root URL must be file://, got {extension_root_url!r}")
-        path = Path(unquote(parsed.path)) / "pythonpath"
+        path = file_url_to_path(extension_root_url) / "pythonpath"
         if not path.is_dir():
             raise FileNotFoundError(f"pythonpath/ missing under extension root: {path}")
         return str(path)

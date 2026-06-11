@@ -251,3 +251,56 @@ def test_late_fire_after_timeout_does_not_run_wrapped_fn() -> None:
     assert ran == []
     # (c) the callback self-cleaned from _callbacks (no unbounded growth).
     assert dispatcher._callbacks == []
+
+
+@pytest.mark.unit
+def test_executed_after_timeout_self_cleans_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A UNO call still executing when the timeout fires must not leak.
+
+    Regression for the disputed run_sync finding: if ``fn`` had already
+    started on the UI thread when ``run_sync`` timed out, the callback
+    used to leak in ``_callbacks`` for the extension's lifetime — only the
+    cancelled branch self-cleaned, and run_sync's finally skips removal on
+    timeout. It must now self-clean from its own ``finally``, and run_sync
+    must warn that the document MAY have been mutated post-timeout (the
+    uncancellable-call case is irreducible; visibility is the mitigation).
+    """
+    from talk2view_writer.ui_thread import (
+        UIThreadDispatcher,
+        UIThreadTimeoutError,
+    )
+
+    _attach_caplog(caplog)
+    ran: list[bool] = []
+    release_fn = threading.Event()
+
+    def slow_fn() -> str:
+        # Block until the test releases us — guarantees fn is still
+        # executing when run_sync's deadline passes (so _started is set
+        # and the callback is uncancellable).
+        release_fn.wait(2.0)
+        ran.append(True)
+        return "completed-after-timeout"
+
+    def deferred_add_callback(callback: Any, data: Any) -> None:
+        # Fire on a background thread (like the real AsyncCallback). notify
+        # sets _started under the lock, then enters slow_fn and blocks.
+        threading.Thread(target=lambda: callback.notify(data), daemon=True).start()
+
+    ctx = _make_ctx(deferred_add_callback)
+    dispatcher = UIThreadDispatcher(ctx)
+
+    with pytest.raises(UIThreadTimeoutError):
+        dispatcher.run_sync(slow_fn, timeout=0.2)
+
+    # fn was already running (not cancelled) — let it finish.
+    release_fn.set()
+    deadline = time.monotonic() + 2.0
+    while dispatcher._callbacks and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert ran == [True], "an already-started call must run to completion"
+    assert dispatcher._callbacks == [], "callback must self-clean — no leak"
+    assert "MAY have been mutated" in caplog.text

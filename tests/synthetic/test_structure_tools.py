@@ -75,12 +75,18 @@ class TestSetHeaderFooter:
     ) -> None:
         from talk2view_writer.tools.structure import set_header_footer
 
-        # The synthetic doc's PageStyle doesn't expose the full
-        # HeaderText / FooterText UNO surface, so the tool may fall
-        # through to a graceful error. We just confirm the tool
-        # returns a structured response (no unhandled exception).
+        # The synthetic PageStyle DOES expose a real HeaderText (see
+        # synthetic_uno.py), so assert the mutation actually landed — the
+        # old `assert isinstance(result, dict)` passed for any error return.
         result = json.loads(set_header_footer(type="header", text="Top of page"))
-        assert isinstance(result, dict)
+        assert result.get("success") is True, result
+        assert "error" not in result
+        page_style = (
+            synthetic_doc.getStyleFamilies()
+            .getByName("PageStyles")
+            .getByName("Default Page Style")
+        )
+        assert page_style.HeaderText.getString() == "Top of page"
 
 
 class TestInsertPageNumbers:
@@ -240,15 +246,13 @@ class TestSetPageSetup:
         patched_extension: object,
         synthetic_doc: FakeTextDocument,
     ) -> None:
-        """Case-insensitive header_footer args normalise cleanly (Writer #5).
+        """Case-insensitive header_footer args normalise and apply.
 
         Title-cased ``type`` + lowercased camelCase ``header_footer_type``.
-        The synthetic doc doesn't expose the full HeaderText UNO surface
-        (same limitation as test_header_text_returns_dict), so the tool
-        may fall through to a graceful error — we just confirm the
-        case-insensitive args don't raise an unhandled exception and the
-        tool returns a structured dict. The exact camelCase mapping is
-        unit-tested in test_constants.py::TestEnumNormalization.
+        The synthetic PageStyle now exposes the firstPage variant
+        (HeaderTextFirst), so assert the write actually landed there. The
+        exact camelCase mapping is unit-tested in
+        test_constants.py::TestEnumNormalization.
         """
         from talk2view_writer.tools.structure import set_header_footer
 
@@ -257,4 +261,10 @@ class TestSetPageSetup:
                 type="Header", text="Confidential", header_footer_type="firstpage"
             )
         )
-        assert isinstance(result, dict)
+        assert result.get("success") is True, result
+        page_style = (
+            synthetic_doc.getStyleFamilies()
+            .getByName("PageStyles")
+            .getByName("Default Page Style")
+        )
+        assert page_style.HeaderTextFirst.getString() == "Confidential"

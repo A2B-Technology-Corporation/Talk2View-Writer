@@ -62,6 +62,10 @@ class TestGetDocument:
         ]
         # Word-name translation: "Heading 1" (LibreOffice) → "Heading1" (Word schema).
         assert result["paragraphs"][0]["style"] == "Heading1"
+        # page_styles is the section_index space the structure tools accept,
+        # always >= 1 (distinct from the raw text-section count).
+        assert result["page_styles"] >= 1
+        assert "sections" in result
 
     def test_pagination_returns_requested_window(
         self,
@@ -178,13 +182,15 @@ class TestSelectText:
             [FakeParagraph("alpha"), FakeParagraph("beta"), FakeParagraph("gamma")]
         )
 
-        # The tool must accept a paragraph index and acknowledge the
-        # selection without raising. Specific JSON shape is asserted by
-        # the existing Word-fixture parity tests; here we just exercise
-        # the path.
+        # The tool must place the selection on the targeted paragraph and
+        # echo its text. (The old assertion `"selected" in parsed or
+        # "success" in parsed or parsed != {}` passed for ANY non-empty dict,
+        # including an error return, so it verified nothing.)
         result = select_text(paragraph_index=1)
         parsed = json.loads(result)
-        assert "selected" in parsed or "success" in parsed or parsed != {}
+        assert parsed.get("success") is True, parsed
+        assert "error" not in parsed
+        assert parsed["text"] == "beta"
 
     def test_select_by_query_finds_matching_text(
         self,
@@ -201,6 +207,9 @@ class TestSelectText:
 
         result = select_text(query="needle")
         parsed = json.loads(result)
-        # Should not error out; the synthetic model has no real search
-        # cursor so a graceful fallthrough is enough.
-        assert isinstance(parsed, dict)
+        # The synthetic findAll does a real linear scan, so the query must
+        # be found and selected. (The old `assert isinstance(parsed, dict)`
+        # passed even when select_text returned a structured error.)
+        assert parsed.get("success") is True, parsed
+        assert "error" not in parsed
+        assert parsed["selected"] == "needle"

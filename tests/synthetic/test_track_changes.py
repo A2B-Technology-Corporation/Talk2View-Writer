@@ -403,14 +403,18 @@ class TestInsertParagraphStyleFirstOrdering:
         events: list[tuple[str, Any]] = []
 
         class _RecCursor:
-            def __init__(self) -> None:
+            def __init__(self, probe_text: str = "") -> None:
                 self._style: str | None = None
+                self._probe_text = probe_text
 
-            def getString(self) -> str:  # noqa: N802 — non-empty -> break inserted
-                return "anchor"
+            def getString(self) -> str:  # noqa: N802
+                return self._probe_text
 
             def getStart(self) -> _RecCursor:  # noqa: N802
                 return self
+
+            def goLeft(self, count: int, expand: bool) -> bool:  # noqa: N802
+                return True
 
             def gotoStartOfParagraph(self, expand: bool) -> bool:  # noqa: N802
                 return True
@@ -428,6 +432,15 @@ class TestInsertParagraphStyleFirstOrdering:
                 events.append(("style", value))
 
         class _RecText:
+            # Append case: non-empty host paragraph, cursor AT its end, so
+            # the style is applied to the freshly-broken (still-empty)
+            # paragraph BEFORE the text insert (investigation #53). Probe
+            # order: empty-paragraph probe (non-empty "anchor"), then the
+            # paragraph-end probe (empty -> at end -> append branch).
+            def __init__(self) -> None:
+                self._probes = ["anchor", ""]
+                self._i = 0
+
             def insertControlCharacter(  # noqa: N802
                 self, cur: Any, ch: Any, absorb: bool
             ) -> None:
@@ -439,7 +452,9 @@ class TestInsertParagraphStyleFirstOrdering:
                 events.append(("insert", text))
 
             def createTextCursorByRange(self, rng: Any) -> _RecCursor:  # noqa: N802
-                return _RecCursor()
+                probe = self._probes[self._i] if self._i < len(self._probes) else ""
+                self._i += 1
+                return _RecCursor(probe_text=probe)
 
         class _RecDoc:
             """Minimal doc so suspend_record_changes runs with redlining on."""
@@ -463,3 +478,60 @@ class TestInsertParagraphStyleFirstOrdering:
         assert events.index(("style", "Text body")) < events.index(
             ("insert", "the body text")
         ), f"style must be applied before the text insert: {events}"
+
+
+class TestUndoContextGrouping:
+    """Every mutating tool call runs inside exactly one balanced undo context.
+
+    Without grouping, insert_content with N blocks produces N+ raw undo
+    steps, so a single Ctrl+Z reverts only a fragment of the AI edit
+    (ADR-0035 / writing-bug undo-grouping).
+    """
+
+    def test_mutating_tool_opens_one_balanced_context(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        um = synthetic_doc.getUndoManager()
+        insert_content(blocks=["one", "two", "three"], location="end")
+        # Exactly one context, named for the tool, and balanced (depth 0).
+        assert um.undo_contexts == ["Talk2View: insert_content"]
+        assert um._context_depth == 0
+
+    def test_context_is_left_even_when_tool_raises(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from talk2view_writer.tools import writing
+
+        um = synthetic_doc.getUndoManager()
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("mid-edit failure")
+
+        # Force the inner insertion to raise after the context is opened.
+        monkeypatch.setattr(writing, "_insert_paragraph_at_cursor", _boom)
+        with pytest.raises(RuntimeError, match="mid-edit failure"):
+            writing.insert_content(text="x", location="end")
+        # The context was opened then left (depth back to 0) despite the raise.
+        assert um.undo_contexts == ["Talk2View: insert_content"]
+        assert um._context_depth == 0
+
+    def test_read_only_tool_opens_no_context(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+    ) -> None:
+        from talk2view_writer.tools.reading import get_document
+
+        um = synthetic_doc.getUndoManager()
+        get_document()
+        assert um.undo_contexts == []

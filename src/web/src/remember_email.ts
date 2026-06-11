@@ -24,7 +24,10 @@ export function rememberEmail(email: string | null | undefined): void {
   if (!email) return;
   try {
     localStorage.setItem(LAST_EMAIL_KEY, email);
-    logToHost('info', `[remember_email] saved ${email} to localStorage`);
+    // Log presence, not the address. The email is PII and the persistent
+    // log is attached to bug reports; the redacting formatter does not
+    // scrub bare email addresses.
+    logToHost('info', '[remember_email] saved last-email to localStorage');
   } catch (e) {
     logToHost(
       'warning',
@@ -75,10 +78,8 @@ export function installEmailAutofill(): void {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     filled = true;
-    logToHost(
-      'info',
-      `[remember_email] autofilled ${last} into login form`,
-    );
+    // Presence only — never the address (PII; see rememberEmail).
+    logToHost('info', '[remember_email] autofilled remembered email into login form');
     return true;
   };
 

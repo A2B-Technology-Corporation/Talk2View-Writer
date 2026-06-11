@@ -58,7 +58,7 @@ full roadmap. The current branch covers:
   as a docked side panel where the platform allows (ADR-0039); the React
   UI handles every SDK event type (`text`, `status`, `todos`,
   `tool_call`, `error`, `done`).
-- All 20 tools registered with the SDK; tool-call interrupts
+- All 21 tools registered with the SDK; tool-call interrupts
   auto-execute on the worker thread and marshal UNO calls back to the
   UI thread (ADRs 0008, 0009, 0018, 0020).
 - Cross-platform universal `.oxt` (Linux, macOS x86_64 + arm64,
@@ -108,7 +108,7 @@ LibreOffice Writer
   proxies HTTPS (CORS workaround for `file://`) and runs UNO tools.
 - **Streaming:** SSE chat-completion responses are streamed chunk-by-chunk
   back to the SDK via a polled per-stream queue (ADR-0033).
-- **Tools:** 20 Python functions, invoked via the bridge's `invoke_tool` RPC
+- **Tools:** 21 Python functions, invoked via the bridge's `invoke_tool` RPC
   when the SDK emits a tool-call interrupt. Mirror the TypeScript tools in
   `Talk2View-Word/src/taskpane/tools/`.
 
@@ -129,7 +129,10 @@ docked beside LibreOffice where the platform allows (ADR-0039).
 
 ### Tests
 
-Four layers, each runs by default in CI:
+Several test layers. The unit + synthetic suites and the mock-engine e2e
+specs run by default in CI; integration, gui-smoke, and the live /
+e2e-live suites are conditional (they need a real soffice and/or
+credentials):
 
   - `tests/unit/` — pure-Python helpers + mocked-UNO unit tests.
     `make test-unit` runs these locally.
@@ -187,7 +190,7 @@ Talk2View-Writer/
 │   ├── bridge_server.py             # Unix-socket JSON-RPC bridge (ADR-0030)
 │   ├── web_runner.py                # pywebview subprocess entry point
 │   ├── ui/web_window.py             # WebWindow that spawns the subprocess
-│   ├── tools/                       # 20 UNO tools across 6 modules
+│   ├── tools/                       # 21 UNO tools across 7 modules
 │   ├── uno_helpers/                 # cursor, tables, styles, comments
 │   └── skills/                      # SKILL.md docs (copied from Talk2View-Word)
 ├── src/web/                         # React + SDK chat bundle (webpack)

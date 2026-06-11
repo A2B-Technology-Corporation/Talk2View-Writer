@@ -130,17 +130,23 @@ def _apply_inline_formatting(cursor: Any, item: dict[str, Any]) -> None:
     if isinstance(item.get("strikethrough"), bool):
         # com.sun.star.awt.FontStrikeout: NONE=0, SINGLE=1.
         cursor.CharStrikeout = 1 if item["strikethrough"] else 0
-    if isinstance(item.get("superscript"), bool):
-        # CharEscapement: positive int for super, negative for sub.
-        # CharEscapementHeight: percent of normal height (Word default ~58).
-        if item["superscript"]:
+    sup = item.get("superscript")
+    sub = item.get("subscript")
+    if isinstance(sup, bool) or isinstance(sub, bool):
+        # CharEscapement: positive int for super, negative for sub, 0 for
+        # baseline. CharEscapementHeight: percent of normal height (~58).
+        #
+        # Compute the final state from BOTH flags in one pass. Applying them
+        # sequentially (superscript then subscript) meant the very natural
+        # payload {superscript: true, subscript: false} set superscript and
+        # then immediately wiped it via the subscript=false reset. Word
+        # treats the two as independent toggles; validation already rejects
+        # both-true, so a single true wins and we only reset to baseline
+        # when neither is requested true.
+        if sup is True:
             cursor.CharEscapement = 33
             cursor.CharEscapementHeight = 58
-        else:
-            cursor.CharEscapement = 0
-            cursor.CharEscapementHeight = 100
-    if isinstance(item.get("subscript"), bool):
-        if item["subscript"]:
+        elif sub is True:
             cursor.CharEscapement = -33
             cursor.CharEscapementHeight = 58
         else:
@@ -371,10 +377,47 @@ def format_text(
     return json.dumps(results[0])
 
 
+def _coerce_int(value: Any) -> int | None:
+    """Return ``value`` as an int (coercing a numeric string), else ``None``.
+
+    Booleans are NOT ints here — ``True``/``False`` from JSON must not be
+    silently read as 1/0 indices.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
 def _resolve_format_target(doc: Any, text_obj: Any, item: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a format item to ``{cursor, text, ...}`` or ``{error, recovery}``."""
+    """Resolve a format item to ``{cursor, text, ...}`` or ``{error, recovery}``.
+
+    A target that is PROVIDED but mistyped (a numeric query, a
+    non-numeric paragraph_index, a string match_index) is a structured
+    error — never a silent fall-through to the current selection, which
+    would format whatever text the user happened to have highlighted.
+    Numeric-string indices the model commonly emits ("3") are coerced.
+    """
     q = item.get("query")
     pidx = item.get("paragraph_index")
+
+    if q is not None and not isinstance(q, str):
+        return {
+            "error": f"query must be a string, got {type(q).__name__}.",
+            "recovery": "Pass the text to find as a string, or use paragraph_index.",
+        }
+    if pidx is not None:
+        coerced_pidx = _coerce_int(pidx)
+        if coerced_pidx is None:
+            return {
+                "error": f"paragraph_index must be an integer, got {pidx!r}.",
+                "recovery": "Pass a zero-based integer paragraph index.",
+            }
+        pidx = coerced_pidx
+
     if isinstance(q, str):
         searcher = doc.createSearchDescriptor()
         searcher.SearchString = q
@@ -386,7 +429,16 @@ def _resolve_format_target(doc: Any, text_obj: Any, item: dict[str, Any]) -> dic
                 "error": f'Text "{preview(q, 60)}" not found.',
                 "recovery": "Use get_document to check exact text.",
             }
-        mi = item.get("match_index", 0) or 0
+        if "match_index" in item:
+            mi_coerced = _coerce_int(item["match_index"])
+            if mi_coerced is None:
+                return {
+                    "error": f"match_index must be an integer, got {item['match_index']!r}.",
+                    "recovery": f"Use 0 to {total - 1}.",
+                }
+            mi = mi_coerced
+        else:
+            mi = 0
         if mi < 0 or mi >= total:
             return {
                 "error": f"match_index {mi} out of range ({total} matches).",
@@ -661,7 +713,7 @@ def format_paragraph(
             right_indent=right_indent,
             first_line_indent=first_line_indent,
         )
-        # Best-effort flow properties. UNO ParagraphProperties semantics:
+        # Flow properties. UNO ParagraphProperties semantics:
         #   ParaSplit=False        → keep all LINES of this paragraph together
         #                            (don't split it across a page break).
         #   ParaKeepTogether=True  → keep this paragraph together with the
@@ -669,37 +721,75 @@ def format_paragraph(
         # So keep_together drives ParaSplit (inverted) and keep_with_next
         # drives ParaKeepTogether. ParaKeepWithNext is not a real UNO
         # property — writing it silently no-ops on every build.
-        for attr_name, value in (
-            ("ParaSplit", None if keep_together is None else not keep_together),
-            ("ParaKeepTogether", keep_with_next),
-            ("BreakType", None if page_break_before is None else (4 if page_break_before else 0)),
+        from com.sun.star.beans import (  # type: ignore[import-not-found]
+            PropertyVetoException,
+            UnknownPropertyException,
+        )
+        from com.sun.star.lang import (  # type: ignore[import-not-found]
+            IllegalArgumentException,
+        )
+        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+        flow_failures: list[str] = []
+        for attr_name, result_key, value in (
+            ("ParaSplit", "keep_together", None if keep_together is None else not keep_together),
+            ("ParaKeepTogether", "keep_with_next", keep_with_next),
+            (
+                "BreakType",
+                "page_break_before",
+                None if page_break_before is None else (4 if page_break_before else 0),
+            ),
         ):
             if value is None:
                 continue
             try:
                 setattr(p, attr_name, value)
-            except Exception:
-                logger.debug("Property %s not settable on this LibreOffice build", attr_name)
-        results.append(
-            {
-                "index": idx,
-                "success": True,
-                "text": preview(p.getString()),
-                # Report the Word-vocabulary name (e.g. 'Normal', 'Heading2'),
-                # consistent with get_document (reading.py), so the model never
-                # sees a raw LO display name like 'Text body' it would then
-                # re-send and get rejected (Writer #56).
-                "resulting_style": libreoffice_to_word_style(
-                    getattr(p, "ParaStyleName", "") or ""
-                ),
-            }
-        )
+            except (
+                UnknownPropertyException,
+                IllegalArgumentException,
+                PropertyVetoException,
+                RuntimeException,
+            ):
+                # Narrow catch (CLAUDE.md fail-fast): the property may not
+                # exist on this build, reject the value, or be blocked by a
+                # redline. Surface it as a per-paragraph warning instead of
+                # swallowing it at debug and reporting it as applied. Anything
+                # else propagates with its traceback.
+                logger.exception(
+                    "Flow property %s (%s) could not be set on paragraph %d",
+                    attr_name,
+                    result_key,
+                    idx,
+                )
+                flow_failures.append(result_key)
+        para_result: dict[str, Any] = {
+            "index": idx,
+            "success": True,
+            "text": preview(p.getString()),
+            # Report the Word-vocabulary name (e.g. 'Normal', 'Heading2'),
+            # consistent with get_document (reading.py), so the model never
+            # sees a raw LO display name like 'Text body' it would then
+            # re-send and get rejected (Writer #56).
+            "resulting_style": libreoffice_to_word_style(
+                getattr(p, "ParaStyleName", "") or ""
+            ),
+        }
+        if flow_failures:
+            para_result["flow_warnings"] = (
+                "These flow properties could not be applied on this build and "
+                f"were NOT set: {', '.join(flow_failures)}."
+            )
+        results.append(para_result)
 
     applied = {k: v for k, v in args_dict.items() if v is not None}
     if has_batch:
         return json.dumps(
             {
-                "success": True,
+                # Honest success: True only when every targeted paragraph
+                # succeeded, matching format_text. A batch where every index
+                # was out of range used to report success:true with
+                # paragraphs_formatted:0.
+                "success": all(r.get("success") for r in results),
                 "paragraphs_formatted": sum(1 for r in results if r.get("success")),
                 "results": results,
                 "formatting_applied": applied,
@@ -758,6 +848,14 @@ _NUMBER_STYLE_ALIASES = (
     "Numbered List",
     "List Paragraph",
     "ListNumber",
+)
+
+# The complete set of LIST paragraph-style names this tool ever applies in
+# the add path. ``remove`` only resets the paragraph style when the current
+# style is one of these — so a numbered Heading / Quote (whose style we never
+# touched) is not flattened to the body default.
+_LIST_PARA_STYLE_NAMES = frozenset(_BULLET_STYLE_ALIASES) | frozenset(
+    _NUMBER_STYLE_ALIASES
 )
 
 
@@ -1049,10 +1147,18 @@ def manage_list(
                     )
                     continue
                 p.NumberingIsNumber = False
-                try:
-                    p.ParaStyleName = "Default Paragraph Style"
-                except Exception:
-                    logger.debug("Default Paragraph Style not settable")
+                # Only reset the paragraph style when it is one of the LIST
+                # paragraph styles this tool's add path applies. Unconditionally
+                # forcing the pool default flattened a numbered Heading 2 /
+                # Quote — whose style manage_list never set — destroying the
+                # heading (and its TOC/navigation). manage_list removes list
+                # FORMATTING, not the paragraph's style.
+                current_style = getattr(p, "ParaStyleName", "") or ""
+                if current_style in _LIST_PARA_STYLE_NAMES:
+                    try:
+                        p.ParaStyleName = "Default Paragraph Style"
+                    except Exception:
+                        logger.debug("Default Paragraph Style not settable")
                 per_paragraph.append({"paragraph_index": idx, "success": True})
         if left_indent is not None:
             p.ParaLeftMargin = points_to_hmm(left_indent)

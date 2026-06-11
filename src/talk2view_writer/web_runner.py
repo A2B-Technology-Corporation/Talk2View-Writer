@@ -56,7 +56,17 @@ class _BridgeClient:
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
         self._sock: socket.socket | None = None
-        self._lock = threading.Lock()
+        # Two locks, deliberately separate:
+        #   _call_lock serialises a full request -> response round-trip so
+        #     concurrent _call()s don't interleave their replies / corrupt
+        #     the shared read buffer.
+        #   _write_lock guards only a single ``sendall`` so frame bytes from
+        #     two senders never interleave mid-frame.
+        # A notification (log) takes ONLY _write_lock, so it can't get stuck
+        # behind an in-flight _call's round-trip — which may block up to 60s
+        # on a wedged proxy_stream_next. See ``notify``.
+        self._call_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._next_id = 1
         self._read_buf = b""
 
@@ -147,7 +157,7 @@ class _BridgeClient:
         # ``lock_wait_ms`` means it queued behind an in-flight
         # ``proxy_stream_next`` blocking on the engine.
         t_before = time.monotonic()
-        with self._lock:
+        with self._call_lock:
             lock_wait_ms = monotonic_ms(t_before)
             t_acquired = time.monotonic()
             req_id = self._next_id
@@ -161,7 +171,8 @@ class _BridgeClient:
             # ``bridge.client_call`` timing line below is the INFO
             # summary; the raw frames are debug-only (task #13).
             logger.debug("BridgeClient -> %s", req.decode())
-            self._sock.sendall(req + b"\n")
+            with self._write_lock:
+                self._sock.sendall(req + b"\n")
             line = self._read_line()
             logger.debug("BridgeClient <- %s", line)
             rt_ms = monotonic_ms(t_acquired)
@@ -190,12 +201,14 @@ class _BridgeClient:
         """Send a fire-and-forget notification (no ``id``, no reply read).
 
         The server stays silent for id-less requests, so this returns as
-        soon as the bytes are written. The lock is held only for the
-        ``sendall`` (to keep one notification's bytes from interleaving
-        mid-frame with another sender), NOT for a round-trip — so a
-        notification can't be stuck behind an in-flight ``_call`` waiting
-        on the engine for anything longer than that call's own
-        ``sendall``.
+        soon as the bytes are written. It takes ONLY ``_write_lock`` —
+        held just for the single ``sendall`` to keep one frame's bytes
+        from interleaving mid-frame with another sender — and NOT
+        ``_call_lock``. So a notification can never be stuck behind an
+        in-flight ``_call`` round-trip (which may block up to 60s on a
+        wedged ``proxy_stream_next``); the worst it waits is one other
+        sender's ``sendall``. ``_call`` releases ``_write_lock`` the
+        instant its request bytes are out, before it blocks on the reply.
 
         Notifications deliberately do NOT consume a request id: ids only
         matter for matching a reply, and there is no reply. Keeping
@@ -208,7 +221,7 @@ class _BridgeClient:
         if self._sock is None:
             return
         req = json.dumps({"method": method, "params": params}).encode("utf-8")
-        with self._lock:
+        with self._write_lock:
             self._sock.sendall(req + b"\n")
 
     def _read_line(self) -> str:
@@ -477,11 +490,15 @@ def main() -> None:
     if sys.platform.startswith("linux"):
         _apply_window_identity()
         _patch_gtk_window_transient()
-    # Belt + braces: also raise the SSL tolerance just in case the
-    # WebKitGTK shipped with this user's distro doesn't bundle the
-    # same CA roots as system Python's httpx.
-    webview.settings['IGNORE_SSL_ERRORS'] = True
-
+    # NOTE: we deliberately do NOT set webview.settings['IGNORE_SSL_ERRORS'].
+    # Disabling TLS certificate validation for the whole webview is an
+    # unacceptable posture for a credential-handling, FDA-bound component:
+    # any direct request the webview makes (an asset URL in engine output,
+    # a redirect target, a future non-proxied endpoint) would accept a
+    # forged certificate and be MITM-able. Engine traffic is proxied
+    # through the bridge's httpx, which validates certificates (verify=True
+    # by default). If a distro's WebKitGTK genuinely lacks CA roots, point
+    # it at a bundled/system CA bundle rather than turning validation off.
     storage_path = _webview_storage_path()
     logger.info("webview imported, calling create_window")
     window = webview.create_window(

@@ -71,20 +71,33 @@ def _list_page_styles_in_use(doc: Any) -> list[str]:
     LibreOffice's "section" concept is page-style-based; iterating
     paragraphs and collecting their ``PageDescName`` gives an
     order-preserving list of the page styles that drive the document's
-    structure. The first paragraph's ``PageDescName`` may be empty; in
-    that case we substitute the document's default page style
-    (``"Default Page Style"`` in most builds).
+    structure.
+
+    A paragraph's ``PageDescName`` is set ONLY when it explicitly forces a
+    page-style boundary; paragraphs governed by the document's implicit
+    default page style report an empty ``PageDescName``. So a document that
+    begins on the default and later switches to a named style (e.g. a forced
+    "Landscape" page) must still list the default as the FIRST section —
+    otherwise ``section_index=0`` resolves to the later named style and every
+    structure-tool edit (margins, header/footer, page numbers) lands on the
+    wrong pages, and the default section is unreachable.
     """
     seen: list[str] = []
+    uses_default = False
     enum = doc.getText().createEnumeration()
     while enum.hasMoreElements():
         el = enum.nextElement()
         if el.supportsService("com.sun.star.text.Paragraph"):
             name = getattr(el, "PageDescName", "") or ""
-            if name and name not in seen:
+            if not name:
+                uses_default = True
+            elif name not in seen:
                 seen.append(name)
+    default_name = "Default Page Style"
+    if uses_default and default_name not in seen:
+        seen.insert(0, default_name)
     if not seen:
-        seen = ["Default Page Style"]
+        seen = [default_name]
     return seen
 
 
@@ -301,6 +314,22 @@ def set_header_footer(
     doc = get_writer_document(ext.ctx)
     indices = section_indices if section_indices is not None else [section_index or 0]
 
+    from com.sun.star.beans import (  # type: ignore[import-not-found]
+        PropertyVetoException,
+        UnknownPropertyException,
+    )
+    from com.sun.star.lang import (  # type: ignore[import-not-found]
+        IllegalArgumentException,
+    )
+    from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+    _uno_setattr_errors = (
+        UnknownPropertyException,
+        IllegalArgumentException,
+        PropertyVetoException,
+        RuntimeException,
+    )
+
     per_section: list[dict[str, Any]] = []
     for idx in indices:
         page_style = _get_page_style(doc, idx)
@@ -332,8 +361,14 @@ def set_header_footer(
                 else:
                     page_style.FooterText.setString(text)
             per_section.append({"section_index": idx, "success": True})
-        except Exception as exc:
-            per_section.append({"section_index": idx, "error": str(exc)})
+        except _uno_setattr_errors as exc:
+            # Narrow catch (CLAUDE.md fail-fast): a missing header/footer
+            # property on this build or a rejected value becomes a
+            # per-section error; anything unexpected propagates with its
+            # traceback to the bridge's error path.
+            per_section.append(
+                {"section_index": idx, "error": f"{exc.__class__.__name__}: {exc}"}
+            )
 
     text_preview = preview(text, 60)
     if section_indices is not None:
@@ -455,6 +490,22 @@ def insert_page_numbers(
     align_map = {"left": 0, "center": 3, "right": 1}
     per_section: list[dict[str, Any]] = []
 
+    from com.sun.star.beans import (  # type: ignore[import-not-found]
+        PropertyVetoException,
+        UnknownPropertyException,
+    )
+    from com.sun.star.lang import (  # type: ignore[import-not-found]
+        IllegalArgumentException,
+    )
+    from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+    _uno_errors = (
+        UnknownPropertyException,
+        IllegalArgumentException,
+        PropertyVetoException,
+        RuntimeException,
+    )
+
     for idx in indices:
         page_style = _get_page_style(doc, idx)
         if page_style is None:
@@ -467,10 +518,12 @@ def insert_page_numbers(
             else:
                 page_style.FooterIsOn = True
                 target_text = page_style.FooterText
-            # Clear existing content.
-            target_text.setString("")
-            cursor = target_text.createTextCursorByRange(target_text.getStart())
-            # Insert each literal-or-field segment in order.
+            # Build all segments (creating any page-number / page-count
+            # fields) BEFORE clearing the existing content, so a
+            # field-creation failure cannot leave the header/footer empty
+            # with prior content destroyed. Only clear once the content is
+            # ready to insert.
+            segments: list[tuple[str, Any]] = []
             for part in _split_page_template(full_template):
                 if part == "{PAGE}":
                     field = doc.createInstance("com.sun.star.text.TextField.PageNumber")
@@ -478,13 +531,21 @@ def insert_page_numbers(
                     # Follow the page style's number format (see constant) so
                     # the field renders arabic by default instead of letters.
                     field.NumberingType = _NUMBERING_TYPE_PAGE_DESCRIPTOR
-                    target_text.insertTextContent(cursor, field, False)
+                    segments.append(("field", field))
                 elif part == "{NUMPAGES}":
                     field = doc.createInstance("com.sun.star.text.TextField.PageCount")
                     field.NumberingType = _NUMBERING_TYPE_PAGE_DESCRIPTOR
-                    target_text.insertTextContent(cursor, field, False)
+                    segments.append(("field", field))
                 elif part:
-                    target_text.insertString(cursor, part, False)
+                    segments.append(("text", part))
+            # Now clear and insert the pre-built segments in order.
+            target_text.setString("")
+            cursor = target_text.createTextCursorByRange(target_text.getStart())
+            for kind, value in segments:
+                if kind == "field":
+                    target_text.insertTextContent(cursor, value, False)
+                else:
+                    target_text.insertString(cursor, value, False)
             # Align the first paragraph of the header/footer.
             enum = target_text.createEnumeration()
             if enum.hasMoreElements():
@@ -492,8 +553,13 @@ def insert_page_numbers(
                 if first_para.supportsService("com.sun.star.text.Paragraph"):
                     first_para.ParaAdjust = align_map[alignment]
             per_section.append({"section_index": idx, "success": True})
-        except Exception as exc:
-            per_section.append({"section_index": idx, "error": str(exc)})
+        except _uno_errors as exc:
+            # Narrow catch (CLAUDE.md fail-fast): a missing field type /
+            # property or a rejected value becomes a per-section error;
+            # unexpected exceptions propagate with their traceback.
+            per_section.append(
+                {"section_index": idx, "error": f"{exc.__class__.__name__}: {exc}"}
+            )
 
     common = {
         "location": location,

@@ -1,6 +1,6 @@
 # ADR-0027: Follow LibreOffice's canonical Python toolpanel pattern verbatim
 
-**Status:** Accepted (the "unsupported build" follow-up clause is superseded by ADR-0028)
+**Status:** Superseded by [ADR-0029](0029-floating-chat-window.md) (the entire sidebar-panel approach was abandoned for a floating window; the earlier "unsupported build" follow-up clause had already been superseded by ADR-0028)
 **Date:** 2026-05-21
 **Phase:** F
 **Supersedes:** ADR-0025, ADR-0026

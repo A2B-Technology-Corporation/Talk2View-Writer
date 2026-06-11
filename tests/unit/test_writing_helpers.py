@@ -17,8 +17,33 @@ from talk2view_writer.tools.writing import (
     _cursor_at_empty_paragraph,
     _insert_paragraph_at_cursor,
     _is_uniform_table,
+    _resolve_image_size,
     _systempath_to_url,
 )
+
+
+@pytest.mark.unit
+class TestResolveImageSize:
+    """Omitted image dimensions are filled from the native size."""
+
+    def test_both_omitted_uses_native_size(self) -> None:
+        assert _resolve_image_size(4000, 3000, None, None) == (4000, 3000)
+
+    def test_both_given_used_verbatim(self) -> None:
+        assert _resolve_image_size(4000, 3000, 1000, 800) == (1000, 800)
+
+    def test_width_given_height_derived_from_aspect(self) -> None:
+        # native 4000x3000 (4:3); width 2000 -> height 1500.
+        assert _resolve_image_size(4000, 3000, 2000, None) == (2000, 1500)
+
+    def test_height_given_width_derived_from_aspect(self) -> None:
+        # native 4000x3000; height 1500 -> width 2000.
+        assert _resolve_image_size(4000, 3000, None, 1500) == (2000, 1500)
+
+    def test_unknown_native_size_leaves_omitted_dims_none(self) -> None:
+        # No usable native size -> omitted dims stay None (prior behaviour).
+        assert _resolve_image_size(0, 0, None, None) == (None, None)
+        assert _resolve_image_size(0, 0, 1000, None) == (1000, None)
 
 
 @pytest.mark.unit
@@ -140,55 +165,65 @@ class TestInsertParagraphAtCursorSkipsLeadingBreakWhenEmpty:
     empty paragraph and re-introduce the break for separation.
     """
 
-    def _wire_text_obj(self, probe_string: str) -> tuple[MagicMock, MagicMock]:
-        """Return ``(text_obj, cursor)`` whose first probe sees ``probe_string``.
+    def _wire(self, *probe_strings: str) -> tuple[MagicMock, MagicMock]:
+        """Return ``(text_obj, cursor)`` whose probe cursors return ``probe_strings``.
 
-        The two `createTextCursorByRange` calls inside
-        `_insert_paragraph_at_cursor` are wired in order: first the
-        empty-paragraph probe, then the paragraph-style cursor.
+        ``_insert_paragraph_at_cursor`` calls ``createTextCursorByRange``
+        first for the empty-paragraph probe, then (if non-empty) for the
+        paragraph-end probe, then for the style / final cursors. The probe
+        cursors are wired in order; any extra cursors needed are generic
+        mocks.
         """
         text_obj = MagicMock()
         cursor = MagicMock()
-        probe = MagicMock()
-        probe.getString.return_value = probe_string
-        para_cursor = MagicMock()
-        text_obj.createTextCursorByRange.side_effect = [probe, para_cursor]
+        probes = []
+        for s in probe_strings:
+            p = MagicMock()
+            p.getString.return_value = s
+            probes.append(p)
+        # Generous tail of generic cursors for style / final selections.
+        tail = [MagicMock() for _ in range(4)]
+        text_obj.createTextCursorByRange.side_effect = [*probes, *tail]
         return text_obj, cursor
 
-    def test_empty_target_paragraph_skips_paragraph_break(self) -> None:
-        text_obj, cursor = self._wire_text_obj(probe_string="")
-
-        _insert_paragraph_at_cursor(text_obj, cursor, "Hello", style=None, doc=None)
-
-        text_obj.insertControlCharacter.assert_not_called()
-        text_obj.insertString.assert_called_once_with(cursor, "Hello", False)
-
-    def test_nonempty_target_paragraph_emits_paragraph_break(self) -> None:
-        text_obj, cursor = self._wire_text_obj(probe_string="existing")
-
-        _insert_paragraph_at_cursor(text_obj, cursor, "World", style=None, doc=None)
-
-        text_obj.insertControlCharacter.assert_called_once()
-        text_obj.insertString.assert_called_once_with(cursor, "World", False)
-
-    def test_call_order_is_break_then_string(self) -> None:
-        """Break must precede insertString when both are emitted.
-
-        Otherwise the new text lands in the previous paragraph instead
-        of in the freshly-created one.
-        """
-        text_obj, cursor = self._wire_text_obj(probe_string="existing")
-
-        _insert_paragraph_at_cursor(text_obj, cursor, "World", style=None, doc=None)
-
-        # First two method_calls on text_obj after the probe are
-        # insertControlCharacter, then insertString.
-        op_names = [
+    def _ops(self, text_obj: MagicMock) -> list[str]:
+        return [
             c[0]
             for c in text_obj.method_calls
             if c[0] in ("insertControlCharacter", "insertString")
         ]
-        assert op_names == ["insertControlCharacter", "insertString"]
+
+    def test_empty_target_paragraph_skips_paragraph_break(self) -> None:
+        # Empty host paragraph (empty-probe == "").
+        text_obj, cursor = self._wire("")
+        _insert_paragraph_at_cursor(text_obj, cursor, "Hello", style=None, doc=None)
+        text_obj.insertControlCharacter.assert_not_called()
+        text_obj.insertString.assert_called_once_with(cursor, "Hello", False)
+
+    def test_append_anchor_emits_break_then_string(self) -> None:
+        """Cursor at the END of a non-empty paragraph (append) breaks first."""
+        # empty-probe non-empty; end-probe empty (cursor at paragraph end).
+        text_obj, cursor = self._wire("existing", "")
+        _insert_paragraph_at_cursor(text_obj, cursor, "World", style=None, doc=None)
+        text_obj.insertControlCharacter.assert_called_once()
+        text_obj.insertString.assert_called_once_with(cursor, "World", False)
+        # Break precedes the string so the text lands in the new paragraph.
+        assert self._ops(text_obj) == ["insertControlCharacter", "insertString"]
+
+    def test_before_anchor_writes_string_then_break(self) -> None:
+        """Cursor at the START/MIDDLE of a non-empty paragraph writes text first.
+
+        Real-LibreOffice-verified fix for the fusing corruption
+        (investigation #62): breaking first would split the host paragraph
+        at the cursor and fuse the new text into it.
+        """
+        # empty-probe non-empty; end-probe non-empty (text after the cursor).
+        text_obj, cursor = self._wire("existing", "rest of paragraph")
+        _insert_paragraph_at_cursor(text_obj, cursor, "World", style=None, doc=None)
+        text_obj.insertString.assert_called_once_with(cursor, "World", False)
+        text_obj.insertControlCharacter.assert_called_once()
+        # The text is written BEFORE the break (the corruption fix).
+        assert self._ops(text_obj) == ["insertString", "insertControlCharacter"]
 
 
 class _FakeDoc:
@@ -288,16 +323,22 @@ class TestStyleAssignmentResilience:
 
         text_obj = MagicMock()
         cursor = MagicMock()
-        probe = MagicMock()
-        probe.getString.return_value = "existing"
+        empty_probe = MagicMock()
+        empty_probe.getString.return_value = "existing"  # non-empty host
+        end_probe = MagicMock()
+        end_probe.getString.return_value = ""  # cursor at paragraph end -> append
         style_cursor = _RaisingParaCursor()
         returned = MagicMock()
-        # Style-first ordering (investigation #53) calls
-        # createTextCursorByRange three times: (1) the empty-paragraph
-        # probe, (2) the style cursor written BEFORE the text insert —
-        # this is the one whose ParaStyleName write raises — and (3) the
-        # cursor over the just-written paragraph that the function returns.
-        text_obj.createTextCursorByRange.side_effect = [probe, style_cursor, returned]
+        # Append branch calls createTextCursorByRange four times: (1) the
+        # empty-paragraph probe, (2) the paragraph-end probe, (3) the style
+        # cursor written BEFORE the text insert — its ParaStyleName write
+        # raises — and (4) the cursor over the just-written paragraph.
+        text_obj.createTextCursorByRange.side_effect = [
+            empty_probe,
+            end_probe,
+            style_cursor,
+            returned,
+        ]
 
         # Must NOT raise — graceful degradation, returns the new cursor.
         result = _insert_paragraph_at_cursor(

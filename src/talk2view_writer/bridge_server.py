@@ -303,12 +303,23 @@ class BridgeServer:
                 params = req.get("params") or {}
             else:
                 params = {}
+            # Log only the request envelope at INFO. The raw ``params``
+            # carry secrets and PHI that the redacting formatter does not
+            # scrub: proxy_fetch / proxy_stream_open bodies hold the login
+            # password and refresh token (POST /v1/auth/login|refresh), and
+            # invoke_tool args carry document text that may be PHI. Both
+            # would otherwise land in the persistent rotating log users are
+            # told to attach to bug reports. Full params are DEBUG-only —
+            # the same opt-in gate (T2V_WRITER_DEBUG) the web_runner wire
+            # dumps use. See the redaction defence-in-depth in _logging.py.
             logger.info(
-                "BridgeServer.dispatch: id=%s method=%s notify=%s params=%s",
+                "BridgeServer.dispatch: id=%s method=%s notify=%s",
                 req_id,
                 method,
                 is_notification,
-                params,
+            )
+            logger.debug(
+                "BridgeServer.dispatch params: id=%s params=%s", req_id, params
             )
             response = self._handle_method(method, params, req_id)
         except Exception as exc:
@@ -631,15 +642,22 @@ class BridgeServer:
                 )
         except httpx.RequestError as exc:
             logger.exception(
-                "proxy_fetch: %s %s raised — synthesising 0 status",
+                "proxy_fetch: %s %s failed — returning a friendly network error",
                 method,
                 url,
             )
+            friendly = _friendly_network_error(exc)
+            # Return an engine-shaped error envelope (``{"error": {...}}``) so
+            # the SDK surfaces our clear, actionable message to the user
+            # instead of its generic "Request failed" fallback (which is what
+            # an empty body produced). 503 = "service unavailable".
             return {
-                "status": 0,
-                "statusText": f"{type(exc).__name__}: {exc}",
-                "headers": {},
-                "body": "",
+                "status": 503,
+                "statusText": friendly,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps(
+                    {"error": {"message": friendly, "type": "network"}}
+                ),
             }
 
         logger.info(
@@ -768,7 +786,17 @@ class BridgeServer:
                 logger.exception(
                     "proxy_stream_open worker raised for %s %s", method, url
                 )
-                q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+                # Friendly message for network failures (bad connection /
+                # offline / engine timeout); fall back to the raw error for
+                # anything unexpected so it stays diagnosable. ``httpx`` is the
+                # enclosing function's import — do NOT re-import here or it
+                # becomes a function-local and shadows the worker's use above.
+                message = (
+                    _friendly_network_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                q.put({"type": "error", "message": message})
             finally:
                 log_timing(
                     logger,
@@ -868,12 +896,23 @@ class BridgeServer:
                 f"tool {name!r} not in MVP allowlist {_MVP_TOOL_NAMES}"
             )
         tool = self._lookup_tool(name)
-        logger.info("BridgeServer._invoke_tool: %s(**%s)", name, args)
+        # Log arg *keys* and the result *shape* at INFO — never the values.
+        # Tool args and results carry document content that may be PHI in a
+        # medical-document workflow, and the redacting formatter only scrubs
+        # token patterns, not free text. Full args + the (truncated) result
+        # are DEBUG-only (T2V_WRITER_DEBUG), mirroring _dispatch_line.
+        logger.info(
+            "BridgeServer._invoke_tool: %s(arg_keys=%s)", name, sorted(args)
+        )
+        logger.debug("BridgeServer._invoke_tool: %s args=%s", name, args)
         result = tool(**args)
         logger.info(
             "BridgeServer._invoke_tool: %s returned %s",
             name,
-            _truncate(result),
+            _result_summary(result),
+        )
+        logger.debug(
+            "BridgeServer._invoke_tool: %s full result=%s", name, _truncate(result)
         )
         return result
 
@@ -893,7 +932,53 @@ class BridgeServer:
         return tool
 
 
+def _friendly_network_error(exc: Exception) -> str:
+    """Map an httpx network exception to a clear, actionable user message.
+
+    The raw httpx errors ("ConnectError: [Errno -2] Name or service not
+    known", "ReadTimeout") are meaningless to a clinician on a flaky
+    connection. Translate the common cases into plain language that tells
+    them what happened and what to do.
+    """
+    import httpx
+
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+        return (
+            "Talk2View took too long to respond. Your connection may be slow — "
+            "please try again."
+        )
+    if isinstance(exc, httpx.ConnectTimeout):
+        return (
+            "Couldn't reach Talk2View — the connection timed out. Please check "
+            "your internet connection and try again."
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return (
+            "Couldn't reach Talk2View. Please check your internet connection "
+            "and try again."
+        )
+    # Any other transport-level failure (proxy, protocol, etc.).
+    return (
+        "Couldn't reach Talk2View because of a network problem. Please check "
+        "your internet connection and try again."
+    )
+
+
 def _truncate(value: Any, limit: int = 240) -> str:
     """Render a tool result for logging without flooding the log file."""
     s = repr(value)
     return s if len(s) <= limit else s[: limit - 3] + "..."
+
+
+def _result_summary(value: Any) -> str:
+    """Describe a tool result by type + size for INFO logging — no content.
+
+    Tool results routinely carry document text (e.g. ``get_document``)
+    that may be PHI, so the default INFO log records only the shape. The
+    full (truncated) value is logged at DEBUG via :func:`_truncate`.
+    """
+    if isinstance(value, str):
+        return f"str(len={len(value)})"
+    if isinstance(value, (list, tuple, dict)):
+        return f"{type(value).__name__}(len={len(value)})"
+    return type(value).__name__

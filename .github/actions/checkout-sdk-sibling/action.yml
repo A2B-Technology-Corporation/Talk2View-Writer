@@ -21,6 +21,15 @@ runs:
         repository: A2B-Technology-Corporation/Talk2View-Platform
         token: ${{ inputs.token }}
         path: _talk2view_platform_sibling
+        # Don't leave the PAT in _talk2view_platform_sibling/.git/config.
+        # checkout@v4 defaults persist-credentials: true, which writes the
+        # token as a basic-auth header into the checkout under the
+        # workspace. Later steps (npm ci, make dev) run install scripts
+        # from the dependency tree in that same workspace, so a malicious
+        # transitive dependency could read the credential. We only need the
+        # token for the initial fetch; no further git ops run against this
+        # remote.
+        persist-credentials: false
 
     - name: Symlink to ../Talk2View-Platform
       shell: bash

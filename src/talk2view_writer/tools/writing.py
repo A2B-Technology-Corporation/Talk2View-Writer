@@ -56,6 +56,20 @@ _ALIGNMENT_MAP = {
     "justified": 2,
 }
 
+# Accepted ``location`` values for insert_content. The JSON-schema enum was
+# dropped (Writer #5), so the handler validates these itself; an unknown
+# value must be rejected up front, not silently treated as "append at end".
+_VALID_LOCATIONS = frozenset(
+    {
+        "start",
+        "end",
+        "before_paragraph",
+        "after_paragraph",
+        "after_selection",
+        "replace_selection",
+    }
+)
+
 
 def _enumerate_paragraphs(doc: Any) -> list[Any]:
     """Return the top-level paragraphs in document order."""
@@ -103,6 +117,59 @@ def _apply_paragraph_format(
         para.ParaFirstLineIndent = points_to_hmm(first_line_indent)
 
 
+def _set_para_style(style_cursor: Any, style: str, doc: Any | None) -> None:
+    """Write ``style`` onto the paragraph ``style_cursor`` selects (named-safe).
+
+    Guards the LibreOffice 26.2 pool-default rejection (investigation #53):
+    ``word_to_libreoffice_style`` maps body ('Normal') to the NAMED
+    'Text body' rather than the pool default, RecordChanges is suspended
+    for the single write, and a residual rejection degrades to the
+    inherited style rather than failing the whole insert. No-op when the
+    paragraph already carries the target collection.
+    """
+    from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+    from talk2view_writer.tools._base import suspend_record_changes
+
+    target = word_to_libreoffice_style(style)
+    if getattr(style_cursor, "ParaStyleName", None) == target:
+        return
+    ctx = (
+        suspend_record_changes(doc) if doc is not None else contextlib.nullcontext()
+    )
+    with ctx:
+        try:
+            style_cursor.ParaStyleName = target
+        except RuntimeException:
+            # A build/state that still rejects the write (the pool-default
+            # constraint, or a style genuinely absent on this LO version)
+            # degrades to the inherited style rather than failing the whole
+            # insert. logger.exception keeps the real UNO error + traceback.
+            logger.exception(
+                "Could not apply paragraph style %r "
+                "(LibreOffice rejected the ParaStyleName write); "
+                "left the inherited style",
+                style,
+            )
+
+
+def _select_host_paragraph(text_obj: Any, position_cursor: Any) -> Any:
+    """Return a cursor selecting the whole paragraph at ``position_cursor``."""
+    para_cursor = text_obj.createTextCursorByRange(position_cursor.getStart())
+    para_cursor.gotoStartOfParagraph(False)
+    para_cursor.gotoEndOfParagraph(True)
+    return para_cursor
+
+
+def _style_host_paragraph(
+    text_obj: Any, position_cursor: Any, style: str | None, doc: Any | None
+) -> None:
+    """Apply ``style`` to the paragraph at ``position_cursor`` (no-op if falsy)."""
+    if not style:
+        return
+    _set_para_style(_select_host_paragraph(text_obj, position_cursor), style, doc)
+
+
 def _insert_paragraph_at_cursor(
     text_obj: Any,
     cursor: Any,
@@ -111,82 +178,66 @@ def _insert_paragraph_at_cursor(
     style: str | None,
     doc: Any | None = None,
 ) -> Any:
-    """Insert one paragraph at ``cursor`` and return the new paragraph object.
+    """Insert one paragraph at ``cursor`` and return a cursor over it.
 
-    The cursor advances past the inserted paragraph so subsequent
-    insertions land after it.
+    The break-vs-text ordering decides whether the new paragraph lands
+    cleanly or fuses into existing content — verified in real LibreOffice
+    (investigation #62). Three cases:
 
-    Skips the leading PARAGRAPH_BREAK when the cursor's host paragraph
-    is already empty — otherwise the break would split that empty
-    paragraph into two, leaving a phantom blank above the just-written
-    text. Common at location="start" / "end" on a fresh doc (single
-    empty p0) and after ``target_query`` / ``replace_selection`` has
-    cleared its matched range.
+    * **Empty host paragraph** — write in place, no break (a break would
+      leave a phantom blank above). Common on a fresh doc and after
+      ``replace_selection`` / a whole-paragraph ``target_query`` clear.
+    * **Cursor at the END of a non-empty paragraph** — append / after-
+      anchors (``location='end'/'after_paragraph'/'after_selection'``):
+      break into a fresh FOLLOWING paragraph, style it (while empty, #53),
+      then write the text.
+    * **Cursor at the START or MIDDLE of a non-empty paragraph** — before-
+      anchors (``location='start'/'before_paragraph'``) or a mid-paragraph
+      ``target_query``: write the text FIRST, then the break, so the new
+      text becomes its own paragraph AHEAD of the existing content; then
+      style that paragraph. Writing the break first here splits the host
+      paragraph at the cursor and fuses the new text into it while applying
+      the requested style to the user's existing prose — the corruption
+      investigation #62 documents.
 
-    Pass ``doc`` so the paragraph-style assignment can suspend
-    ``RecordChanges`` for that single write. The style is applied to the
-    still-empty paragraph BEFORE the text is inserted, and 'Normal' resolves
-    to the NAMED 'Text body' style rather than the pool default — both guard
-    against the LibreOffice 26.2 ``ParaStyleName`` rejection described below
-    (investigation #53).
+    Pass ``doc`` so the style assignment can suspend ``RecordChanges`` for
+    its single write (investigation #53).
     """
-    if not _cursor_at_empty_paragraph(text_obj, cursor):
+    wrote_before = False
+    if _cursor_at_empty_paragraph(text_obj, cursor):
+        # Write in place; style the (empty) host paragraph first (#53).
+        _style_host_paragraph(text_obj, cursor, style, doc)
+        text_obj.insertString(cursor, paragraph_text, False)
+    elif _cursor_at_paragraph_end(text_obj, cursor):
+        # Append: break into a fresh following paragraph, style it while it
+        # is still empty (#53), then write the text.
         text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
-    # Style-first ordering (investigation #53): assign the paragraph style to
-    # the now-empty target paragraph BEFORE inserting its text, then write the
-    # text below. LibreOffice 26.2 raises a message-less RuntimeException on a
-    # ``ParaStyleName`` write of the POOL-DEFAULT collection ('Default Paragraph
-    # Style') onto a paragraph in certain document states; named collections
-    # ('Heading 2', 'Text body') are accepted in the same call. The trigger is
-    # broader than this insert's own redline — the 2026-06-09 live log shows it
-    # firing with ``RecordChanges`` already off — so we defend in depth rather
-    # than rely on one cause: (1) ``word_to_libreoffice_style`` maps body
-    # ('Normal') to the named 'Text body', steering clear of the pool default;
-    # (2) we suspend RecordChanges for the write; (3) we style while the node is
-    # still empty. The subsequent insertString lands the TEXT as the reviewable
-    # redline the user expects when track changes is on (ADR-0035).
-    if style:
-        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+        _style_host_paragraph(text_obj, cursor, style, doc)
+        text_obj.insertString(cursor, paragraph_text, False)
+    else:
+        # Before / mid anchor on a non-empty paragraph: text first, then
+        # break, so the new text is its own paragraph ahead of the rest.
+        wrote_before = True
+        text_obj.insertString(cursor, paragraph_text, False)
+        text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
+        # The cursor now sits at the start of the trailing content; cross the
+        # break leftwards into the paragraph we just wrote, and style it.
+        if style:
+            style_cursor = text_obj.createTextCursorByRange(cursor.getStart())
+            style_cursor.goLeft(1, False)
+            style_cursor.gotoStartOfParagraph(False)
+            style_cursor.gotoEndOfParagraph(True)
+            _set_para_style(style_cursor, style, doc)
 
-        from talk2view_writer.tools._base import suspend_record_changes
-
-        target = word_to_libreoffice_style(style)
-        style_cursor = text_obj.createTextCursorByRange(cursor.getStart())
-        style_cursor.gotoStartOfParagraph(False)
-        style_cursor.gotoEndOfParagraph(True)
-        # Skip the write when the empty paragraph already carries the target
-        # collection (e.g. consecutive body paragraphs that inherit 'Text body'
-        # via the heading Next-Style cascade): it is a no-op write that can
-        # itself trip the rejection, and skipping it avoids the noise entirely.
-        if getattr(style_cursor, "ParaStyleName", None) != target:
-            ctx = (
-                suspend_record_changes(doc)
-                if doc is not None
-                else contextlib.nullcontext()
-            )
-            with ctx:
-                try:
-                    style_cursor.ParaStyleName = target
-                except RuntimeException:
-                    # Last-resort fallback: a build/state that still rejects the
-                    # write (the pool-default constraint above, or a style
-                    # genuinely absent on this LO version) degrades to the
-                    # inherited style rather than failing the whole insert.
-                    # logger.exception() keeps the real UNO error + traceback —
-                    # never swallow it behind a bare message.
-                    logger.exception(
-                        "Could not apply paragraph style %r "
-                        "(LibreOffice rejected the ParaStyleName write); "
-                        "left the inherited style",
-                        style,
-                    )
-    text_obj.insertString(cursor, paragraph_text, False)
-    # Re-find the just-written paragraph via the cursor's current paragraph.
-    # The XParagraphCursor interface gives us gotoStartOfParagraph / range.
-    para_cursor = text_obj.createTextCursorByRange(cursor.getStart())
-    para_cursor.gotoStartOfParagraph(False)
-    para_cursor.gotoEndOfParagraph(True)
-    return para_cursor
+    # Return a cursor over the just-written paragraph (for the caller's
+    # paragraph-format loop). In the before/mid branch the cursor advanced
+    # past the break, so step back into the new paragraph first.
+    final = text_obj.createTextCursorByRange(cursor.getStart())
+    if wrote_before:
+        final.goLeft(1, False)
+    final.gotoStartOfParagraph(False)
+    final.gotoEndOfParagraph(True)
+    return final
 
 
 def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
@@ -203,6 +254,18 @@ def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
     probe.gotoEndOfParagraph(True)
     # bool() because probe.getString() is Any (UNO proxy); the equality
     # result is Any too, which mypy rejects from a -> bool function.
+    return bool(probe.getString() == "")
+
+
+def _cursor_at_paragraph_end(text_obj: Any, cursor: Any) -> bool:
+    """``True`` when ``cursor`` is at (or past) the end of its host paragraph.
+
+    Probes by selecting from the cursor to the paragraph end: an empty
+    selection means there is no text after the cursor in this paragraph,
+    so a paragraph break here appends rather than splitting existing text.
+    """
+    probe = text_obj.createTextCursorByRange(cursor.getStart())
+    probe.gotoEndOfParagraph(True)
     return bool(probe.getString() == "")
 
 
@@ -292,8 +355,11 @@ def insert_content(
         ValueError: For schema violations (empty inputs, mutually
             exclusive args set together, etc.).
     """
-    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    # Case-insensitive enum args (schema enum dropped — see Writer #5).
+    # lower_enum so a Title-cased value the model emits ("Center", "Start")
+    # validates and resolves; the schema no longer constrains these.
     location = lower_enum(location)
+    alignment = lower_enum(alignment)
 
     # Fold a LibreOffice display name the model may have echoed back from
     # get_document (e.g. "Text body", "Heading 2") to its canonical Word name
@@ -327,6 +393,39 @@ def insert_content(
                 ),
             }
         )
+    # Validate the location enum up front (the JSON-schema enum was dropped,
+    # Writer #5). Without this an unrecognised value silently falls through
+    # to "append at end" in _resolve_insertion_cursor and the success result
+    # echoes the bogus location back as if honoured.
+    if location is not None and location not in _VALID_LOCATIONS:
+        return json.dumps(
+            {
+                "error": f"Unknown location '{location}'.",
+                "recovery": f"Use one of: {', '.join(sorted(_VALID_LOCATIONS))}.",
+            }
+        )
+    # Validate alignment BEFORE any mutation — _apply_paragraph_format does a
+    # direct _ALIGNMENT_MAP[alignment] lookup, so an unvalidated bad value
+    # would KeyError only AFTER the paragraphs were inserted, surfacing as a
+    # raw exception and prompting a retry that duplicates the content.
+    if alignment is not None and alignment not in _ALIGNMENT_MAP:
+        return json.dumps(
+            {
+                "error": f"Invalid alignment '{alignment}'.",
+                "recovery": "Use one of: left, center, right, justified.",
+            }
+        )
+    # Validate the top-level style whenever provided — not only in the
+    # single-text branch below. In blocks mode it is the fallback style for
+    # blocks that don't set their own (items = ... b.get("style") or style),
+    # and an unvalidated bad name flows straight to the ParaStyleName write.
+    if style and style not in VALID_STYLES:
+        return json.dumps(
+            {
+                "error": f'Unknown style "{style}".',
+                "recovery": f"Use one of: {', '.join(VALID_STYLES)}.",
+            }
+        )
     if target_query is not None:
         if not target_query.strip():
             return json.dumps(
@@ -356,21 +455,13 @@ def insert_content(
                 ),
             }
         )
-    if text is not None:
-        if not text.strip():
-            return json.dumps(
-                {
-                    "error": "text parameter is empty.",
-                    "recovery": "Provide the text content you want to insert.",
-                }
-            )
-        if style and style not in VALID_STYLES:
-            return json.dumps(
-                {
-                    "error": f'Unknown style "{style}".',
-                    "recovery": f"Use one of: {', '.join(VALID_STYLES)}.",
-                }
-            )
+    if text is not None and not text.strip():
+        return json.dumps(
+            {
+                "error": "text parameter is empty.",
+                "recovery": "Provide the text content you want to insert.",
+            }
+        )
     if blocks is not None:
         if not blocks:
             return json.dumps(
@@ -592,7 +683,11 @@ def _resolve_insertion_cursor(
 
     if location in ("before_paragraph", "after_paragraph"):
         paragraphs = _enumerate_paragraphs(doc)
-        if paragraph_index is None or paragraph_index >= len(paragraphs):
+        if (
+            paragraph_index is None
+            or paragraph_index < 0
+            or paragraph_index >= len(paragraphs)
+        ):
             return None, json.dumps(
                 {
                     "error": (
@@ -884,10 +979,24 @@ def insert_image(
 
         image = doc.createInstance("com.sun.star.text.TextGraphicObject")
         image.Graphic = graphic
-        if width is not None:
-            image.Width = points_to_hmm(width)
-        if height is not None:
-            image.Height = points_to_hmm(height)
+        # API-inserted graphics do NOT auto-size to the image's native
+        # dimensions the way UI insertion does — with no explicit Width/Height
+        # they render at the default frame size (a near-invisible box). Read
+        # the graphic's native size and fill in any omitted dimension,
+        # preserving aspect ratio when only one is given.
+        native = getattr(graphic, "Size100thMM", None)
+        native_w = int(getattr(native, "Width", 0) or 0)
+        native_h = int(getattr(native, "Height", 0) or 0)
+        width_hmm, height_hmm = _resolve_image_size(
+            native_w,
+            native_h,
+            points_to_hmm(width) if width is not None else None,
+            points_to_hmm(height) if height is not None else None,
+        )
+        if width_hmm is not None:
+            image.Width = width_hmm
+        if height_hmm is not None:
+            image.Height = height_hmm
         text_obj.insertTextContent(cursor, image, False)
     finally:
         if os.path.exists(tmp_path):
@@ -901,6 +1010,37 @@ def insert_image(
             "height": height if height is not None else "original",
         }
     )
+
+
+def _resolve_image_size(
+    native_w: int,
+    native_h: int,
+    explicit_w: int | None,
+    explicit_h: int | None,
+) -> tuple[int | None, int | None]:
+    """Resolve the ``(width, height)`` (1/100 mm) to set on an inserted image.
+
+    API-inserted ``TextGraphicObject``s do not auto-size, so an omitted
+    dimension must be filled from the image's native size (``Size100thMM``):
+
+    - both omitted -> the native size (renders at original dimensions);
+    - one omitted -> derived from the other, preserving the native aspect
+      ratio;
+    - both given -> used verbatim.
+
+    When the native size is unknown (``<= 0``), omitted dimensions stay
+    ``None`` so the caller leaves them unset (degrades to prior behaviour).
+    """
+    w, h = explicit_w, explicit_h
+    if (explicit_w is None or explicit_h is None) and native_w > 0 and native_h > 0:
+        if explicit_w is None and explicit_h is None:
+            w, h = native_w, native_h
+        elif explicit_w is None:
+            assert explicit_h is not None
+            w = round(native_w * explicit_h / native_h)
+        else:
+            h = round(native_h * explicit_w / native_w)
+    return w, h
 
 
 def _systempath_to_url(path: str) -> str:
@@ -966,6 +1106,7 @@ def undo_redo(action: str, count: int = 1) -> str:
         }
         for p in _enumerate_paragraphs(doc)
     ]
+    applied_steps = 0
     for _ in range(steps):
         if action == "undo":
             if not undo_manager.isUndoPossible():
@@ -975,6 +1116,28 @@ def undo_redo(action: str, count: int = 1) -> str:
             if not undo_manager.isRedoPossible():
                 break
             undo_manager.redo()
+        applied_steps += 1
+
+    # Nothing could be applied — do NOT report success. A redo with an empty
+    # redo stack (or an undo with nothing to undo) executed zero steps yet
+    # used to return success:true with a "may be a formatting-only change"
+    # hint, steering the model to believe the operation happened.
+    if applied_steps == 0:
+        return json.dumps(
+            {
+                "success": False,
+                "action": action,
+                "steps_requested": steps,
+                "steps_applied": 0,
+                "error": f"No {action} steps were available.",
+                "recovery": (
+                    "Redo is only valid immediately after an undo with no "
+                    "intervening edits."
+                    if action == "redo"
+                    else "There is nothing left to undo."
+                ),
+            }
+        )
     after = [
         {
             "text": p.getString(),
@@ -999,6 +1162,8 @@ def undo_redo(action: str, count: int = 1) -> str:
         {
             "success": True,
             "action": action,
+            "steps_requested": steps,
+            "steps_applied": applied_steps,
             "changes": changes
             if changes
             else "no visible text/style changes (may be a formatting-only change)",
@@ -1242,26 +1407,57 @@ def _deletion_outcome(doc: Any, count_before: int) -> dict[str, Any]:
             "tracked_change": False,
             "warning": "Paragraph indices have shifted. Call get_document for updated indices.",
         }
+    # Count is unchanged. That happens in TWO different situations and we
+    # must not conflate them: (a) redlining is on, so the deletion landed as
+    # a tracked change and the struck-through paragraph still enumerates; or
+    # (b) redlining is off but the paragraph could only be EMPTIED, not
+    # removed, because its trailing break can't be swallowed (it is the last
+    # paragraph, or a table immediately follows it). Read the document's
+    # actual RecordChanges state to tell them apart rather than inferring a
+    # tracked change purely from the unchanged count.
+    record_changes = False
+    try:
+        record_changes = bool(doc.getPropertyValue("RecordChanges"))
+    except Exception:
+        logger.exception("Could not read RecordChanges; reporting no redline")
+    if record_changes:
+        return {
+            "tracked_change": True,
+            "hint": (
+                "Deletion recorded as a tracked change (track changes is on); the "
+                "struck-through paragraph(s) still enumerate at the same indices "
+                "until the user accepts the change. Indices have NOT shifted."
+            ),
+        }
     return {
-        "tracked_change": True,
-        "hint": (
-            "Deletion recorded as a tracked change (track changes is on); the "
-            "struck-through paragraph(s) still enumerate at the same indices "
-            "until the user accepts the change. Indices have NOT shifted."
+        "tracked_change": False,
+        "warning": (
+            "The paragraph text was removed but an empty paragraph node "
+            "remains (it is the last paragraph, or a table immediately "
+            "follows it, so its trailing break could not be deleted). Call "
+            "get_document to verify and remove the stray empty paragraph if "
+            "needed."
         ),
     }
 
 
 def _delete_paragraph(text_obj: Any, para: Any) -> None:
-    """Remove a single paragraph and its trailing paragraph break."""
+    """Remove a single paragraph and its trailing paragraph break.
+
+    Extends the selection right by one to swallow the trailing paragraph
+    break so the whole node is removed, not just emptied. For the LAST
+    paragraph — or one immediately followed by a table, which a text
+    cursor cannot cross — ``goRight`` returns ``False`` and the break
+    stays, so ``setString("")`` empties the paragraph but leaves the node.
+    :func:`_deletion_outcome` reports that case accurately.
+    """
     cursor = text_obj.createTextCursorByRange(para.getStart())
     cursor.gotoEndOfParagraph(True)
-    # Extend selection by one character to swallow the paragraph break,
-    # unless we're at the very end of the document.
-    try:
-        cursor.goRight(1, True)
-    except Exception:
-        logger.debug("goRight at end of doc; deleting paragraph in place")
+    # goRight returns a bool — it does NOT raise at the document end — so the
+    # previous try/except was dead code (and a broad catch the policy
+    # forbids). A False return just means the trailing break can't be
+    # swallowed here; setString below still empties the paragraph.
+    cursor.goRight(1, True)
     cursor.setString("")
 
 
@@ -1323,6 +1519,33 @@ def edit_table(
                 "recovery": "Call get_document to see available tables.",
             }
         )
+    # Reject count < 1 rather than silently clamping to 1 — a deliberate
+    # count=0 must not delete a row/column the caller asked to leave alone.
+    if int(count) < 1:
+        return json.dumps(
+            {
+                "error": f"count must be >= 1, got {count}.",
+                "recovery": "Use a positive count, or omit it for the default of 1.",
+            }
+        )
+    # Reject negative row/column up front. Every action validated only the
+    # upper bound, so a negative index reached getCellByPosition /
+    # removeByIndex and raised a raw UNO IndexOutOfBoundsException instead of
+    # a structured, recoverable error.
+    if row is not None and row < 0:
+        return json.dumps(
+            {
+                "error": f"row must be >= 0, got {row}.",
+                "recovery": "Provide a zero-based row index from get_document.",
+            }
+        )
+    if column is not None and column < 0:
+        return json.dumps(
+            {
+                "error": f"column must be >= 0, got {column}.",
+                "recovery": "Provide a zero-based column index from get_document.",
+            }
+        )
 
     ext = get_extension_or_raise()
     doc = get_writer_document(ext.ctx)
@@ -1338,7 +1561,7 @@ def edit_table(
             }
         )
     table = tables.getByIndex(table_index)
-    cnt = max(1, int(count))
+    cnt = int(count)  # validated >= 1 above
 
     if action == "edit_cell":
         if row is None or column is None:

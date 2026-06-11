@@ -2,7 +2,7 @@
   "name": "talk2view-writer-web",
   "private": true,
   "version": "1.0.4",
-  "description": "React + Talk2View SDK chat UI for the LibreOffice Writer extension. Built by webpack to ../../build/Talk2ViewWriter/web/ via `make build-web`.",
+  "description": "React + Talk2View SDK chat UI for the LibreOffice Writer extension. Built by webpack to src/web/dist/ via `make build-web`; the Makefile `build` target then copies src/web/dist/ into build/Talk2ViewWriter/web/ for packaging.",
   "scripts": {
     "build": "webpack --mode production",
     "build:dev": "webpack --mode development",

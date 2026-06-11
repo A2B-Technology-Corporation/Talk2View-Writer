@@ -105,6 +105,31 @@ class TestRedactSecrets:
         assert self._JWT not in out
         assert "<redacted-jwt>" in out
 
+    def test_redacts_json_password_field(self) -> None:
+        out = _logging.redact_secrets(
+            'body={"email": "c@hospital.org", "password": "S3cr3t-PW!"}'
+        )
+        assert "S3cr3t-PW!" not in out
+        assert '"password": "<redacted>"' in out
+        # The email is not a credential and stays for triage.
+        assert "c@hospital.org" in out
+
+    def test_redacts_python_repr_password_field(self) -> None:
+        out = _logging.redact_secrets("params={'password': 'hunter2'}")
+        assert "hunter2" not in out
+        assert "'password':" in out
+
+    def test_redacts_refresh_token_field(self) -> None:
+        out = _logging.redact_secrets(
+            'body={"refresh_token": "v1.MR0pa9ueOPAQUE-not-a-jwt"}'
+        )
+        assert "MR0pa9ueOPAQUE" not in out
+        assert '"refresh_token": "<redacted>"' in out
+
+    def test_password_redaction_is_idempotent(self) -> None:
+        once = _logging.redact_secrets('{"password": "abc"}')
+        assert _logging.redact_secrets(once) == once
+
     def test_leaves_ordinary_text_untouched(self) -> None:
         msg = "BridgeServer.dispatch: id=42 method=invoke_tool name=get_document"
         assert _logging.redact_secrets(msg) == msg
