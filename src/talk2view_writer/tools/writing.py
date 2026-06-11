@@ -1012,6 +1012,7 @@ def undo_redo(action: str, count: int = 1) -> str:
         }
         for p in _enumerate_paragraphs(doc)
     ]
+    applied_steps = 0
     for _ in range(steps):
         if action == "undo":
             if not undo_manager.isUndoPossible():
@@ -1021,6 +1022,28 @@ def undo_redo(action: str, count: int = 1) -> str:
             if not undo_manager.isRedoPossible():
                 break
             undo_manager.redo()
+        applied_steps += 1
+
+    # Nothing could be applied — do NOT report success. A redo with an empty
+    # redo stack (or an undo with nothing to undo) executed zero steps yet
+    # used to return success:true with a "may be a formatting-only change"
+    # hint, steering the model to believe the operation happened.
+    if applied_steps == 0:
+        return json.dumps(
+            {
+                "success": False,
+                "action": action,
+                "steps_requested": steps,
+                "steps_applied": 0,
+                "error": f"No {action} steps were available.",
+                "recovery": (
+                    "Redo is only valid immediately after an undo with no "
+                    "intervening edits."
+                    if action == "redo"
+                    else "There is nothing left to undo."
+                ),
+            }
+        )
     after = [
         {
             "text": p.getString(),
@@ -1045,6 +1068,8 @@ def undo_redo(action: str, count: int = 1) -> str:
         {
             "success": True,
             "action": action,
+            "steps_requested": steps,
+            "steps_applied": applied_steps,
             "changes": changes
             if changes
             else "no visible text/style changes (may be a formatting-only change)",

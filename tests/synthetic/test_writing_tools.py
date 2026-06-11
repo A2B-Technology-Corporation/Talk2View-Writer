@@ -82,6 +82,35 @@ class TestUndoRedo:
         assert "before" in pc
         assert "after" in pc
 
+    def test_success_reports_steps_applied(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import undo_redo
+
+        result = json.loads(undo_redo("undo", count=3))
+        assert result["success"] is True
+        assert result["steps_requested"] == 3
+        assert result["steps_applied"] == 3
+
+    def test_zero_available_steps_reports_failure(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A redo with nothing to redo must report success:false, not true.
+
+        Previously undo_redo returned success:true with a 'may be a
+        formatting-only change' hint even when zero steps ran.
+        """
+        from talk2view_writer.tools.writing import undo_redo
+
+        # Make redo impossible on the synthetic undo manager.
+        undo_manager = synthetic_doc.getUndoManager()
+        undo_manager.isRedoPossible = lambda: False  # type: ignore[method-assign]
+        result = json.loads(undo_redo("redo", count=2))
+        assert result["success"] is False
+        assert result["steps_applied"] == 0
+        assert "error" in result
+        assert undo_manager.redo_calls == 0
+
 
 # ---------------------------------------------------------------------------
 # delete_content
