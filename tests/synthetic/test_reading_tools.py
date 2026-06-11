@@ -62,6 +62,10 @@ class TestGetDocument:
         ]
         # Word-name translation: "Heading 1" (LibreOffice) → "Heading1" (Word schema).
         assert result["paragraphs"][0]["style"] == "Heading1"
+        # page_styles is the section_index space the structure tools accept,
+        # always >= 1 (distinct from the raw text-section count).
+        assert result["page_styles"] >= 1
+        assert "sections" in result
 
     def test_pagination_returns_requested_window(
         self,

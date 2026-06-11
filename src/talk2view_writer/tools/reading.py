@@ -129,11 +129,20 @@ def get_document(
     # ---- Properties
     props = _read_document_properties(doc)
 
-    # ---- Sections (delta: LibreOffice "text sections" are not Word
-    # "sections". We report the text-section count and flag this in
-    # the response. See investigations.md #14.)
+    # ---- Sections. LibreOffice "text sections" (getTextSections) are NOT
+    # the page-style-based "sections" the structure tools key on. The
+    # structure tools (set_page_setup / set_header_footer /
+    # insert_page_numbers) interpret section_index against the PAGE-STYLE
+    # count (_list_page_styles_in_use, always >= 1), an unrelated quantity.
+    # Reporting only the text-section count (usually 0) made the agent
+    # believe there were no sections and never target ones that exist. Report
+    # BOTH, with page_styles as the section_index space those tools accept.
+    # See investigations.md #14.
+    from talk2view_writer.tools.structure import _list_page_styles_in_use
+
     text_sections = doc.getTextSections()
     section_count = text_sections.getCount() if text_sections is not None else 0
+    page_style_count = len(_list_page_styles_in_use(doc))
 
     response: dict[str, Any] = {
         "text": text.getString(),
@@ -142,6 +151,9 @@ def get_document(
         "tables": table_data,
         "properties": props,
         "sections": section_count,
+        # The valid section_index range for the structure tools is
+        # 0 .. page_styles - 1.
+        "page_styles": page_style_count,
     }
 
     if total == 0 or (total == 1 and not paragraphs[0].getString().strip()):
