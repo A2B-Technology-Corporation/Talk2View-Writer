@@ -477,11 +477,15 @@ def main() -> None:
     if sys.platform.startswith("linux"):
         _apply_window_identity()
         _patch_gtk_window_transient()
-    # Belt + braces: also raise the SSL tolerance just in case the
-    # WebKitGTK shipped with this user's distro doesn't bundle the
-    # same CA roots as system Python's httpx.
-    webview.settings['IGNORE_SSL_ERRORS'] = True
-
+    # NOTE: we deliberately do NOT set webview.settings['IGNORE_SSL_ERRORS'].
+    # Disabling TLS certificate validation for the whole webview is an
+    # unacceptable posture for a credential-handling, FDA-bound component:
+    # any direct request the webview makes (an asset URL in engine output,
+    # a redirect target, a future non-proxied endpoint) would accept a
+    # forged certificate and be MITM-able. Engine traffic is proxied
+    # through the bridge's httpx, which validates certificates (verify=True
+    # by default). If a distro's WebKitGTK genuinely lacks CA roots, point
+    # it at a bundled/system CA bundle rather than turning validation off.
     storage_path = _webview_storage_path()
     logger.info("webview imported, calling create_window")
     window = webview.create_window(
