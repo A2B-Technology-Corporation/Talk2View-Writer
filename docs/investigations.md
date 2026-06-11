@@ -2417,3 +2417,36 @@ Git-for-Windows bash the step uses. Until diagnosed, consider marking
 the windows-latest integration leg `continue-on-error` so it reports
 without blocking, mirroring the #36 treatment — but only after one
 verbose-log capture, not as a first move.
+
+
+## #65 — `Live E2E (Linux)` live-scenarios suite is non-deterministically red (NEW 2026-06-11)
+
+**What:** The `Live E2E (Linux, real soffice + bridge)` job's
+`live-scenarios.spec.ts` cases (`walks the scripted scenario; hard-fails
+on any violation`) fail intermittently with scenario soft-failures like
+`[step_03] doc has 7 paragraphs, expected exactly 5` or `expected tool
+'edit_table' invoked; got [get_document]`. These assert *exact* paragraph
+/ table counts and *exact* tool-call sequences against the **real cloud
+engine**, whose LLM output is non-deterministic — so different runs trip
+different scenarios. v1.0.6 `main` failed 3 (preferences, search_replace,
+table_editing); the v1.0.7 DNS PR #24 run failed 1 (penguin_story). The
+deterministic suites (unit, all Playwright E2E, the `live-bridge-smoke`
+and `live-pywebview-shim` specs) were green throughout.
+
+**Where:** `tests/e2e/specs/live-scenarios.spec.ts` (the `toEqual([])`
+soft-failure gate at ~line 431); driven by the real engine via the
+bridge proxy. Scenario expectations live in the e2e fixtures.
+
+**Why it matters:** A perpetually-flaky required-looking job erodes CI
+signal — a real bridge/tool regression in a live scenario would be
+indistinguishable from the engine just choosing a different plan. It
+also blocks clean release-gating (v1.0.7 shipped with this red, judged
+unrelated because the failures are pure engine content non-determinism
+that the DNS-timeout change cannot influence).
+
+**Next step:** make the live-scenario assertions tolerant of benign LLM
+variance — assert *capability* (the doc ended with a table; the edit
+landed) rather than exact counts / exact tool sequences — or split the
+strict-equality scenarios into a separate non-blocking "engine-behaviour
+drift" job. Cross-reference Platform #62 / #63 (the tool-call-count
+overshoot the penguin_story failure cites).
