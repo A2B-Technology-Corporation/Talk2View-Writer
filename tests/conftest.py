@@ -208,6 +208,15 @@ _text = _make_module("com.sun.star.text")
 _frame = _make_module("com.sun.star.frame")
 _beans = _make_module("com.sun.star.beans")
 _beans.PropertyValue = MagicMock(name="PropertyValue")  # type: ignore[attr-defined]
+# Production code catches these when setting paragraph flow properties
+# (formatting.py::format_paragraph). Expose real Exception subclasses so the
+# narrow ``except (...)`` resolves against the stubs.
+_beans.UnknownPropertyException = type(  # type: ignore[attr-defined]
+    "UnknownPropertyException", (Exception,), {}
+)
+_beans.PropertyVetoException = type(  # type: ignore[attr-defined]
+    "PropertyVetoException", (Exception,), {}
+)
 _uno_pkg = _make_module("com.sun.star.uno")
 # Production code catches the UNO RuntimeException (e.g. writing.py's
 # ParaStyleName-under-redline guard). Expose a real Exception subclass so

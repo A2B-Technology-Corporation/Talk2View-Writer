@@ -667,7 +667,7 @@ def format_paragraph(
             right_indent=right_indent,
             first_line_indent=first_line_indent,
         )
-        # Best-effort flow properties. UNO ParagraphProperties semantics:
+        # Flow properties. UNO ParagraphProperties semantics:
         #   ParaSplit=False        → keep all LINES of this paragraph together
         #                            (don't split it across a page break).
         #   ParaKeepTogether=True  → keep this paragraph together with the
@@ -675,37 +675,75 @@ def format_paragraph(
         # So keep_together drives ParaSplit (inverted) and keep_with_next
         # drives ParaKeepTogether. ParaKeepWithNext is not a real UNO
         # property — writing it silently no-ops on every build.
-        for attr_name, value in (
-            ("ParaSplit", None if keep_together is None else not keep_together),
-            ("ParaKeepTogether", keep_with_next),
-            ("BreakType", None if page_break_before is None else (4 if page_break_before else 0)),
+        from com.sun.star.beans import (  # type: ignore[import-not-found]
+            PropertyVetoException,
+            UnknownPropertyException,
+        )
+        from com.sun.star.lang import (  # type: ignore[import-not-found]
+            IllegalArgumentException,
+        )
+        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+        flow_failures: list[str] = []
+        for attr_name, result_key, value in (
+            ("ParaSplit", "keep_together", None if keep_together is None else not keep_together),
+            ("ParaKeepTogether", "keep_with_next", keep_with_next),
+            (
+                "BreakType",
+                "page_break_before",
+                None if page_break_before is None else (4 if page_break_before else 0),
+            ),
         ):
             if value is None:
                 continue
             try:
                 setattr(p, attr_name, value)
-            except Exception:
-                logger.debug("Property %s not settable on this LibreOffice build", attr_name)
-        results.append(
-            {
-                "index": idx,
-                "success": True,
-                "text": preview(p.getString()),
-                # Report the Word-vocabulary name (e.g. 'Normal', 'Heading2'),
-                # consistent with get_document (reading.py), so the model never
-                # sees a raw LO display name like 'Text body' it would then
-                # re-send and get rejected (Writer #56).
-                "resulting_style": libreoffice_to_word_style(
-                    getattr(p, "ParaStyleName", "") or ""
-                ),
-            }
-        )
+            except (
+                UnknownPropertyException,
+                IllegalArgumentException,
+                PropertyVetoException,
+                RuntimeException,
+            ):
+                # Narrow catch (CLAUDE.md fail-fast): the property may not
+                # exist on this build, reject the value, or be blocked by a
+                # redline. Surface it as a per-paragraph warning instead of
+                # swallowing it at debug and reporting it as applied. Anything
+                # else propagates with its traceback.
+                logger.exception(
+                    "Flow property %s (%s) could not be set on paragraph %d",
+                    attr_name,
+                    result_key,
+                    idx,
+                )
+                flow_failures.append(result_key)
+        para_result: dict[str, Any] = {
+            "index": idx,
+            "success": True,
+            "text": preview(p.getString()),
+            # Report the Word-vocabulary name (e.g. 'Normal', 'Heading2'),
+            # consistent with get_document (reading.py), so the model never
+            # sees a raw LO display name like 'Text body' it would then
+            # re-send and get rejected (Writer #56).
+            "resulting_style": libreoffice_to_word_style(
+                getattr(p, "ParaStyleName", "") or ""
+            ),
+        }
+        if flow_failures:
+            para_result["flow_warnings"] = (
+                "These flow properties could not be applied on this build and "
+                f"were NOT set: {', '.join(flow_failures)}."
+            )
+        results.append(para_result)
 
     applied = {k: v for k, v in args_dict.items() if v is not None}
     if has_batch:
         return json.dumps(
             {
-                "success": True,
+                # Honest success: True only when every targeted paragraph
+                # succeeded, matching format_text. A batch where every index
+                # was out of range used to report success:true with
+                # paragraphs_formatted:0.
+                "success": all(r.get("success") for r in results),
                 "paragraphs_formatted": sum(1 for r in results if r.get("success")),
                 "results": results,
                 "formatting_applied": applied,

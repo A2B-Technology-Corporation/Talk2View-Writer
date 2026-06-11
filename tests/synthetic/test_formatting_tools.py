@@ -252,6 +252,38 @@ class TestFormatParagraph:
         )
         assert applied in ("Heading 1", "Heading1")
 
+    def test_batch_all_out_of_range_reports_failure(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A batch where every paragraph fails must NOT report success:true.
+
+        The single source-document paragraph means indices 10/11/12 are all
+        out of range. The batch used to hardcode success:true with
+        paragraphs_formatted:0, so an LLM checking only `success` believed
+        the formatting was applied.
+        """
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        result = json.loads(
+            format_paragraph(paragraph_indices=[10, 11, 12], alignment="center")
+        )
+        assert result["success"] is False
+        assert result["paragraphs_formatted"] == 0
+        assert all("error" in r for r in result["results"])
+
+    def test_batch_partial_success_reports_false(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_paragraph
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("real paragraph"))
+        result = json.loads(
+            format_paragraph(paragraph_indices=[1, 99], alignment="center")
+        )
+        # One succeeded, one out of range -> overall success is False.
+        assert result["success"] is False
+        assert result["paragraphs_formatted"] == 1
+
     def test_missing_style_single_target_degrades_not_raises(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
     ) -> None:
