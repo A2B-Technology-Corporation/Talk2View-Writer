@@ -110,11 +110,36 @@ class TestAnnotationId:
         ann.Name = "__Annotation__0_1234"
         assert _annotation_id(ann) == "__Annotation__0_1234"
 
-    def test_falls_back_to_object_id_when_name_empty(self) -> None:
+    def test_assigns_stable_name_when_empty(self) -> None:
+        """Investigation #66: an empty Name gets a stable, persisted t2v- id.
+
+        The old behaviour fell back to ``str(id(ann))`` — the Python proxy
+        id, which changed on every re-enumeration, so manage_comment could
+        never find a comment by the id get_comments returned. Now we assign
+        and PERSIST a unique Name on the annotation.
+        """
         ann = MagicMock()
         ann.Name = ""
         result = _annotation_id(ann)
-        # Should be a non-empty string corresponding to Python's id().
+        assert result.startswith("t2v-"), result
+        # The Name was persisted on the annotation...
+        assert ann.Name == result
+        # ...so a second call returns the SAME id (stable round-trip).
+        assert _annotation_id(ann) == result
+
+    def test_falls_back_to_object_id_when_name_unsettable(self) -> None:
+        """If a build rejects the Name write, degrade gracefully (no crash)."""
+
+        class _Unsettable:
+            Name = ""
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if name == "Name":
+                    raise RuntimeError("Name is read-only on this build")
+                object.__setattr__(self, name, value)
+
+        ann = _Unsettable()
+        result = _annotation_id(ann)
         assert result == str(id(ann))
         assert result != ""
 

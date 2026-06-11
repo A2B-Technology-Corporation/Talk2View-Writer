@@ -329,6 +329,76 @@ class TestCommentAuthorship:
 # ---------------------------------------------------------------------------
 
 
+class TestCommentIdStability:
+    """Investigation #66: ids from get_comments must survive to manage_comment.
+
+    API-created annotations have an empty ``Name`` on real LO, and the old
+    ``str(id(ann))`` fallback was a Python proxy id that changed on every
+    re-enumeration — so manage_comment could never find a comment by the id
+    get_comments returned. ``_annotation_id`` now assigns a stable, persisted
+    ``t2v-…`` Name. The synthetic model returns empty-Name annotations (like
+    real LO) so this is exercised here.
+    """
+
+    def test_get_comments_id_is_stable_not_python_id(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        from talk2view_writer.tools.commenting import add_comment, get_comments
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("alpha beta gamma"))
+        add_comment(anchor="alpha", comment="needs work")
+
+        id1 = json.loads(get_comments())["comments"][0]["id"]
+        id2 = json.loads(get_comments())["comments"][0]["id"]
+        assert id1.startswith("t2v-"), "expected a stable assigned Name"
+        assert not id1.removeprefix("t2v-").isdigit() or id1 == id2
+        assert id1 == id2, "id must be stable across re-enumeration"
+
+    def test_two_comments_get_distinct_ids(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        from talk2view_writer.tools.commenting import add_comment, get_comments
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("alpha beta gamma delta")
+        )
+        add_comment(anchor="alpha", comment="one")
+        add_comment(anchor="gamma", comment="two")
+
+        ids = [c["id"] for c in json.loads(get_comments())["comments"]]
+        assert len(ids) == 2
+        assert len(set(ids)) == 2, "each comment needs a distinct id"
+        assert all(ids), "ids must be non-empty"
+
+    def test_manage_comment_finds_comment_by_get_comments_id(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """The exact round-trip that was broken on real LO.
+
+        add_comment -> get_comments (grab id) -> manage_comment(id) must
+        succeed, not return "not found".
+        """
+        from talk2view_writer.tools.commenting import (
+            add_comment,
+            get_comments,
+            manage_comment,
+        )
+
+        synthetic_doc._text._paragraphs.append(FakeParagraph("alpha beta gamma"))
+        add_comment(anchor="alpha", comment="needs work")
+        cid = json.loads(get_comments())["comments"][0]["id"]
+
+        result = json.loads(manage_comment(comment_id=cid, action="resolve"))
+        assert result["success"] is True, result
+        assert result["comment_id"] == cid
+
+
 class TestManageComment:
     def test_invalid_action_returns_error(
         self,
