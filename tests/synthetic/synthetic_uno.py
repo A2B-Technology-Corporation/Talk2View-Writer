@@ -905,6 +905,14 @@ class FakeTextDocument(_Service):
                 "Default Page Style": _PropBag(
                     HeaderText=FakeText([FakeParagraph("")]),
                     FooterText=FakeText([FakeParagraph("")]),
+                    # The firstPage / evenPages variants the structure tools
+                    # write for header_footer_type. Real XText objects (not a
+                    # None the tool's per-section catch would otherwise have
+                    # to swallow) so those paths actually run.
+                    HeaderTextFirst=FakeText([FakeParagraph("")]),
+                    HeaderTextLeft=FakeText([FakeParagraph("")]),
+                    FooterTextFirst=FakeText([FakeParagraph("")]),
+                    FooterTextLeft=FakeText([FakeParagraph("")]),
                 )
             },
         }
