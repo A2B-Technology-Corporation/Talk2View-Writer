@@ -377,10 +377,47 @@ def format_text(
     return json.dumps(results[0])
 
 
+def _coerce_int(value: Any) -> int | None:
+    """Return ``value`` as an int (coercing a numeric string), else ``None``.
+
+    Booleans are NOT ints here — ``True``/``False`` from JSON must not be
+    silently read as 1/0 indices.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
 def _resolve_format_target(doc: Any, text_obj: Any, item: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a format item to ``{cursor, text, ...}`` or ``{error, recovery}``."""
+    """Resolve a format item to ``{cursor, text, ...}`` or ``{error, recovery}``.
+
+    A target that is PROVIDED but mistyped (a numeric query, a
+    non-numeric paragraph_index, a string match_index) is a structured
+    error — never a silent fall-through to the current selection, which
+    would format whatever text the user happened to have highlighted.
+    Numeric-string indices the model commonly emits ("3") are coerced.
+    """
     q = item.get("query")
     pidx = item.get("paragraph_index")
+
+    if q is not None and not isinstance(q, str):
+        return {
+            "error": f"query must be a string, got {type(q).__name__}.",
+            "recovery": "Pass the text to find as a string, or use paragraph_index.",
+        }
+    if pidx is not None:
+        coerced_pidx = _coerce_int(pidx)
+        if coerced_pidx is None:
+            return {
+                "error": f"paragraph_index must be an integer, got {pidx!r}.",
+                "recovery": "Pass a zero-based integer paragraph index.",
+            }
+        pidx = coerced_pidx
+
     if isinstance(q, str):
         searcher = doc.createSearchDescriptor()
         searcher.SearchString = q
@@ -392,7 +429,16 @@ def _resolve_format_target(doc: Any, text_obj: Any, item: dict[str, Any]) -> dic
                 "error": f'Text "{preview(q, 60)}" not found.',
                 "recovery": "Use get_document to check exact text.",
             }
-        mi = item.get("match_index", 0) or 0
+        if "match_index" in item:
+            mi_coerced = _coerce_int(item["match_index"])
+            if mi_coerced is None:
+                return {
+                    "error": f"match_index must be an integer, got {item['match_index']!r}.",
+                    "recovery": f"Use 0 to {total - 1}.",
+                }
+            mi = mi_coerced
+        else:
+            mi = 0
         if mi < 0 or mi >= total:
             return {
                 "error": f"match_index {mi} out of range ({total} matches).",

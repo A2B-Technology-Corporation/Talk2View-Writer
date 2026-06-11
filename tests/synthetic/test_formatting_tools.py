@@ -158,6 +158,42 @@ class TestFormatText:
         )
         assert isinstance(result, dict)
 
+    def test_string_paragraph_index_is_coerced_not_selection(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """A numeric-string paragraph_index targets that paragraph.
+
+        It must NOT fall through to the current selection.
+        """
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("first"), FakeParagraph("second target")]
+        )
+        result = json.loads(
+            format_text(queries=[{"paragraph_index": "1", "bold": True}])
+        )
+        assert result["success"] is True
+        # The targeted paragraph's text is reported (not a selection).
+        assert "second target" in json.dumps(result)
+
+    def test_non_numeric_paragraph_index_errors_not_selection(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.formatting import format_text
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.append(FakeParagraph("only para"))
+        result = json.loads(
+            format_text(queries=[{"paragraph_index": "abc", "bold": True}])
+        )
+        # Per-item error, not a silent format of the current selection.
+        assert result["success"] is False
+        assert any(
+            "paragraph_index" in (r.get("error") or "") for r in result["results"]
+        )
+
 
 class TestInlineEscapement:
     """Superscript/subscript are independent toggles — neither cancels the other.
