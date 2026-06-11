@@ -15,9 +15,10 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 from talk2view_writer import __version__
+from talk2view_writer._paths import file_url_to_path
 from talk2view_writer.config import EXTENSION_ID
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ def _extension_root(ctx: Any) -> Path:
     parsed = urlparse(url)
     if parsed.scheme != "file":
         raise RuntimeError(f"extension root must be a file:// URL, got {url!r}")
-    return Path(unquote(parsed.path))
+    return file_url_to_path(url)
 
 
 def read_license_text(ctx: Any) -> str:
