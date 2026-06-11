@@ -2605,3 +2605,45 @@ not reproduced: `formatting.py::format_text` applies
 genuinely-rejected write (e.g. a write-protected section) would abort the
 whole batch and leave partial formatting — worth hardening if a real
 repro surfaces.
+
+
+## #67 — Tool-surface live-LO audit + comprehensive live integration tests (2026-06-11)
+
+**What:** After fixing #38 and #66 (both: success path tested only against
+the synthetic fake, broken on real LO), audited every tool module for the
+same class of bug and closed the coverage gap.
+
+**Audit result:** #66 (`manage_comment` dead via unstable annotation ids)
+was the one genuine new bug — fixed. The other top candidates were
+live-reproduced and found to be **false alarms** on real LO 26.2:
+`manage_comment` delete/resolve/edit work on point-anchored comments;
+`search_document` regex (`SearchRegularExpression`) + whole-word
+(`SearchWords`) are honoured; char-property writes under Track Changes do
+not throw. A flagged `delete_content`/`_delete_paragraph` "Binary URP
+bridge disposed" crash was **investigated and NOT reproduced** with
+correct usage (paragraph-before-table and final-paragraph deletes both
+succeed on 26.2) — the crash was a test-harness artifact (a paragraph
+handle from one doc + a `getCurrentComponent` text object from another),
+which cannot happen in production where the tool resolves both from the
+same current document. No fix needed.
+
+**Coverage built (the real deliverable):** a `tool_doc` fixture
+(`tests/integration/conftest.py`) wires the extension singleton + a live
+document so the REAL `@tool` functions run against real soffice; tests
+assert real-LibreOffice DOCUMENT STATE (paragraph text/styles, table
+cells, char/paragraph UNO properties, page styles, headers/footers), not
+the tools' JSON response shape. New live files — `test_writing_live.py`
+(39), `test_formatting_live.py` (38), `test_structure_live.py` (33),
+`test_search_live.py` (26), `test_reading_live.py` (21),
+`test_tools_live.py` (7 smoke) — plus the commenting lifecycle tests from
+#38/#66. **173 live tool tests pass** against LO 26.2; they run in the CI
+Integration matrix on Linux/macOS/Windows, so this whole class of
+real-LO-only regression is now caught.
+
+**Real-LO read-back quirks encoded in the tests (for future readers):**
+`CharPosture` reads back as a `FontSlant` enum (`.value == "ITALIC"`), not
+the int `2` the tool writes; `NumberingRules` after a list `remove` reads
+back as an empty object, not `None` (assert `NumberingIsNumber is False`);
+A4 paper width round-trips 21000→21001 (assert ±1); a fresh paragraph can
+report `CharPosture` non-NONE even when not visually italic. None are tool
+bugs — they are PyUNO/LO representation details the live tests must match.

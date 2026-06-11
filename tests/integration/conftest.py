@@ -277,3 +277,53 @@ def blank_document(desktop: Any, oxt_installed: Any) -> Iterator[Any]:
         # via the per-test pytest-timeout traceback in pyproject.
         with contextlib.suppress(Exception):
             doc.close(False)
+
+
+@pytest.fixture
+def tool_doc(desktop: Any, uno_context: Any, monkeypatch: Any) -> Iterator[Any]:
+    """A live Writer doc wired so the REAL ``@tool`` functions run on it.
+
+    This is the harness for end-to-end tool tests: it lets a test call the
+    actual tool (e.g. ``insert_content(text=...)``) and assert the resulting
+    real-LibreOffice document state — the coverage gap that hid the
+    commenting bugs (Investigations #38, #66).
+
+    Wiring:
+      * loads a fresh document — it becomes the desktop's current
+        component, so the production ``get_writer_document(ctx)`` resolves
+        to it (verified: a loaded doc is returned by ``getCurrentComponent``);
+      * stubs the extension singleton with the live ``ctx`` and a
+        SYNCHRONOUS ``ui_thread.run_sync`` so ``@ui_thread_tool`` runs the
+        body inline on this thread (UNO is single-threaded here);
+      * forces the AI-track-changes preference OFF so the mutating envelope
+        is a plain undo-grouped call (track-changes has its own tests).
+
+    Does NOT require the .oxt to be installed — it exercises pure tool +
+    UNO behaviour independent of the extension package.
+    """
+    import types
+    from unittest.mock import MagicMock
+
+    import talk2view_writer.extension as ext_mod
+    import talk2view_writer.preferences as prefs_mod
+
+    doc = desktop.loadComponentFromURL(
+        "private:factory/swriter", "_blank", 0, ()
+    )
+
+    stub = types.SimpleNamespace(
+        ctx=uno_context,
+        ui_thread=types.SimpleNamespace(run_sync=lambda fn, *a, **k: fn(*a, **k)),
+        sdk=MagicMock(name="sdk"),
+    )
+    monkeypatch.setattr(ext_mod, "_INSTANCE", stub)
+    monkeypatch.setattr(
+        prefs_mod,
+        "get_preferences",
+        lambda: {prefs_mod.PREF_AI_TRACK_CHANGES: False},
+    )
+    try:
+        yield doc
+    finally:
+        with contextlib.suppress(Exception):
+            doc.close(False)
