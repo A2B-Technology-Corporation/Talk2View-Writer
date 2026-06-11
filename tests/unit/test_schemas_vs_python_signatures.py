@@ -44,14 +44,25 @@ _BUILD_TOOL_RE = re.compile(
     re.DOTALL,
 )
 
-_NAME_RE = re.compile(r"name:\s*'([a-z_]+)'")
+_NAME_RE = re.compile(r"name:\s*'([a-z0-9_]+)'")
 
 # Inside a ``properties: { ... }`` block, each property starts at the
 # beginning of a (whitespace-indented) line with the property name
 # followed by a colon and an open brace. This rejects nested objects
 # whose own keys (e.g. ``description:``, ``type:``) would otherwise
 # look like properties.
-_PROPERTY_RE = re.compile(r"^\s{8}([a-z_]+):\s*\{", re.MULTILINE)
+#
+# The character class MUST include digits and uppercase: a property like
+# ``base64_data`` (the REQUIRED arg of insert_image) contains a digit, and
+# an ``[a-z_]+`` class silently dropped it — leaving the required property
+# unvalidated, the exact schema/signature drift this suite exists to catch
+# (Investigation #35).
+_PROPERTY_RE = re.compile(r"^\s{8}([A-Za-z0-9_]+):\s*\{", re.MULTILINE)
+
+# ``required: ['a', 'b']`` inside a parameters block, and the quoted names
+# within it. Used to assert every required property is actually parsed.
+_REQUIRED_RE = re.compile(r"required:\s*\[([^\]]*)\]")
+_REQUIRED_ITEM_RE = re.compile(r"'([A-Za-z0-9_]+)'")
 
 
 def _extract_properties_block(body: str) -> str | None:
@@ -96,6 +107,23 @@ def _parse_tools_ts() -> dict[str, set[str]]:
     return out
 
 
+def _parse_required() -> dict[str, set[str]]:
+    """Parse ``tools.ts`` → {tool_name: {required_property_name, ...}}."""
+    text = _TOOLS_TS.read_text()
+    out: dict[str, set[str]] = {}
+    for block in _BUILD_TOOL_RE.finditer(text):
+        body = block.group(1)
+        name_m = _NAME_RE.search(body)
+        if not name_m:
+            continue
+        name = name_m.group(1)
+        req_m = _REQUIRED_RE.search(body)
+        out[name] = (
+            set(_REQUIRED_ITEM_RE.findall(req_m.group(1))) if req_m else set()
+        )
+    return out
+
+
 def _python_kwargs(tool_name: str) -> set[str]:
     """Return the kwarg names of the Python tool with this name."""
     from talk2view_writer.tools import all_tools
@@ -129,6 +157,34 @@ class TestSchemaVsPythonContract:
             f"Expected 21 buildWriterTool blocks, parser found {len(parsed)}: "
             f"{sorted(parsed)}"
         )
+
+    def test_insert_image_base64_data_is_parsed(self) -> None:
+        """The digit-bearing required property must be parsed, not dropped.
+
+        Direct regression for the ``[a-z_]+`` property regex that silently
+        omitted ``base64_data`` from insert_image's parsed schema.
+        """
+        parsed = _parse_tools_ts()
+        assert "base64_data" in parsed.get("insert_image", set()), (
+            "insert_image schema property 'base64_data' was not parsed — the "
+            f"property regex dropped it. Parsed: {sorted(parsed.get('insert_image', set()))}"
+        )
+
+    def test_every_required_property_is_a_parsed_property(self) -> None:
+        """Each name in a tool's ``required: [...]`` must be a parsed property.
+
+        A required name the parser can't see escapes the subset check
+        below — exactly how ``base64_data`` slipped through. This pins the
+        invariant for every tool, not just insert_image.
+        """
+        props = _parse_tools_ts()
+        required = _parse_required()
+        for name, req in required.items():
+            missing = req - props.get(name, set())
+            assert not missing, (
+                f"{name}: required schema props not found among parsed "
+                f"properties {sorted(props.get(name, set()))}: {sorted(missing)}"
+            )
 
     @pytest.mark.parametrize(
         "tool_name",
