@@ -2338,7 +2338,7 @@ faithful (split at the cursor) so this class of regression is catchable
 in-process, and add real-soffice integration tests for insert_content anchors
 (tests/integration/test_writing.py, still unwritten).
 
-## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (PARTIALLY FIXED 2026-06-11)
+## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (FIXED 2026-06-11; DNS-bound latency remains)
 
 **What:** On a flaky/offline connection a chat send showed a generic
 "Request failed" after a long delay. Two issues:
@@ -2353,23 +2353,29 @@ in-process, and add real-soffice integration tests for insert_content anchors
    streaming proxy path (bridge.ts `_proxyStream` returns the envelope rather
    than throwing).
 
-2. **Long delay (NOT fixed):** each failed request took 20–25s, and the
-   user's message waited another ~40s behind the single-bridge-lock
-   serialization of the startup calls (tools/register, config, GitHub update
-   check). Total ~60s before the error surfaced.
+2. **Head-of-line blocking (FIXED):** each failed request took 20–25s, and
+   the user's message waited another ~40s behind the serialized startup
+   calls (tools/register, config, GitHub update check). Both ends serialized:
+   the client's `_call` held one lock for the whole round-trip, and the
+   server processed one request per connection thread (so a 25s proxy_fetch
+   — or a 60s proxy_stream_next — blocked the next request's dispatch).
+   Fixed by making the bridge concurrent: the server dispatches each request
+   on a pool worker (`_MAX_DISPATCH_WORKERS`, responses serialized by
+   `_send_lock`), and the client MULTIPLEXES — `_call` registers a pending
+   entry by id, sends, and waits; a single reader thread routes responses
+   back by id. A slow call now blocks neither a notification nor another
+   call, so the chat send runs concurrently with the startup calls and the
+   ~60s wait collapses to a single request's latency.
 
-**Where:** `bridge_server.py::_proxy_fetch` / `_proxy_stream_open`;
-`web_runner._BridgeClient` (single `_call_lock`); `bridge.ts::_proxyStream`.
+3. **DNS/connect latency itself (NOT fixed):** even concurrent, a request on
+   a bad connection can take ~20–25s because `getaddrinfo` (DNS) retries and
+   httpx's `connect=10s` timeout does not bound DNS resolution on the sync
+   transport.
 
-**Why the delay is hard:** the 20–25s is `getaddrinfo` (DNS) retrying on a
-bad connection — httpx's `connect=10s` timeout does not bound DNS resolution
-on the sync transport. The serialization then compounds it: a real chat send
-queues behind the slow startup requests on the single bridge connection.
+**Where:** `bridge_server.py::_proxy_fetch` / `_proxy_stream_open` /
+`_handle_connection`; `web_runner._BridgeClient`; `bridge.ts::_proxyStream`.
 
-**Next step:** (a) bound DNS — resolve on a thread with a hard deadline, or
-move proxy_fetch to an async/threaded httpx so the connect timeout actually
-caps total time; (b) reduce head-of-line blocking — let the user's message
-request not wait behind non-critical startup calls (separate lane, or make
-tools/register + config + update-check fire-and-forget with their own short
-timeout); (c) optional `navigator.onLine` fast-fail in bridge.ts (unreliable
-in WebKitGTK, so only as a hint).
+**Next step for (3):** bound DNS — resolve on a thread with a hard deadline,
+or move proxy_fetch to an async/threaded httpx so the connect timeout
+actually caps total time; optionally `navigator.onLine` fast-fail in
+bridge.ts (unreliable in WebKitGTK, so only as a hint).

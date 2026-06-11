@@ -165,22 +165,51 @@ class TestBridgeClientNotify:
         # The first real call still uses id=1 (the canned reply's id).
         assert client._call("list_tools", {}) == "ok"
 
-    def test_notify_not_blocked_by_in_flight_call_round_trip(self) -> None:
-        """A log must not queue behind a _call blocked on a slow reply.
+    def test_in_flight_call_blocks_neither_notify_nor_other_calls(self) -> None:
+        """Multiplexing: a call waiting on a slow response holds no lock.
 
-        Regression for the lock split: _call holds _call_lock for the
-        whole round-trip (including a proxy_stream_next read that can
-        block up to 60s), but notify takes only _write_lock. Simulate the
-        in-flight round-trip by holding _call_lock; notify must still send
-        promptly. If notify needed _call_lock this would deadlock and
-        pytest-timeout would fire.
+        Regression for the head-of-line blocking (#63): with the old single
+        round-trip lock, a proxy_stream_next that blocked up to 60s on the
+        engine stalled every other request. Now a call in flight only waits
+        on its own per-request event, so a notification — and another call —
+        proceed immediately.
         """
-        client, sock = self._client()
-        client._call_lock.acquire()
-        try:
-            client.notify("log", {"message": "while a _call is in flight"})
-        finally:
-            client._call_lock.release()
-        sent = json.loads(sock.sent.rstrip(b"\n").decode())
-        assert sent["method"] == "log"
-        assert "id" not in sent
+        import contextlib
+        import threading
+
+        sent: list[bytes] = []
+        reader_started = threading.Event()
+        release = threading.Event()
+
+        class _SlowSock:
+            def sendall(self, data: bytes) -> None:
+                sent.append(data)
+
+            def recv(self, _n: int) -> bytes:
+                reader_started.set()  # the reader is now blocked here
+                release.wait(2.0)  # no response arrives until released
+                return b""  # then EOF, so the pending call unwinds
+
+        client = _BridgeClient("/tmp/unused.sock")
+        client._sock = _SlowSock()  # type: ignore[assignment]
+
+        call_returned = threading.Event()
+
+        def slow_call() -> None:
+            with contextlib.suppress(Exception):
+                client._call("proxy_stream_next", {"stream_id": "x"})
+            call_returned.set()
+
+        threading.Thread(target=slow_call, daemon=True).start()
+        # The reader is blocked in recv -> the slow call is genuinely in flight.
+        assert reader_started.wait(2.0)
+
+        # A notification goes out promptly while the call is still pending.
+        client.notify("log", {"message": "while a call is in flight"})
+        assert not call_returned.is_set()
+
+        frames = b"".join(sent)
+        assert b"proxy_stream_next" in frames  # the in-flight call's request
+        assert b'"method": "log"' in frames  # the notification, not blocked
+
+        release.set()  # let the reader EOF so the daemon thread unwinds

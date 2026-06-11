@@ -45,36 +45,65 @@ logger = logging.getLogger("talk2view_writer.web_runner")
 # ---------------------------------------------------------------------------
 
 
-class _BridgeClient:
-    """Newline-delimited JSON-RPC client over a Unix socket.
+class _PendingCall:
+    """One in-flight request awaiting its response, routed to by id."""
 
-    Single-connection; calls are serialised behind ``self._lock``
-    because pywebview can dispatch multiple JS-originated calls
-    concurrently from its worker pool.
+    __slots__ = ("error", "event", "result")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: Any = None
+        self.error: dict[str, Any] | None = None
+
+
+class _BridgeClient:
+    """Multiplexed newline-delimited JSON-RPC client over a Unix socket.
+
+    pywebview dispatches JS-originated calls concurrently from its worker
+    pool, so requests are MULTIPLEXED over the single socket rather than
+    serialised: each :meth:`_call` registers a pending entry keyed by
+    request id, sends its frame, and waits; a single background reader
+    thread reads responses and routes each to the waiting caller by id.
+
+    This means a slow call (a proxy_fetch on a bad connection, or a
+    proxy_stream_next blocking up to 60 s on the engine) never blocks
+    another call — the bug that made a chat send queue ~40 s behind the
+    startup calls (investigation #63).
+
+    ``_write_lock`` guards only a single ``sendall`` so two senders' frame
+    bytes never interleave. The read buffer is owned solely by the reader
+    thread, so it needs no lock.
     """
 
     def __init__(self, socket_path: str) -> None:
         self._socket_path = socket_path
         self._sock: socket.socket | None = None
-        # Two locks, deliberately separate:
-        #   _call_lock serialises a full request -> response round-trip so
-        #     concurrent _call()s don't interleave their replies / corrupt
-        #     the shared read buffer.
-        #   _write_lock guards only a single ``sendall`` so frame bytes from
-        #     two senders never interleave mid-frame.
-        # A notification (log) takes ONLY _write_lock, so it can't get stuck
-        # behind an in-flight _call's round-trip — which may block up to 60s
-        # on a wedged proxy_stream_next. See ``notify``.
-        self._call_lock = threading.Lock()
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.Lock()  # guards sendall (frame integrity)
+        self._pending_lock = threading.Lock()  # guards _pending + _next_id + reader
+        self._pending: dict[int, _PendingCall] = {}
         self._next_id = 1
-        self._read_buf = b""
+        self._read_buf = b""  # reader-thread-only
+        self._reader: threading.Thread | None = None
+        # Set when the socket dies; new + waiting calls fail with this.
+        self._closed_error: str | None = None
 
     def connect(self) -> None:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.connect(self._socket_path)
         self._sock = sock
+        self._start_reader()
         logger.info("BridgeClient connected to %s", self._socket_path)
+
+    def _start_reader(self) -> None:
+        """Start the response-reader thread once (idempotent, thread-safe)."""
+        with self._pending_lock:
+            if self._reader is not None:
+                return
+            reader = threading.Thread(
+                target=self._read_loop, name="bridge-reader", daemon=True
+            )
+            self._reader = reader
+        reader.start()
 
     def invoke_tool(self, name: str, args: dict[str, Any]) -> Any:
         return self._call("invoke_tool", {"name": name, "args": args})
@@ -150,32 +179,42 @@ class _BridgeClient:
     def _call(self, method: str, params: dict[str, Any]) -> Any:
         if self._sock is None:
             raise RuntimeError("BridgeClient: not connected")
-        # Timing (task #12): ``lock_wait_ms`` is how long this call sat
-        # behind the single bridge lock before it could send — the
-        # contention metric. ``ms`` is the server round-trip once we
-        # held the lock. A debug ``log`` call showing a big
-        # ``lock_wait_ms`` means it queued behind an in-flight
-        # ``proxy_stream_next`` blocking on the engine.
-        t_before = time.monotonic()
-        with self._call_lock:
-            lock_wait_ms = monotonic_ms(t_before)
-            t_acquired = time.monotonic()
+
+        pending = _PendingCall()
+        # Register the pending entry BEFORE sending, so a response can never
+        # arrive (and be dropped) before we're ready to receive it.
+        with self._pending_lock:
+            if self._closed_error is not None:
+                raise RuntimeError(f"BridgeClient: {self._closed_error}")
             req_id = self._next_id
             self._next_id += 1
-            req = json.dumps(
-                {"id": req_id, "method": method, "params": params}
-            ).encode("utf-8")
-            # DEBUG, not INFO: this dumps the full request + response
-            # (including stream chunk payloads) on every one of the
-            # hundreds of round-trips per turn. The compact
-            # ``bridge.client_call`` timing line below is the INFO
-            # summary; the raw frames are debug-only (task #13).
-            logger.debug("BridgeClient -> %s", req.decode())
-            with self._write_lock:
-                self._sock.sendall(req + b"\n")
-            line = self._read_line()
-            logger.debug("BridgeClient <- %s", line)
-            rt_ms = monotonic_ms(t_acquired)
+            self._pending[req_id] = pending
+        req = json.dumps(
+            {"id": req_id, "method": method, "params": params}
+        ).encode("utf-8")
+        # DEBUG, not INFO: this dumps the full request (including stream chunk
+        # payloads on the way back) on every one of the hundreds of round-trips
+        # per turn. The compact ``bridge.client_call`` timing line is the INFO
+        # summary; the raw frames are debug-only (task #13).
+        logger.debug("BridgeClient -> %s", req.decode())
+        # Timing (task #12): ``lock_wait_ms`` is now just the brief wait for
+        # the send lock (multiplexed — no longer the whole round-trip). ``ms``
+        # is send -> response, the true per-call latency.
+        t_before = time.monotonic()
+        with self._write_lock:
+            lock_wait_ms = monotonic_ms(t_before)
+            t_sent = time.monotonic()
+            self._sock.sendall(req + b"\n")
+        # Start the reader only AFTER this request is registered + sent, so it
+        # can never read a response before its pending entry exists. Normally
+        # connect() already started it (this is then a no-op); this covers
+        # callers that set _sock directly without connect() (e.g. unit tests).
+        self._start_reader()
+        pending.event.wait()
+        rt_ms = monotonic_ms(t_sent)
+        # The pending entry was already removed from the map by whoever set
+        # the event (the reader on a response, or _fail_all_pending on EOF),
+        # so there's nothing to pop here.
         log_timing(
             logger,
             "bridge.client_call",
@@ -184,31 +223,66 @@ class _BridgeClient:
             id=req_id,
             lock_wait_ms=round(lock_wait_ms, 1),
         )
-        resp = json.loads(line)
-        if resp.get("id") != req_id:
-            raise RuntimeError(
-                f"BridgeClient: response id {resp.get('id')!r} "
-                f"!= request id {req_id!r}"
-            )
-        if "error" in resp and resp["error"] is not None:
-            err = resp["error"]
+        if pending.error is not None:
+            err = pending.error
             raise RuntimeError(
                 f"bridge {err.get('type', 'Error')}: {err.get('message', '')}"
             )
-        return resp.get("result")
+        return pending.result
+
+    def _read_loop(self) -> None:
+        """Read response frames and route each to its waiting caller by id.
+
+        Runs on the single reader thread for the connection's lifetime. On
+        EOF / socket error it fails every still-pending call so no caller
+        waits forever.
+        """
+        try:
+            while True:
+                line = self._read_line()
+                logger.debug("BridgeClient <- %s", line)
+                try:
+                    resp = json.loads(line)
+                except ValueError:
+                    logger.warning("BridgeClient: dropping unparseable response")
+                    continue
+                rid = resp.get("id")
+                with self._pending_lock:
+                    # Pop on fulfilment: once removed, a later EOF in
+                    # _fail_all_pending can't clobber this resolved call.
+                    pending = self._pending.pop(rid, None) if rid is not None else None
+                if pending is None:
+                    logger.warning(
+                        "BridgeClient: response for unknown id %r dropped", rid
+                    )
+                    continue
+                err = resp.get("error")
+                if err is not None:
+                    pending.error = err
+                else:
+                    pending.result = resp.get("result")
+                pending.event.set()
+        except Exception as exc:
+            self._fail_all_pending(f"socket closed by peer ({exc})")
+
+    def _fail_all_pending(self, reason: str) -> None:
+        """Wake every still-waiting call with an error (socket died)."""
+        with self._pending_lock:
+            self._closed_error = reason
+            waiters = list(self._pending.values())
+            self._pending.clear()
+        for pending in waiters:
+            pending.error = {"type": "ConnectionError", "message": reason}
+            pending.event.set()
 
     def notify(self, method: str, params: dict[str, Any]) -> None:
         """Send a fire-and-forget notification (no ``id``, no reply read).
 
         The server stays silent for id-less requests, so this returns as
-        soon as the bytes are written. It takes ONLY ``_write_lock`` —
-        held just for the single ``sendall`` to keep one frame's bytes
-        from interleaving mid-frame with another sender — and NOT
-        ``_call_lock``. So a notification can never be stuck behind an
-        in-flight ``_call`` round-trip (which may block up to 60s on a
-        wedged ``proxy_stream_next``); the worst it waits is one other
-        sender's ``sendall``. ``_call`` releases ``_write_lock`` the
-        instant its request bytes are out, before it blocks on the reply.
+        soon as the bytes are written. It takes ONLY ``_write_lock`` — held
+        just for the single ``sendall`` — and registers no pending entry, so
+        a log line never waits on (or behind) any in-flight ``_call``; the
+        worst it waits is one other sender's ``sendall``.
 
         Notifications deliberately do NOT consume a request id: ids only
         matter for matching a reply, and there is no reply. Keeping
@@ -225,7 +299,7 @@ class _BridgeClient:
             self._sock.sendall(req + b"\n")
 
     def _read_line(self) -> str:
-        """Read one newline-terminated line from the socket."""
+        """Read one newline-terminated line from the socket (reader thread only)."""
         assert self._sock is not None
         while b"\n" not in self._read_buf:
             chunk = self._sock.recv(8192)
