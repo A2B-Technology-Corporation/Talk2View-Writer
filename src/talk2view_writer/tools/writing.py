@@ -1394,6 +1394,33 @@ def edit_table(
                 "recovery": "Call get_document to see available tables.",
             }
         )
+    # Reject count < 1 rather than silently clamping to 1 — a deliberate
+    # count=0 must not delete a row/column the caller asked to leave alone.
+    if int(count) < 1:
+        return json.dumps(
+            {
+                "error": f"count must be >= 1, got {count}.",
+                "recovery": "Use a positive count, or omit it for the default of 1.",
+            }
+        )
+    # Reject negative row/column up front. Every action validated only the
+    # upper bound, so a negative index reached getCellByPosition /
+    # removeByIndex and raised a raw UNO IndexOutOfBoundsException instead of
+    # a structured, recoverable error.
+    if row is not None and row < 0:
+        return json.dumps(
+            {
+                "error": f"row must be >= 0, got {row}.",
+                "recovery": "Provide a zero-based row index from get_document.",
+            }
+        )
+    if column is not None and column < 0:
+        return json.dumps(
+            {
+                "error": f"column must be >= 0, got {column}.",
+                "recovery": "Provide a zero-based column index from get_document.",
+            }
+        )
 
     ext = get_extension_or_raise()
     doc = get_writer_document(ext.ctx)
@@ -1409,7 +1436,7 @@ def edit_table(
             }
         )
     table = tables.getByIndex(table_index)
-    cnt = max(1, int(count))
+    cnt = int(count)  # validated >= 1 above
 
     if action == "edit_cell":
         if row is None or column is None:

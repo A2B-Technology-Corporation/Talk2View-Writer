@@ -503,3 +503,47 @@ class TestInsertContent:
         assert "error" not in result, result
         # The single-text path echoes the resolved style on the top-level key.
         assert result["style"] == "Heading2", result
+
+
+class TestEditTableValidation:
+    """edit_table must reject bad row/column/count BEFORE touching the table.
+
+    A negative index used to reach getCellByPosition / removeByIndex and
+    raise a raw UNO error, and count=0 was silently clamped to 1 — deleting
+    a row the caller asked to leave alone.
+    """
+
+    def test_count_zero_is_rejected_not_clamped(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(table_index=0, action="delete_rows", row=2, count=0)
+        )
+        assert "error" in result
+        assert "count" in result["error"]
+
+    def test_negative_row_is_rejected(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(table_index=0, action="edit_cell", row=-1, column=0, value="x")
+        )
+        assert "error" in result
+        assert "row" in result["error"]
+
+    def test_negative_column_is_rejected(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import edit_table
+
+        result = json.loads(
+            edit_table(
+                table_index=0, action="delete_columns", column=-2, count=1
+            )
+        )
+        assert "error" in result
+        assert "column" in result["error"]
