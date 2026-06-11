@@ -403,14 +403,18 @@ class TestInsertParagraphStyleFirstOrdering:
         events: list[tuple[str, Any]] = []
 
         class _RecCursor:
-            def __init__(self) -> None:
+            def __init__(self, probe_text: str = "") -> None:
                 self._style: str | None = None
+                self._probe_text = probe_text
 
-            def getString(self) -> str:  # noqa: N802 — non-empty -> break inserted
-                return "anchor"
+            def getString(self) -> str:  # noqa: N802
+                return self._probe_text
 
             def getStart(self) -> _RecCursor:  # noqa: N802
                 return self
+
+            def goLeft(self, count: int, expand: bool) -> bool:  # noqa: N802
+                return True
 
             def gotoStartOfParagraph(self, expand: bool) -> bool:  # noqa: N802
                 return True
@@ -428,6 +432,15 @@ class TestInsertParagraphStyleFirstOrdering:
                 events.append(("style", value))
 
         class _RecText:
+            # Append case: non-empty host paragraph, cursor AT its end, so
+            # the style is applied to the freshly-broken (still-empty)
+            # paragraph BEFORE the text insert (investigation #53). Probe
+            # order: empty-paragraph probe (non-empty "anchor"), then the
+            # paragraph-end probe (empty -> at end -> append branch).
+            def __init__(self) -> None:
+                self._probes = ["anchor", ""]
+                self._i = 0
+
             def insertControlCharacter(  # noqa: N802
                 self, cur: Any, ch: Any, absorb: bool
             ) -> None:
@@ -439,7 +452,9 @@ class TestInsertParagraphStyleFirstOrdering:
                 events.append(("insert", text))
 
             def createTextCursorByRange(self, rng: Any) -> _RecCursor:  # noqa: N802
-                return _RecCursor()
+                probe = self._probes[self._i] if self._i < len(self._probes) else ""
+                self._i += 1
+                return _RecCursor(probe_text=probe)
 
         class _RecDoc:
             """Minimal doc so suspend_record_changes runs with redlining on."""

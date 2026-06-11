@@ -2302,3 +2302,38 @@ infinite-loop fix.
 (SSE flush per chunk) and whether the SDK yields per-chunk or buffers;
 if the batching is real, fix the streaming proxy/SDK; if it's a CI-vs-local
 timing artifact, relax the assertion or gate it on a slower scripted gap.
+
+## #62 — insert_content fused new text into existing paragraphs at start/before anchors (FIXED 2026-06-11)
+
+**What:** `insert_content(location='start'|'before_paragraph')` — and a
+mid-paragraph `target_query` replacement — on a NON-empty paragraph corrupted
+the document. `_insert_paragraph_at_cursor` always emitted the PARAGRAPH_BREAK
+BEFORE writing the text; at the start of a non-empty paragraph that splits the
+host at offset 0, leaving a phantom empty paragraph and fusing the new text
+into the user's existing prose, with the requested style applied to the
+user's text rather than the new paragraph.
+
+**Where:** `src/talk2view_writer/tools/writing.py::_insert_paragraph_at_cursor`.
+
+**Reproduced in real LibreOffice 26.2** (standalone PyUNO script): inserting a
+"My Story" Title at the start of `"Once upon a time"` produced
+`[('', 'Standard'), ('My StoryOnce upon a time', 'Title')]` — a blank line plus
+fused text, all in Title style.
+
+**Why the synthetic suite missed it:** the synthetic UNO model's
+`insertControlCharacter` ignores the cursor and appends a blank paragraph at
+the document end (investigation-tracked as a synthetic-model fidelity gap), so
+it can't model paragraph splitting at the cursor.
+
+**Fix:** branch on cursor position. Empty host paragraph -> write in place.
+Cursor at the END of a non-empty paragraph (append/after-anchors) -> break
+first, style the new empty paragraph, then write (unchanged behaviour).
+Cursor at the START/MIDDLE of a non-empty paragraph (before-anchors,
+mid-paragraph target_query) -> write the text FIRST, then the break, then style
+the paragraph just written. Verified in real LibreOffice: the start-anchor case
+now yields `[('My Story', 'Title'), ('Once upon a time', 'Standard')]`.
+
+**Next step:** make the synthetic `insertControlCharacter`/`insertString`
+faithful (split at the cursor) so this class of regression is catchable
+in-process, and add real-soffice integration tests for insert_content anchors
+(tests/integration/test_writing.py, still unwritten).

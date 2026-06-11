@@ -117,6 +117,59 @@ def _apply_paragraph_format(
         para.ParaFirstLineIndent = points_to_hmm(first_line_indent)
 
 
+def _set_para_style(style_cursor: Any, style: str, doc: Any | None) -> None:
+    """Write ``style`` onto the paragraph ``style_cursor`` selects (named-safe).
+
+    Guards the LibreOffice 26.2 pool-default rejection (investigation #53):
+    ``word_to_libreoffice_style`` maps body ('Normal') to the NAMED
+    'Text body' rather than the pool default, RecordChanges is suspended
+    for the single write, and a residual rejection degrades to the
+    inherited style rather than failing the whole insert. No-op when the
+    paragraph already carries the target collection.
+    """
+    from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+
+    from talk2view_writer.tools._base import suspend_record_changes
+
+    target = word_to_libreoffice_style(style)
+    if getattr(style_cursor, "ParaStyleName", None) == target:
+        return
+    ctx = (
+        suspend_record_changes(doc) if doc is not None else contextlib.nullcontext()
+    )
+    with ctx:
+        try:
+            style_cursor.ParaStyleName = target
+        except RuntimeException:
+            # A build/state that still rejects the write (the pool-default
+            # constraint, or a style genuinely absent on this LO version)
+            # degrades to the inherited style rather than failing the whole
+            # insert. logger.exception keeps the real UNO error + traceback.
+            logger.exception(
+                "Could not apply paragraph style %r "
+                "(LibreOffice rejected the ParaStyleName write); "
+                "left the inherited style",
+                style,
+            )
+
+
+def _select_host_paragraph(text_obj: Any, position_cursor: Any) -> Any:
+    """Return a cursor selecting the whole paragraph at ``position_cursor``."""
+    para_cursor = text_obj.createTextCursorByRange(position_cursor.getStart())
+    para_cursor.gotoStartOfParagraph(False)
+    para_cursor.gotoEndOfParagraph(True)
+    return para_cursor
+
+
+def _style_host_paragraph(
+    text_obj: Any, position_cursor: Any, style: str | None, doc: Any | None
+) -> None:
+    """Apply ``style`` to the paragraph at ``position_cursor`` (no-op if falsy)."""
+    if not style:
+        return
+    _set_para_style(_select_host_paragraph(text_obj, position_cursor), style, doc)
+
+
 def _insert_paragraph_at_cursor(
     text_obj: Any,
     cursor: Any,
@@ -125,82 +178,66 @@ def _insert_paragraph_at_cursor(
     style: str | None,
     doc: Any | None = None,
 ) -> Any:
-    """Insert one paragraph at ``cursor`` and return the new paragraph object.
+    """Insert one paragraph at ``cursor`` and return a cursor over it.
 
-    The cursor advances past the inserted paragraph so subsequent
-    insertions land after it.
+    The break-vs-text ordering decides whether the new paragraph lands
+    cleanly or fuses into existing content — verified in real LibreOffice
+    (investigation #62). Three cases:
 
-    Skips the leading PARAGRAPH_BREAK when the cursor's host paragraph
-    is already empty — otherwise the break would split that empty
-    paragraph into two, leaving a phantom blank above the just-written
-    text. Common at location="start" / "end" on a fresh doc (single
-    empty p0) and after ``target_query`` / ``replace_selection`` has
-    cleared its matched range.
+    * **Empty host paragraph** — write in place, no break (a break would
+      leave a phantom blank above). Common on a fresh doc and after
+      ``replace_selection`` / a whole-paragraph ``target_query`` clear.
+    * **Cursor at the END of a non-empty paragraph** — append / after-
+      anchors (``location='end'/'after_paragraph'/'after_selection'``):
+      break into a fresh FOLLOWING paragraph, style it (while empty, #53),
+      then write the text.
+    * **Cursor at the START or MIDDLE of a non-empty paragraph** — before-
+      anchors (``location='start'/'before_paragraph'``) or a mid-paragraph
+      ``target_query``: write the text FIRST, then the break, so the new
+      text becomes its own paragraph AHEAD of the existing content; then
+      style that paragraph. Writing the break first here splits the host
+      paragraph at the cursor and fuses the new text into it while applying
+      the requested style to the user's existing prose — the corruption
+      investigation #62 documents.
 
-    Pass ``doc`` so the paragraph-style assignment can suspend
-    ``RecordChanges`` for that single write. The style is applied to the
-    still-empty paragraph BEFORE the text is inserted, and 'Normal' resolves
-    to the NAMED 'Text body' style rather than the pool default — both guard
-    against the LibreOffice 26.2 ``ParaStyleName`` rejection described below
-    (investigation #53).
+    Pass ``doc`` so the style assignment can suspend ``RecordChanges`` for
+    its single write (investigation #53).
     """
-    if not _cursor_at_empty_paragraph(text_obj, cursor):
+    wrote_before = False
+    if _cursor_at_empty_paragraph(text_obj, cursor):
+        # Write in place; style the (empty) host paragraph first (#53).
+        _style_host_paragraph(text_obj, cursor, style, doc)
+        text_obj.insertString(cursor, paragraph_text, False)
+    elif _cursor_at_paragraph_end(text_obj, cursor):
+        # Append: break into a fresh following paragraph, style it while it
+        # is still empty (#53), then write the text.
         text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
-    # Style-first ordering (investigation #53): assign the paragraph style to
-    # the now-empty target paragraph BEFORE inserting its text, then write the
-    # text below. LibreOffice 26.2 raises a message-less RuntimeException on a
-    # ``ParaStyleName`` write of the POOL-DEFAULT collection ('Default Paragraph
-    # Style') onto a paragraph in certain document states; named collections
-    # ('Heading 2', 'Text body') are accepted in the same call. The trigger is
-    # broader than this insert's own redline — the 2026-06-09 live log shows it
-    # firing with ``RecordChanges`` already off — so we defend in depth rather
-    # than rely on one cause: (1) ``word_to_libreoffice_style`` maps body
-    # ('Normal') to the named 'Text body', steering clear of the pool default;
-    # (2) we suspend RecordChanges for the write; (3) we style while the node is
-    # still empty. The subsequent insertString lands the TEXT as the reviewable
-    # redline the user expects when track changes is on (ADR-0035).
-    if style:
-        from com.sun.star.uno import RuntimeException  # type: ignore[import-not-found]
+        _style_host_paragraph(text_obj, cursor, style, doc)
+        text_obj.insertString(cursor, paragraph_text, False)
+    else:
+        # Before / mid anchor on a non-empty paragraph: text first, then
+        # break, so the new text is its own paragraph ahead of the rest.
+        wrote_before = True
+        text_obj.insertString(cursor, paragraph_text, False)
+        text_obj.insertControlCharacter(cursor, _PARAGRAPH_BREAK, False)
+        # The cursor now sits at the start of the trailing content; cross the
+        # break leftwards into the paragraph we just wrote, and style it.
+        if style:
+            style_cursor = text_obj.createTextCursorByRange(cursor.getStart())
+            style_cursor.goLeft(1, False)
+            style_cursor.gotoStartOfParagraph(False)
+            style_cursor.gotoEndOfParagraph(True)
+            _set_para_style(style_cursor, style, doc)
 
-        from talk2view_writer.tools._base import suspend_record_changes
-
-        target = word_to_libreoffice_style(style)
-        style_cursor = text_obj.createTextCursorByRange(cursor.getStart())
-        style_cursor.gotoStartOfParagraph(False)
-        style_cursor.gotoEndOfParagraph(True)
-        # Skip the write when the empty paragraph already carries the target
-        # collection (e.g. consecutive body paragraphs that inherit 'Text body'
-        # via the heading Next-Style cascade): it is a no-op write that can
-        # itself trip the rejection, and skipping it avoids the noise entirely.
-        if getattr(style_cursor, "ParaStyleName", None) != target:
-            ctx = (
-                suspend_record_changes(doc)
-                if doc is not None
-                else contextlib.nullcontext()
-            )
-            with ctx:
-                try:
-                    style_cursor.ParaStyleName = target
-                except RuntimeException:
-                    # Last-resort fallback: a build/state that still rejects the
-                    # write (the pool-default constraint above, or a style
-                    # genuinely absent on this LO version) degrades to the
-                    # inherited style rather than failing the whole insert.
-                    # logger.exception() keeps the real UNO error + traceback —
-                    # never swallow it behind a bare message.
-                    logger.exception(
-                        "Could not apply paragraph style %r "
-                        "(LibreOffice rejected the ParaStyleName write); "
-                        "left the inherited style",
-                        style,
-                    )
-    text_obj.insertString(cursor, paragraph_text, False)
-    # Re-find the just-written paragraph via the cursor's current paragraph.
-    # The XParagraphCursor interface gives us gotoStartOfParagraph / range.
-    para_cursor = text_obj.createTextCursorByRange(cursor.getStart())
-    para_cursor.gotoStartOfParagraph(False)
-    para_cursor.gotoEndOfParagraph(True)
-    return para_cursor
+    # Return a cursor over the just-written paragraph (for the caller's
+    # paragraph-format loop). In the before/mid branch the cursor advanced
+    # past the break, so step back into the new paragraph first.
+    final = text_obj.createTextCursorByRange(cursor.getStart())
+    if wrote_before:
+        final.goLeft(1, False)
+    final.gotoStartOfParagraph(False)
+    final.gotoEndOfParagraph(True)
+    return final
 
 
 def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
@@ -217,6 +254,18 @@ def _cursor_at_empty_paragraph(text_obj: Any, cursor: Any) -> bool:
     probe.gotoEndOfParagraph(True)
     # bool() because probe.getString() is Any (UNO proxy); the equality
     # result is Any too, which mypy rejects from a -> bool function.
+    return bool(probe.getString() == "")
+
+
+def _cursor_at_paragraph_end(text_obj: Any, cursor: Any) -> bool:
+    """``True`` when ``cursor`` is at (or past) the end of its host paragraph.
+
+    Probes by selecting from the cursor to the paragraph end: an empty
+    selection means there is no text after the cursor in this paragraph,
+    so a paragraph break here appends rather than splitting existing text.
+    """
+    probe = text_obj.createTextCursorByRange(cursor.getStart())
+    probe.gotoEndOfParagraph(True)
     return bool(probe.getString() == "")
 
 
