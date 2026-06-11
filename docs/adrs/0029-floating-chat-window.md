@@ -1,6 +1,6 @@
 # ADR-0029: Floating non-modal chat window instead of a sidebar panel
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0030](0030-web-chat-via-pywebview-subprocess.md)
 **Date:** 2026-05-21
 **Phase:** F
 **Supersedes:** ADR-0003 (sidebar deck as primary UI), ADR-0027 (canonical
