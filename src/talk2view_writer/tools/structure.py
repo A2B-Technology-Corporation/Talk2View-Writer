@@ -71,20 +71,33 @@ def _list_page_styles_in_use(doc: Any) -> list[str]:
     LibreOffice's "section" concept is page-style-based; iterating
     paragraphs and collecting their ``PageDescName`` gives an
     order-preserving list of the page styles that drive the document's
-    structure. The first paragraph's ``PageDescName`` may be empty; in
-    that case we substitute the document's default page style
-    (``"Default Page Style"`` in most builds).
+    structure.
+
+    A paragraph's ``PageDescName`` is set ONLY when it explicitly forces a
+    page-style boundary; paragraphs governed by the document's implicit
+    default page style report an empty ``PageDescName``. So a document that
+    begins on the default and later switches to a named style (e.g. a forced
+    "Landscape" page) must still list the default as the FIRST section —
+    otherwise ``section_index=0`` resolves to the later named style and every
+    structure-tool edit (margins, header/footer, page numbers) lands on the
+    wrong pages, and the default section is unreachable.
     """
     seen: list[str] = []
+    uses_default = False
     enum = doc.getText().createEnumeration()
     while enum.hasMoreElements():
         el = enum.nextElement()
         if el.supportsService("com.sun.star.text.Paragraph"):
             name = getattr(el, "PageDescName", "") or ""
-            if name and name not in seen:
+            if not name:
+                uses_default = True
+            elif name not in seen:
                 seen.append(name)
+    default_name = "Default Page Style"
+    if uses_default and default_name not in seen:
+        seen.insert(0, default_name)
     if not seen:
-        seen = ["Default Page Style"]
+        seen = [default_name]
     return seen
 
 

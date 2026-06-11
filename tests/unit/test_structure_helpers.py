@@ -81,6 +81,27 @@ class TestListPageStylesInUse:
         )
         assert _list_page_styles_in_use(doc) == ["Foo", "Bar"]
 
+    def test_implicit_default_is_section_zero_before_a_named_style(self) -> None:
+        """A doc that starts on the default and later forces a named style.
+
+        The implicit default (empty PageDescName on the first paragraphs)
+        must be element 0, ahead of the later named style — otherwise
+        section_index=0 resolves to the named style and structure-tool
+        edits land on the wrong pages.
+        """
+        doc = _doc_with_paragraphs(
+            [
+                _paragraph(""),  # pages 1-3: implicit default
+                _paragraph(""),
+                _paragraph("Landscape"),  # later forced page style
+                _paragraph("Landscape"),
+            ]
+        )
+        assert _list_page_styles_in_use(doc) == [
+            "Default Page Style",
+            "Landscape",
+        ]
+
 
 @pytest.mark.unit
 class TestGetPageStyle:
