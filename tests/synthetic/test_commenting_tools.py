@@ -129,6 +129,88 @@ class TestAddComment:
         # "not found" message in the error or recovery text.
         assert "not found" in json.dumps(result).lower()
 
+    def test_success_creates_one_comment_visible_via_get_comments(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Anchor a comment and read it back via get_comments — exactly one.
+
+        This happy path had NO coverage before, which is how the
+        range-absorb defect (Investigation #38) reached production.
+        """
+        from talk2view_writer.tools.commenting import add_comment, get_comments
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("Captain Elena Vance drifted through Sector 7.")
+        )
+        result = json.loads(
+            add_comment(anchor="Captain Elena Vance", comment="Protagonist.")
+        )
+        assert result["success"] is True
+        assert result["comment_id"]
+
+        comments = json.loads(get_comments())
+        assert comments["total"] == 1
+        assert comments["comments"][0]["comment"] == "Protagonist."
+
+    def test_uses_point_anchor_not_range_absorb(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """Regression guard for Investigation #38.
+
+        The annotation MUST be inserted with ``bAbsorb=False`` (collapsed
+        point anchor). The range-absorb form (``True``) raises
+        ``no SwTextAttr inserted`` on real LibreOffice 24.x/26.x and leaves
+        an orphan the model duplicates — so a regression back to it must
+        fail here, fast, without needing soffice.
+        """
+        from talk2view_writer.tools.commenting import add_comment
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("the quick brown fox jumps over the lazy dog")
+        )
+        add_comment(anchor="lazy dog", comment="hi")
+
+        ann_calls = [
+            (content, absorb)
+            for content, absorb in synthetic_doc._text._inserted_content_calls
+            if isinstance(content, FakeAnnotation)
+        ]
+        assert len(ann_calls) == 1, "exactly one annotation insert expected"
+        _content, absorb = ann_calls[0]
+        assert absorb is False, (
+            "add_comment must point-anchor (bAbsorb=False); range-absorb "
+            "(True) is broken on real LO — Investigation #38"
+        )
+
+    def test_repeated_anchor_phrase_creates_single_comment(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+    ) -> None:
+        """The user's scenario: an anchor phrase that appears twice.
+
+        One add_comment call → exactly one annotation (no orphan-driven
+        duplicate). add_comment attaches to the first match.
+        """
+        from talk2view_writer.tools.commenting import add_comment, get_comments
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("Captain Elena Vance leads the crew.")
+        )
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("Profile: Captain Elena Vance, protagonist.")
+        )
+        result = json.loads(
+            add_comment(anchor="Captain Elena Vance", comment="Lead.")
+        )
+        assert result["success"] is True
+        assert result["matches_found"] == 2  # phrase appears twice...
+        assert json.loads(get_comments())["total"] == 1  # ...but one comment
+
     def test_swtextattr_exception_translates_to_structured_error(
         self,
     ) -> None:
