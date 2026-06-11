@@ -710,6 +710,17 @@ class FakeUndoManager:
         self.redo_calls = 0
         self._undo_titles: list[str] = ["Edit"]
         self._redo_titles: list[str] = []
+        # Records (title) for each enterUndoContext and a running depth so
+        # tests can assert mutating tools open exactly one balanced context.
+        self.undo_contexts: list[str] = []
+        self._context_depth = 0
+
+    def enterUndoContext(self, title: str) -> None:  # noqa: N802
+        self.undo_contexts.append(title)
+        self._context_depth += 1
+
+    def leaveUndoContext(self) -> None:  # noqa: N802
+        self._context_depth -= 1
 
     def undo(self) -> None:
         self.undo_calls += 1

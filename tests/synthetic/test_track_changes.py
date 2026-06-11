@@ -463,3 +463,60 @@ class TestInsertParagraphStyleFirstOrdering:
         assert events.index(("style", "Text body")) < events.index(
             ("insert", "the body text")
         ), f"style must be applied before the text insert: {events}"
+
+
+class TestUndoContextGrouping:
+    """Every mutating tool call runs inside exactly one balanced undo context.
+
+    Without grouping, insert_content with N blocks produces N+ raw undo
+    steps, so a single Ctrl+Z reverts only a fragment of the AI edit
+    (ADR-0035 / writing-bug undo-grouping).
+    """
+
+    def test_mutating_tool_opens_one_balanced_context(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        um = synthetic_doc.getUndoManager()
+        insert_content(blocks=["one", "two", "three"], location="end")
+        # Exactly one context, named for the tool, and balanced (depth 0).
+        assert um.undo_contexts == ["Talk2View: insert_content"]
+        assert um._context_depth == 0
+
+    def test_context_is_left_even_when_tool_raises(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from talk2view_writer.tools import writing
+
+        um = synthetic_doc.getUndoManager()
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise RuntimeError("mid-edit failure")
+
+        # Force the inner insertion to raise after the context is opened.
+        monkeypatch.setattr(writing, "_insert_paragraph_at_cursor", _boom)
+        with pytest.raises(RuntimeError, match="mid-edit failure"):
+            writing.insert_content(text="x", location="end")
+        # The context was opened then left (depth back to 0) despite the raise.
+        assert um.undo_contexts == ["Talk2View: insert_content"]
+        assert um._context_depth == 0
+
+    def test_read_only_tool_opens_no_context(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        prefs_path: Path,
+    ) -> None:
+        from talk2view_writer.tools.reading import get_document
+
+        um = synthetic_doc.getUndoManager()
+        get_document()
+        assert um.undo_contexts == []
