@@ -2251,3 +2251,30 @@ unhandled `FormData`/`Blob`/`ReadableStream` into a plausible-looking but empty
 request that fails far downstream (a 422 from the server), nowhere near the
 `String()` that caused it. The `[fetch] unrecognised body type …` warning we'd
 left in was the breadcrumb that located it instantly.
+
+## #60 — pyobjc vendored wheels are not integrity-pinned (NEW 2026-06-11)
+
+**What:** `scripts/vendor_wheels.py` now verifies every downloaded
+pydantic-core wheel against the SHA-256 digests `uv.lock` pins (the native
+Rust binary loaded into every user's LibreOffice). The pyobjc framework
+wheels bundled for the macOS Cocoa backend (ADR-0038) are *not* covered:
+pyobjc is not a dev dependency, so its hashes are absent from `uv.lock`,
+and `_vendor_pyobjc_for_macos_rows` extracts whatever `uvx pip download`
+returns with no digest check.
+
+**Where:** `scripts/vendor_wheels.py::_vendor_pyobjc_for_macos_rows` /
+`_download_pyobjc`; the gap is the macOS rows of `MATRIX`.
+
+**Why it matters:** pyobjc ships compiled Obj-C bindings that are extracted
+verbatim into the shipped `.oxt` and loaded into LibreOffice's Python on
+macOS. A compromised mirror / account takeover / MITM of those downloads
+would inject native code signed-and-shipped by the project — the same
+supply-chain risk just closed for pydantic-core. For an SaMD build pipeline
+this should fail closed too.
+
+**Next step:** add a committed digest lock for the pyobjc wheel set (e.g.
+generate `pip download --require-hashes` input, or record SHA-256s into a
+committed JSON keyed by wheel filename) and verify in `_download_pyobjc`
+before extraction, mirroring `_verify_wheel`. Trust-on-first-use is
+acceptable for the initial population so long as subsequent release builds
+verify against the committed digests.

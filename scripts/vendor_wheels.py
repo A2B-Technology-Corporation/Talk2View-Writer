@@ -21,6 +21,15 @@ re-run this script before packaging. Storing the wheels locally
 saves bandwidth and lets ``make package`` work offline once
 the matrix has been populated.
 
+Supply-chain integrity: every downloaded pydantic-core wheel (a native
+Rust ``.so``/``.pyd`` loaded into every user's LibreOffice) is verified
+against the SHA-256 digests ``uv.lock`` already pins before it is
+extracted; a mismatch aborts the build. NOTE: the pyobjc framework
+wheels are not yet covered — pyobjc is not a dev dependency, so its
+hashes are not in ``uv.lock``. Pinning those is tracked in
+``docs/investigations.md``; until then the macOS Cocoa backend wheels
+remain trust-on-download.
+
 Matrix-maintenance note: every time a new LibreOffice release ships
 with a newer bundled Python, add the matching ``cpXY`` row to
 :data:`MATRIX`. See ``docs/investigations.md`` #24 for the
@@ -29,9 +38,11 @@ re-evaluation cadence.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -102,6 +113,89 @@ MATRIX: tuple[tuple[str, str, str, str], ...] = (
 REPO = Path(__file__).resolve().parents[1]
 WHEELS_DIR = REPO / "vendor" / "wheels"
 EXTRACTED_DIR = REPO / "vendor" / "extracted"
+UV_LOCK = REPO / "uv.lock"
+
+
+class WheelIntegrityError(RuntimeError):
+    """Raised when a downloaded wheel's SHA-256 does not match the lock."""
+
+
+def _sha256(path: Path) -> str:
+    """Return the SHA-256 hex digest of ``path``."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def load_pydantic_core_hashes(lock_path: Path = UV_LOCK) -> dict[str, str]:
+    """Map ``{wheel_filename: sha256_hex}`` for pydantic-core from ``uv.lock``.
+
+    The dev resolve in ``uv.lock`` already pins every pydantic-core wheel
+    by SHA-256 (the URL's last path segment is the wheel filename). We
+    reuse those digests to authenticate the native Rust binaries we ship,
+    so the integrity check stays in lockstep with ``uv lock`` — no
+    separately-maintained hash file to drift.
+
+    Raises:
+        WheelIntegrityError: If the lock has no pydantic-core package, or
+            its version disagrees with ``PYDANTIC_CORE_VERSION`` (a stale
+            lock would otherwise validate the wrong artifacts).
+    """
+    with lock_path.open("rb") as fh:
+        data = tomllib.load(fh)
+    for pkg in data.get("package", []):
+        if pkg.get("name") != "pydantic-core":
+            continue
+        version = pkg.get("version")
+        if version != PYDANTIC_CORE_VERSION:
+            raise WheelIntegrityError(
+                f"uv.lock pins pydantic-core {version!r} but vendor_wheels.py "
+                f"targets {PYDANTIC_CORE_VERSION!r}. Run `uv lock` and update "
+                "PYDANTIC_CORE_VERSION so the integrity check authenticates "
+                "the right wheels."
+            )
+        hashes: dict[str, str] = {}
+        for wheel in pkg.get("wheels", []):
+            url = wheel.get("url", "")
+            digest = wheel.get("hash", "")
+            filename = url.rsplit("/", 1)[-1]
+            if filename and digest.startswith("sha256:"):
+                hashes[filename] = digest.split(":", 1)[1]
+        if not hashes:
+            raise WheelIntegrityError(
+                "uv.lock has a pydantic-core entry but no wheel hashes."
+            )
+        return hashes
+    raise WheelIntegrityError(
+        "uv.lock has no pydantic-core package; cannot verify wheel integrity."
+    )
+
+
+def _verify_wheel(wheel: Path, expected: dict[str, str]) -> None:
+    """Fail closed if ``wheel``'s digest is unknown or mismatched.
+
+    Raises:
+        WheelIntegrityError: The wheel filename is absent from the pinned
+            set, or its SHA-256 does not match. Either case means the
+            artifact is not the one ``uv.lock`` authenticates — a possible
+            compromised mirror, account takeover, or MITM — so the build
+            must stop rather than ship unverified native code.
+    """
+    want = expected.get(wheel.name)
+    if want is None:
+        raise WheelIntegrityError(
+            f"{wheel.name} is not pinned in uv.lock — refusing to vendor an "
+            "unauthenticated wheel. Run `uv lock` if pydantic-core changed."
+        )
+    got = _sha256(wheel)
+    if got != want:
+        raise WheelIntegrityError(
+            f"SHA-256 mismatch for {wheel.name}:\n"
+            f"  expected {want}\n  got      {got}\n"
+            "The downloaded wheel does not match uv.lock. Aborting."
+        )
 
 
 def _short_python_tag(py_tag: str) -> str:
@@ -284,7 +378,14 @@ def main() -> int:
         print(f"Clearing previous extraction under {EXTRACTED_DIR}")
         shutil.rmtree(EXTRACTED_DIR)
 
-    print(f"Vendoring pydantic-core {PYDANTIC_CORE_VERSION} for {len(MATRIX)} targets")
+    # Authenticate every pydantic-core wheel against the SHA-256 digests
+    # uv.lock already pins, BEFORE extracting any native code. A mismatch
+    # (compromised mirror, account takeover, MITM) aborts the whole build.
+    expected_hashes = load_pydantic_core_hashes()
+    print(
+        f"Vendoring pydantic-core {PYDANTIC_CORE_VERSION} for {len(MATRIX)} "
+        f"targets (verifying against {len(expected_hashes)} pinned hashes)"
+    )
     successes: list[str] = []
     misses: list[str] = []
     for py_tag, abi_tag, plat_tag, our_plat_tag in MATRIX:
@@ -294,6 +395,8 @@ def main() -> int:
         if wheel is None:
             misses.append(target)
             continue
+        _verify_wheel(wheel, expected_hashes)
+        print(f"    verified sha256 ({wheel.name})")
         dest = EXTRACTED_DIR / target
         if dest.exists():
             shutil.rmtree(dest)

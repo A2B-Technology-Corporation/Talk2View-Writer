@@ -112,6 +112,64 @@ class TestVendorMatrixMatchesLoader:
 
 
 @pytest.mark.unit
+class TestWheelIntegrity:
+    """Vendored binary wheels must be authenticated against uv.lock."""
+
+    def test_loads_pydantic_core_hashes_from_uv_lock(self) -> None:
+        vw = _load_vendor_wheels()
+        hashes = vw.load_pydantic_core_hashes()
+        assert hashes, "expected a non-empty hash map from uv.lock"
+        # Every value is a 64-char hex SHA-256, keyed by a wheel filename.
+        for filename, digest in hashes.items():
+            assert filename.endswith(".whl"), filename
+            assert len(digest) == 64 and all(
+                c in "0123456789abcdef" for c in digest
+            ), digest
+
+    def test_load_hashes_rejects_version_skew(self, tmp_path: Path) -> None:
+        vw = _load_vendor_wheels()
+        stale = tmp_path / "uv.lock"
+        stale.write_text(
+            '[[package]]\nname = "pydantic-core"\nversion = "0.0.1"\n'
+            'wheels = [{ url = "https://x/pydantic_core-0.0.1-cp313-cp313-'
+            'manylinux_x86_64.whl", hash = "sha256:'
+            + "ab" * 32
+            + '" }]\n'
+        )
+        with pytest.raises(vw.WheelIntegrityError):
+            vw.load_pydantic_core_hashes(stale)
+
+    def test_load_hashes_rejects_missing_package(self, tmp_path: Path) -> None:
+        vw = _load_vendor_wheels()
+        empty = tmp_path / "uv.lock"
+        empty.write_text('[[package]]\nname = "httpx"\nversion = "1.0"\n')
+        with pytest.raises(vw.WheelIntegrityError):
+            vw.load_pydantic_core_hashes(empty)
+
+    def test_verify_wheel_accepts_matching_digest(self, tmp_path: Path) -> None:
+        vw = _load_vendor_wheels()
+        wheel = tmp_path / "pydantic_core-2.46.4-cp313-cp313-x.whl"
+        wheel.write_bytes(b"native-rust-binary")
+        expected = {wheel.name: vw._sha256(wheel)}
+        vw._verify_wheel(wheel, expected)  # must not raise
+
+    def test_verify_wheel_rejects_tampered_content(self, tmp_path: Path) -> None:
+        vw = _load_vendor_wheels()
+        wheel = tmp_path / "pydantic_core-2.46.4-cp313-cp313-x.whl"
+        wheel.write_bytes(b"tampered")
+        expected = {wheel.name: "00" * 32}
+        with pytest.raises(vw.WheelIntegrityError, match="SHA-256 mismatch"):
+            vw._verify_wheel(wheel, expected)
+
+    def test_verify_wheel_rejects_unpinned_filename(self, tmp_path: Path) -> None:
+        vw = _load_vendor_wheels()
+        wheel = tmp_path / "pydantic_core-9.9.9-cp99-cp99-x.whl"
+        wheel.write_bytes(b"unknown")
+        with pytest.raises(vw.WheelIntegrityError, match="not pinned"):
+            vw._verify_wheel(wheel, {"some-other.whl": "ab" * 32})
+
+
+@pytest.mark.unit
 class TestBundledModuleLoads:
     """The loader must import a module from the bundled directory."""
 
