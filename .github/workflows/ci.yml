@@ -312,7 +312,8 @@ jobs:
           ctx = uno.getComponentContext()
           print('UNO bridge ok, local ctx:', type(ctx).__name__)
           " || {
-            echo "::warning::PyUNO bridge failed to load under venv Python $(. venv/bin/python --version 2>&1). Integration tests will skip; fix is to align venv Python with the system Python that python3-uno targets."
+            echo "::error::PyUNO bridge failed to load under venv Python $(.venv/bin/python --version 2>&1). Failing the job rather than letting the integration suite silently skip — a green run with zero integration coverage is worse than a loud failure. Align the venv Python with the system Python that python3-uno targets."
+            exit 1
           }
 
       # ---- Install the .oxt into each runner's LibreOffice ----
@@ -665,17 +666,31 @@ jobs:
           [xml]$xml = Get-Content $junit
           $totalFail = 0
           $totalErr = 0
+          $totalTests = 0
+          $totalSkipped = 0
           foreach ($suite in $xml.SelectNodes('//testsuite')) {
             $totalFail += [int]$suite.failures
             $totalErr += [int]$suite.errors
+            $totalTests += [int]$suite.tests
+            $totalSkipped += [int]$suite.skipped
           }
-          Write-Host "junit totals: failures=$totalFail errors=$totalErr"
+          $executed = $totalTests - $totalSkipped
+          Write-Host "junit totals: tests=$totalTests skipped=$totalSkipped executed=$executed failures=$totalFail errors=$totalErr"
           if ($totalFail -gt 0 -or $totalErr -gt 0) {
             Write-Host "Real test failures present — exiting 1"
             exit 1
           }
+          # Guard against a partially-run or empty suite green-lighting the
+          # job: a testDir/glob that matches nothing makes Playwright exit
+          # non-zero while junit reports tests=0/failures=0/errors=0, which
+          # the override below would otherwise pass. Require that specs
+          # actually ran.
+          if ($executed -le 0) {
+            Write-Host "No e2e specs executed (executed=$executed) — refusing to green-light an empty/zero-spec run"
+            exit 1
+          }
           if ($playwrightExit -ne 0) {
-            Write-Host "Playwright exited non-zero but junit has no failures — overriding to 0 (Investigation #36 v3)"
+            Write-Host "Playwright exited non-zero but junit has failures=0/errors=0 and $executed specs ran — overriding to 0 (Investigation #36 v3)"
             exit 0
           }
           exit 0
