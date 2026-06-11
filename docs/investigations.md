@@ -2386,7 +2386,7 @@ in-process, and add real-soffice integration tests for insert_content anchors
 `bridge.ts::_proxyStream`.
 
 
-## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (ROOT-CAUSED + FIX 2026-06-11; awaiting CI confirmation)
+## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (FIXED 2026-06-11)
 
 **What:** The `Integration (windows-latest)` CI job fails at the
 "Install Talk2View-Writer .oxt" step: `unopkg.com add` reports
@@ -2440,9 +2440,11 @@ suspenders: `scripts/install_oxt.sh` now runs `unopkg add --verbose
 if any *residual* cause (e.g. a profile lock) bites, the next CI failure
 shows the real exception instead of the opaque generic message.
 
-**Awaiting:** a green `Integration (windows-latest)` run on the branch
-carrying this fix (the build job re-vendors because the
-`hashFiles('scripts/vendor_wheels.py')` cache key changed).
+**CONFIRMED (2026-06-11):** `Integration (windows-latest)` went green on
+PR #25's CI run (the build job re-vendored because the
+`hashFiles('scripts/vendor_wheels.py')` cache key changed). The exact
+check that had failed across this whole investigation now passes —
+`unopkg add` installs the slimmed OXT on Windows. Merged to main in #25.
 
 
 ## #65 — `Live E2E (Linux)` live-scenarios suite is non-deterministically red (FIX 2026-06-11)
