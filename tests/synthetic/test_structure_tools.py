@@ -75,12 +75,18 @@ class TestSetHeaderFooter:
     ) -> None:
         from talk2view_writer.tools.structure import set_header_footer
 
-        # The synthetic doc's PageStyle doesn't expose the full
-        # HeaderText / FooterText UNO surface, so the tool may fall
-        # through to a graceful error. We just confirm the tool
-        # returns a structured response (no unhandled exception).
+        # The synthetic PageStyle DOES expose a real HeaderText (see
+        # synthetic_uno.py), so assert the mutation actually landed — the
+        # old `assert isinstance(result, dict)` passed for any error return.
         result = json.loads(set_header_footer(type="header", text="Top of page"))
-        assert isinstance(result, dict)
+        assert result.get("success") is True, result
+        assert "error" not in result
+        page_style = (
+            synthetic_doc.getStyleFamilies()
+            .getByName("PageStyles")
+            .getByName("Default Page Style")
+        )
+        assert page_style.HeaderText.getString() == "Top of page"
 
 
 class TestInsertPageNumbers:
