@@ -176,6 +176,120 @@ class TestDispatchLine:
 
 
 @pytest.mark.unit
+class TestDispatchLineDoesNotLeakSecrets:
+    """INFO-level dispatch logging must never persist credentials or PHI.
+
+    Every engine request (auth login, token refresh) is routed through
+    the bridge's proxy_fetch, and tool args carry document text. The
+    persistent rotating log is shared in bug reports, so the default
+    INFO path must record only the request envelope — never the body or
+    tool args. See the credential-leak fix (bridge_server.py
+    _dispatch_line / _invoke_tool).
+    """
+
+    def _server(self) -> BridgeServer:
+        return BridgeServer(ctx=MagicMock(name="ctx"))
+
+    @contextmanager
+    def _capture_info(self) -> Iterator[list[logging.LogRecord]]:
+        """Capture INFO+ records on the bridge logger regardless of propagate.
+
+        The package logger sets ``propagate=False`` once ``setup_logging``
+        has run, which makes pytest's ``caplog`` (attached at root) blind to
+        these records. Attach our own handler to be robust.
+        """
+        records: list[logging.LogRecord] = []
+
+        class _Collector(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        logger = logging.getLogger("talk2view_writer.bridge_server")
+        handler = _Collector(level=logging.INFO)
+        prior_level = logger.level
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        try:
+            yield records
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(prior_level)
+
+    def test_proxy_fetch_body_not_logged_at_info(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stub httpx so no real request fires; we only care about logging.
+        sent: dict[str, Any] = {}
+
+        class _Resp:
+            status_code = 200
+            reason_phrase = "OK"
+            headers: ClassVar[dict[str, str]] = {}
+            content = b""
+            text = ""
+
+        class _Client:
+            def __init__(self, **_kw: Any) -> None: ...
+            def __enter__(self) -> _Client:
+                return self
+
+            def __exit__(self, *_a: Any) -> None: ...
+            def request(self, **kwargs: Any) -> _Resp:
+                sent.update(kwargs)
+                return _Resp()
+
+        import httpx
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+        srv = self._server()
+        secret_body = json.dumps(
+            {"email": "clinician@hospital.org", "password": "S3cr3t-PW!"}
+        )
+        req = json.dumps(
+            {
+                "id": 9,
+                "method": "proxy_fetch",
+                "params": {
+                    "url": "https://engine.talk2view.com/v1/auth/login",
+                    "method": "POST",
+                    "headers": {"authorization": "Bearer secrettoken"},
+                    "body": secret_body,
+                },
+            }
+        )
+        with self._capture_info() as records:
+            srv._dispatch_line(req)
+        info_text = "\n".join(r.getMessage() for r in records)
+        assert "S3cr3t-PW!" not in info_text
+        assert "clinician@hospital.org" not in info_text
+        assert "secrettoken" not in info_text
+        # The envelope (method) is still logged for debuggability.
+        assert "proxy_fetch" in info_text
+
+    def test_invoke_tool_args_not_logged_at_info(
+        self,
+        stub_tool: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        srv = self._server()
+        phi = "Patient Jane Doe, MRN 123456, diagnosis confidential"
+        req = json.dumps(
+            {
+                "id": 10,
+                "method": "invoke_tool",
+                "params": {"name": "insert_content", "args": {"text": phi}},
+            }
+        )
+        with self._capture_info() as records:
+            srv._dispatch_line(req)
+        info_text = "\n".join(r.getMessage() for r in records)
+        assert "Jane Doe" not in info_text
+        assert "123456" not in info_text
+        # Tool name + arg keys are still recorded.
+        assert "insert_content" in info_text
+        assert "text" in info_text
+
+
+@pytest.mark.unit
 class TestSocketLifecycle:
     """End-to-end smoke test via a real Unix socket."""
 
