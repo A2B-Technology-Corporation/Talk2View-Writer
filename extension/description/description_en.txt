@@ -8,7 +8,7 @@ Key Features:
 - Docked chat panel, available alongside your document
 - 21 document tools covering reading, writing, formatting, search,
   structure, and commenting
-- 13 high-level skills for document creation, restructuring, reviewing,
+- 14 high-level skills for document creation, restructuring, reviewing,
   and template filling
 - Powered by the Talk2View cloud engine
 

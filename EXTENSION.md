@@ -60,7 +60,7 @@ Key features:
 - 21 document tools spanning reading, writing, formatting, search, page
   structure (headers, footers, page numbers, breaks, layout), tables, images,
   and comments.
-- 13 high-level skills for document creation, formatting standards,
+- 14 high-level skills for document creation, formatting standards,
   restructuring, rewriting in place, template filling, content extraction,
   consistency checks, pre-send review, and comment triage.
 - Voice input: dictate requests with built-in speech-to-text.
