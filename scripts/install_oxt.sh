@@ -57,10 +57,34 @@ echo "Installing $OXT via $UNOPKG"
 # CI containers (Debian, etc.) run as root, so detect that and use
 # ``--shared`` which installs the extension system-wide. Local dev
 # stays per-user.
-UNOPKG_FLAGS=(--force --suppress-license)
+UNOPKG_FLAGS=(--force --suppress-license --verbose)
 if [[ "$(id -u 2>/dev/null || echo 0)" == "0" ]]; then
     echo "Running as root; using --shared to install system-wide"
     UNOPKG_FLAGS+=(--shared)
 fi
-"$UNOPKG" add "${UNOPKG_FLAGS[@]}" "$OXT"
+
+# Capture unopkg's own verbose log next to the .oxt. unopkg's default
+# failure is an opaque "ERROR: Exception occurred: Error while adding
+# ..." with no detail (it swallows the real cause). The verbose log
+# records what actually went wrong — a path over Windows MAX_PATH, a
+# profile lock from a live soffice, etc. We print it before exiting so
+# the CI log is self-contained instead of needing an artifact download
+# (investigations #64). Disable -e around the call so the on-failure
+# dump runs, then re-raise unopkg's exit code (fail-fast preserved).
+LOGFILE="${OXT%.oxt}.unopkg.log"
+set +e
+"$UNOPKG" add "${UNOPKG_FLAGS[@]}" --log-file "$LOGFILE" "$OXT"
+rc=$?
+set -e
+if [[ "$rc" -ne 0 ]]; then
+    echo "ERROR: unopkg add failed (exit $rc)." >&2
+    if [[ -f "$LOGFILE" ]]; then
+        echo "--- unopkg log ($LOGFILE) ---" >&2
+        cat "$LOGFILE" >&2
+        echo "--- end unopkg log ---" >&2
+    else
+        echo "(no unopkg log written at $LOGFILE)" >&2
+    fi
+    exit "$rc"
+fi
 echo "Installed."

@@ -2386,7 +2386,7 @@ in-process, and add real-soffice integration tests for insert_content anchors
 `bridge.ts::_proxyStream`.
 
 
-## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (NEW 2026-06-11)
+## #64 — `Integration (windows-latest)` job fails at `unopkg add` on main (ROOT-CAUSED + FIX 2026-06-11; awaiting CI confirmation)
 
 **What:** The `Integration (windows-latest)` CI job fails at the
 "Install Talk2View-Writer .oxt" step: `unopkg.com add` reports
@@ -2409,14 +2409,40 @@ no detail at default verbosity, so the actual cause (profile lock,
 path/quoting under Git-bash, a genuine packaging incompatibility, or the
 known unopkg-on-live-profile hazard) is unknown.
 
-**Next step:** re-run the install step with `unopkg add -v` (verbose) on
-the Windows runner to capture the real exception; check whether a
-soffice/quickstarter process is holding the user-profile registry, and
-whether the `file:///D:/...` URL needs different quoting under the
-Git-for-Windows bash the step uses. Until diagnosed, consider marking
-the windows-latest integration leg `continue-on-error` so it reports
-without blocking, mirroring the #36 treatment — but only after one
-verbose-log capture, not as a first move.
+**ROOT CAUSE (2026-06-11):** Windows `MAX_PATH` (260). The CI-built `.oxt`
+(unlike a partial local build) bundles the full cross-platform wheel
+matrix, including the macOS **pyobjc** wheels. Those ship a `PyObjCTest/`
+unit-test suite and `*.dSYM/` debug-symbol bundles whose internal paths
+reach **194 chars** (e.g.
+`pythonpath/_vendored_wheels/cp313-macosx_x86_64/PyObjCTest/…​.dSYM/Contents/Resources/Relocations/aarch64/…​.so.yml`).
+unopkg unconditionally extracts the entire OXT — it does NOT skip the
+`macosx_*` subtree on Windows — under the deep per-user cache tree
+`…/AppData/Roaming/LibreOffice/4/user/uno_packages/cache/uno_packages/<rnd>.tmp_/Talk2ViewWriter.oxt/`
+(~127 chars). 127 + 194 ≈ **321 > 260**, so the extraction fails and
+unopkg surfaces only its generic "Error while adding". This is why it's
+Windows-only (Linux/macOS have no MAX_PATH) and why it fails at install
+time before soffice starts. Confirmed by measuring the actual released
+v1.0.7 artifact: 13 855 entries, longest 194; **12 504 (90%) are
+PyObjCTest/dSYM cruft**, none needed at runtime on any platform.
+(A live-soffice profile lock was investigated as a secondary hypothesis
+but de-prioritised: choco `libreoffice-fresh` installs with QUICKSTART
+disabled, and a `make dev` step sits between the `soffice --version`
+call and the install, so any short-lived soffice.bin has exited.)
+
+**FIX (2026-06-11):** `scripts/vendor_wheels.py::_extract_all_top_level`
+now skips the `PyObjCTest/` top-level dir and any `*.dSYM/` path. This
+returns the longest internal path to **113 chars** (worst-case Windows
+≈ 240 < 260) and shrinks the OXT to ~1 360 entries (~49 MB). Verified by
+rebuilding locally: 0 PyObjCTest/dSYM entries, all 10 runtime modules
+(objc, AppKit, Foundation, WebKit, …, pydantic_core) retained. Belt-and-
+suspenders: `scripts/install_oxt.sh` now runs `unopkg add --verbose
+--log-file <…>` and dumps the log on failure (fail-fast preserved), so
+if any *residual* cause (e.g. a profile lock) bites, the next CI failure
+shows the real exception instead of the opaque generic message.
+
+**Awaiting:** a green `Integration (windows-latest)` run on the branch
+carrying this fix (the build job re-vendors because the
+`hashFiles('scripts/vendor_wheels.py')` cache key changed).
 
 
 ## #65 — `Live E2E (Linux)` live-scenarios suite is non-deterministically red (FIX 2026-06-11)
