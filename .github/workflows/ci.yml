@@ -41,7 +41,7 @@ jobs:
     name: Lint, type-check, unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # pyproject.toml declares the talk2view SDK via path source
       # (../Talk2View-Platform/packages/sdk-python, editable). Restore
@@ -52,7 +52,7 @@ jobs:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -81,7 +81,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-${{ github.sha }}
           path: |
@@ -99,14 +99,14 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/checkout-sdk-sibling
         with:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -117,7 +117,7 @@ jobs:
         # Re-downloading the 20-tag matrix on every commit wastes ~40 MB
         # bandwidth + ~30s. Invalidates when the matrix definition
         # changes (typically on a pydantic-core version bump).
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor/
           key: vendor-${{ hashFiles('scripts/vendor_wheels.py') }}
@@ -137,7 +137,7 @@ jobs:
         run: make package
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: oxt-${{ github.sha }}
           path: dist/Talk2ViewWriter.oxt
@@ -214,7 +214,7 @@ jobs:
           # in Docker containers reaches it from CI.
           # ``buildpack-deps:bookworm`` is debian:bookworm with git,
           # curl, ca-certificates, gnupg, lsb-release pre-installed
-          # — needed BEFORE actions/checkout@v4 runs (we can't run
+          # — needed BEFORE actions/checkout@v6 runs (we can't run
           # apt-get install in a step before checkout when using
           # ``container:``). The userspace is identical to
           # ``debian:bookworm`` so the coverage is the same; we just
@@ -242,14 +242,14 @@ jobs:
           - os: windows-latest
             run_live_chat: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/checkout-sdk-sibling
         with:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -257,7 +257,7 @@ jobs:
       - run: uv python install 3.13
 
       - name: Download .oxt artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: oxt-${{ github.sha }}
           path: dist/
@@ -556,7 +556,7 @@ jobs:
 
       - name: Upload diagnostic logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: integration-logs-${{ matrix.os }}${{ matrix.lo_apt_source && format('-{0}', matrix.lo_apt_source) || '' }}-${{ github.sha }}
           path: _diag/
@@ -585,14 +585,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/checkout-sdk-sibling
         with:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: 'npm'
@@ -612,7 +612,7 @@ jobs:
       # invalidates exactly when an upgrade lands.
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/ms-playwright
@@ -698,7 +698,7 @@ jobs:
 
       - name: Upload Playwright artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-${{ matrix.os }}-${{ github.sha }}
           path: |
@@ -726,14 +726,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/checkout-sdk-sibling
         with:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -744,7 +744,7 @@ jobs:
         run: make dev
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
           cache: 'npm'
@@ -761,7 +761,7 @@ jobs:
 
       - name: Cache Playwright browsers
         id: pw-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: pw-Linux-${{ hashFiles('package-lock.json') }}
@@ -803,7 +803,7 @@ jobs:
           ln -sf /usr/lib/python3/dist-packages/unohelper.py "$VENV_SITE/unohelper.py"
 
       - name: Download .oxt artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: oxt-${{ github.sha }}
           path: dist/
@@ -886,7 +886,7 @@ jobs:
 
       - name: Upload Live E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-live-${{ github.sha }}
           path: |

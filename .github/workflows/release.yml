@@ -32,7 +32,7 @@ jobs:
     name: Build .oxt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Need the full history so the changelog step can reach the
           # previous tag.
@@ -43,7 +43,7 @@ jobs:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -51,7 +51,7 @@ jobs:
       - run: uv python install 3.13
 
       - name: Cache vendored wheels
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: vendor/
           key: vendor-${{ hashFiles('scripts/vendor_wheels.py') }}
@@ -83,7 +83,7 @@ jobs:
           fi
 
       - name: Upload .oxt artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: oxt-release
           path: dist/Talk2ViewWriter.oxt
@@ -97,12 +97,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Download .oxt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: oxt-release
           path: dist/
@@ -171,7 +171,7 @@ jobs:
           cat dist/update.xml
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/Talk2ViewWriter.oxt

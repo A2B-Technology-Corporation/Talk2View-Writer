@@ -78,14 +78,14 @@ jobs:
           - os: macos-14
           - os: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: ./.github/actions/checkout-sdk-sibling
         with:
           token: ${{ secrets.T2V_PLATFORM_READ_TOKEN }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v8
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -243,7 +243,7 @@ jobs:
 
       - name: Upload soffice logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-smoke-${{ matrix.os }}-${{ matrix.lo_apt_source || 'default' }}
           path: |
