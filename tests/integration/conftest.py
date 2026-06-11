@@ -35,6 +35,36 @@ _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 2002
 
 
+def _is_uno_module_name(name: str) -> bool:
+    """True for the module names the unit-test conftest stubs."""
+    return name in ("uno", "unohelper") or name.startswith("com.sun.star.")
+
+
+def _snapshot_uno_stubs() -> dict[str, Any]:
+    """Capture the currently-installed UNO stub modules for later restore."""
+    return {
+        name: mod
+        for name, mod in sys.modules.items()
+        if _is_uno_module_name(name)
+    }
+
+
+def _restore_uno_stubs(saved: dict[str, Any]) -> None:
+    """Put the unit-test UNO stubs back, dropping any real PyUNO modules.
+
+    Reverses :func:`_evict_unit_uno_stubs`: removes whatever UNO-named
+    modules are currently loaded (the real PyUNO bridge, if eviction led
+    to a real ``import uno``) and reinstates the snapshotted stubs so the
+    rest of the pytest session — unit / synthetic tests that lazily import
+    production code — still resolves the stubs and doesn't blow up with
+    ``ModuleNotFoundError``. See investigation #30.
+    """
+    for name in list(sys.modules):
+        if _is_uno_module_name(name):
+            del sys.modules[name]
+    sys.modules.update(saved)
+
+
 def _evict_unit_uno_stubs() -> None:
     """Drop the top-level conftest's UNO stubs from ``sys.modules``.
 
@@ -53,9 +83,14 @@ def _evict_unit_uno_stubs() -> None:
     Called from the ``uno_context`` fixture (NOT at module import) so
     the eviction doesn't run when unit / synthetic / mock_chat tests
     are the only thing being collected — those rely on the stubs.
+
+    IMPORTANT: snapshot via :func:`_snapshot_uno_stubs` first and restore
+    via :func:`_restore_uno_stubs` on every exit path. A bare eviction
+    that then skips (no soffice) leaves the stubs gone for the rest of the
+    session, breaking every later unit test — investigation #30.
     """
     for name in list(sys.modules):
-        if name in ("uno", "unohelper") or name.startswith("com.sun.star."):
+        if _is_uno_module_name(name):
             del sys.modules[name]
 
 
@@ -100,7 +135,7 @@ def _connection_url() -> str:
 
 
 @pytest.fixture(scope="session")
-def uno_context() -> Any:
+def uno_context() -> Iterator[Any]:
     """Resolve a remote UNO ``XComponentContext`` against the running soffice.
 
     Session-scoped because tearing down + re-establishing the bridge
@@ -110,14 +145,23 @@ def uno_context() -> Any:
     soffice is listening — that's the expected behaviour when
     ``pytest -m integration`` is invoked outside CI without first
     starting headless soffice.
+
+    Snapshots the unit-test UNO stubs before evicting them and restores
+    them on EVERY exit path (skip, error, or normal teardown) so a mixed
+    ``pytest`` session (``make test``) that skips integration doesn't
+    leave the stubs gone and break every later unit test — investigation
+    #30.
     """
-    # Drop the unit-test conftest's UNO stubs first so ``import uno``
-    # resolves to the real PyUNO package. See ``_evict_unit_uno_stubs``.
+    # Snapshot, then drop the unit-test conftest's UNO stubs so
+    # ``import uno`` resolves to the real PyUNO package. See
+    # ``_evict_unit_uno_stubs`` / ``_restore_uno_stubs``.
+    saved_stubs = _snapshot_uno_stubs()
     _evict_unit_uno_stubs()
 
     try:
         import uno  # type: ignore[import-not-found]
     except ImportError as exc:
+        _restore_uno_stubs(saved_stubs)
         pytest.skip(f"PyUNO not importable: {exc}. Is LibreOffice installed?")
 
     # Sanity: catch the case where ``uno`` is still the unit-test stub
@@ -128,6 +172,7 @@ def uno_context() -> Any:
     # loudly — never silently mock.
     uno_file = getattr(uno, "__file__", None) or ""
     if "python3" not in uno_file and "site-packages" not in uno_file:
+        _restore_uno_stubs(saved_stubs)
         raise RuntimeError(
             f"uno module is not the real PyUNO (__file__={uno_file!r}). "
             "The unit-test conftest's UNO stub leaked into the "
@@ -141,6 +186,7 @@ def uno_context() -> Any:
     try:
         remote_ctx = resolver.resolve(_connection_url())
     except Exception as exc:
+        _restore_uno_stubs(saved_stubs)
         pytest.skip(
             f"Cannot connect to headless soffice at {_connection_url()}: "
             f"{exc}.\nStart it with:\n"
@@ -148,7 +194,12 @@ def uno_context() -> Any:
             f'--accept="socket,host={_DEFAULT_HOST},port={_DEFAULT_PORT};urp;" &\n'
             f"then re-run pytest."
         )
-    return remote_ctx
+    try:
+        yield remote_ctx
+    finally:
+        # Restore the stubs at session teardown so any unit/synthetic
+        # tests collected after the integration suite still see them.
+        _restore_uno_stubs(saved_stubs)
 
 
 @pytest.fixture(scope="session")
