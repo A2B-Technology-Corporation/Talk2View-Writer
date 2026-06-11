@@ -1288,7 +1288,7 @@ this build).
    the paragraphs' ``style`` field actually contains a bullet-list
    style name after step 2.
 
-## #38 — `add_comment` throws `no SwTextAttr inserted` on Ubuntu 24.04 LO (2026-05-25)
+## #38 — `add_comment` throws `no SwTextAttr inserted` (range-absorb defect) (FIXED 2026-06-11)
 
 **What:** ``add_comment`` consistently throws
 ``uno.com.sun.star.uno.RuntimeException: no SwTextAttr inserted? at
@@ -1307,16 +1307,47 @@ and writes the "comment" as inline document text (which is what the
 loose ``commenting`` scenario assertion still accepts). Marred UX
 even when the test passes.
 
-**Next step:**
-1. Reproduce locally; check whether the issue is anchor-text-specific
-   (some texts may be inside table cells or non-body containers
-   where comment anchors aren't legal) or universal.
-2. If universal: file an LO issue and add a fallback path in
-   ``add_comment`` that detects the failure and returns a
-   user-actionable error rather than burning model retries.
-3. If anchor-specific: precondition the input — call ``get_document``
-   inside ``add_comment`` to verify the anchor resolves to a body
-   paragraph before attempting the UNO call.
+**ROOT CAUSE (2026-06-11):** The defect is **universal**, not
+anchor-specific. ``add_comment`` anchored via *range-absorb* —
+``text.insertTextContent(target_range, annotation, True)`` (``bAbsorb``
+True) — to get Word-style range highlighting. That form raises
+``no SwTextAttr inserted?`` on **both** LO 24.x and 26.x, for **unique**
+single-match anchors as well as repeated ones (reproduced on local LO
+26.2.3.2 — see ``test_range_absorb_raises_swtextattr_on_this_lo``). It is
+a defect in LO's annotation-as-text-attribute insertion, independent of
+the anchor.
+
+This also explains the user's **duplicate comments**: the failed
+range-absorb call STILL leaves an orphaned annotation in the document
+(repro: annotation count = 1 *after* the call raised), and
+``removeTextContent`` does not reliably remove it. The old code caught
+the exception and returned an error, so the model retried — orphan + retry
+= duplicates. The reported "I encountered an internal LibreOffice issue …
+so I added a Character Profiles section instead" workaround is the model
+giving up after those retries.
+
+**FIX (2026-06-11):** ``commenting.py`` now anchors via a **collapsed
+point cursor** at the start of the match —
+``text.insertTextContent(text.createTextCursorByRange(range.getStart()),
+annotation, False)`` (extracted as ``_anchor_comment``). Point-anchor
+never raises on LO 24.x/26.x and creates exactly one annotation per call
+(repro [B] + the new live tests). The only cosmetic loss is the range
+highlight, which range-absorb could not produce on these builds anyway.
+``_structured_error_for_known_lo_bug`` is kept as a defensive net.
+
+**Tests added (the gap that let this reach production):**
+- ``tests/integration/test_commenting_live.py`` — real-soffice tests that
+  anchor comments and assert no ``SwTextAttr`` error + exactly-one /
+  exactly-N annotations (no orphan duplicates), incl. the user's
+  repeated-anchor scenario, plus a canary asserting range-absorb still
+  fails (so we learn if upstream LO ever fixes it).
+- ``tests/synthetic/test_commenting_tools.py`` — fast guard that
+  ``add_comment`` inserts with ``bAbsorb=False`` and that get_comments
+  reads the new comment back. The synthetic model gained
+  ``_RangeCursor.getText()/getStart()`` + insert-call recording
+  (``_inserted_content_calls``) so the success path is testable at all —
+  previously it had **no** coverage, which is how the defect slipped
+  through.
 
 ## #39 — macOS Chromium Playwright `mockEngine` teardown timeout (2026-05-25)
 

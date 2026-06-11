@@ -547,6 +547,24 @@ class _RangeCursor(FakeTextCursor):
         self._paragraph.setString(new_source)
         self._end = self._start + len(value)
 
+    def getText(self) -> FakeText:  # noqa: N802
+        """``XTextRange.getText()`` — the owning XText of this match.
+
+        Returns the document's FakeText (via the paragraph's owner) so
+        ``add_comment`` inserts the annotation into the same text whose
+        ``getTextFields()`` the commenting tools read back.
+        """
+        return self._paragraph.getText()
+
+    def getStart(self) -> _RangeCursor:  # noqa: N802
+        """``XTextRange.getStart()`` — a collapsed range at the match start.
+
+        ``add_comment`` anchors the comment here (point anchor, bAbsorb
+        False) instead of absorbing the whole range — the range-absorb
+        form is broken on real LO (Investigation #38).
+        """
+        return _RangeCursor(self._paragraph, self._start, self._start)
+
 
 class _ParagraphList(list):  # type: ignore[type-arg]
     """List subclass that auto-binds ``_owner_text`` on every paragraph.
@@ -586,9 +604,14 @@ class FakeText:
     def __init__(self, paragraphs: list[FakeParagraph]) -> None:
         self._paragraphs: _ParagraphList = _ParagraphList(self, list(paragraphs))
         self._inserted_strings: list[str] = []
-        # XTextContent objects (e.g. page-number fields) inserted via
-        # insertTextContent, in order — lets tests assert on field props.
+        # XTextContent objects (e.g. page-number fields, annotations)
+        # inserted via insertTextContent, in order — lets tests assert on
+        # field props.
         self._inserted_contents: list[Any] = []
+        # (content, absorb) tuples, in order, so tests can assert HOW a
+        # content was inserted — e.g. add_comment must point-anchor
+        # (absorb=False), never range-absorb (Investigation #38).
+        self._inserted_content_calls: list[tuple[Any, bool]] = []
 
     def createEnumeration(self) -> FakeEnumeration:  # noqa: N802
         return FakeEnumeration(self._paragraphs)
@@ -648,10 +671,13 @@ class FakeText:
         self, cursor: FakeTextCursor, content: Any, absorb: bool
     ) -> None:
         # XText.insertTextContent — used by insert_page_numbers to drop
-        # PageNumber / PageCount fields into a header/footer. Record the
-        # content object so tests can inspect its properties (e.g. that
-        # NumberingType was pinned).
+        # PageNumber / PageCount fields into a header/footer, and by
+        # add_comment to anchor an Annotation. Record the content object
+        # (so tests can inspect its properties, e.g. NumberingType) plus
+        # the absorb flag (so tests can assert point-anchor vs range
+        # absorb — Investigation #38).
         self._inserted_contents.append(content)
+        self._inserted_content_calls.append((content, absorb))
 
     def removeTextContent(self, content: Any) -> None:  # noqa: N802
         if isinstance(content, FakeParagraph) and content in self._paragraphs:
@@ -987,10 +1013,20 @@ class FakeTextDocument(_Service):
         Production code's ``_iter_annotations`` iterates this and filters
         by ``supportsService("com.sun.star.text.TextField.Annotation")``,
         which is exactly what :class:`FakeAnnotation` claims via
-        :class:`_Service`. So returning the document's annotation
-        container directly gives the commenting tools a working surface.
+        :class:`_Service`.
+
+        Returns a container merging annotations added directly to the doc
+        (``add_annotation``) with any inserted at runtime via
+        ``insertTextContent`` (e.g. by ``add_comment``) — so a comment the
+        tool just anchored is visible to a follow-up ``get_comments``,
+        exactly as in real LibreOffice.
         """
-        return self._annotations
+        merged = FakeAnnotationsContainer()
+        merged._items = list(self._annotations._items)
+        for content in self._text._inserted_contents:
+            if isinstance(content, FakeAnnotation) and content not in merged._items:
+                merged._items.append(content)
+        return merged
 
     def createInstance(self, service: str) -> Any:  # noqa: N802
         """Instantiate a stub for the document-scoped services tools use."""

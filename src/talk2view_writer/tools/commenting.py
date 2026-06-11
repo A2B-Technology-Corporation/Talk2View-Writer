@@ -308,17 +308,51 @@ def get_comments() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _structured_error_for_known_lo_bug(exc: Exception, anchor: str) -> str | None:
-    """Translate a known LO insertion failure into a structured JSON error.
+def _anchor_comment(text_obj: Any, target_range: Any, annotation: Any) -> None:
+    """Attach ``annotation`` at the start of ``target_range`` (point anchor).
 
-    LO 24.x raises a C++ ``RuntimeException`` with the message
-    ``no SwTextAttr inserted?`` from ``unofield.cxx:1976`` when
-    ``insertTextContent`` is called against certain anchor positions
-    (Investigation #38). The C++ exception isn't a Python-typed class
-    we can catch precisely, so we match on the message text.
+    Collapses a cursor to the START of the matched range and inserts the
+    annotation with ``bAbsorb=False``.
+
+    Why NOT range-absorb (``insertTextContent(target_range, annotation,
+    True)``), which would highlight the whole range the way Word does:
+    that form raises ``com.sun.star.uno.RuntimeException: no SwTextAttr
+    inserted?`` (``sw/source/core/unocore/unofield.cxx``) on LibreOffice
+    24.x AND 26.x — reproduced for both unique and repeated anchors, so
+    it is not anchor-specific but a universal defect on current builds
+    (Investigation #38). Worse, the failed range-absorb call STILL leaves
+    an orphaned annotation in the document, and ``removeTextContent`` does
+    not reliably remove it — so the model, seeing the error, retries and
+    the orphan plus the retry produce duplicate comments.
+
+    A collapsed point anchor sidesteps the C++ defect entirely: it never
+    raises and creates exactly one annotation per call. The only cosmetic
+    difference is the comment marks a point at the start of the anchor
+    text rather than highlighting the span — and range-absorb does not
+    work at all on current builds, so this is strictly better.
+
+    Raises:
+        Exception: Propagates any UNO error from ``insertTextContent`` so
+            the caller can surface it. Point-anchor insertion has not been
+            observed to fail on LO 24.x/26.x, so this is a defensive path.
+    """
+    cursor = text_obj.createTextCursorByRange(target_range.getStart())
+    text_obj.insertTextContent(cursor, annotation, False)
+
+
+def _structured_error_for_known_lo_bug(exc: Exception, anchor: str) -> str | None:
+    """Translate a residual LO insertion failure into a structured JSON error.
+
+    The primary path (:func:`_anchor_comment`, point anchor) does not hit
+    the ``no SwTextAttr inserted?`` defect that range-absorb did
+    (Investigation #38). This remains a defensive net: if some build still
+    rejects the point-anchor insert with that C++ ``RuntimeException``
+    (which is not a Python-typed class we can catch precisely, so we match
+    on the message text), surface a clear error instead of crashing the
+    bridge.
 
     Returns:
-        A JSON-encoded error string if exc matches a known LO bug
+        A JSON-encoded error string if exc matches the known LO bug
         signature (caller should return it); ``None`` if exc is
         something else (caller should re-raise).
     """
@@ -337,10 +371,9 @@ def _structured_error_for_known_lo_bug(exc: Exception, anchor: str) -> str | Non
                 "containers (Investigation #38: SwTextAttr insertion failure)."
             ),
             "recovery": (
-                "Try a different anchor — pick text from a different "
-                "paragraph, or use 5-15 unique words from the middle "
-                "of a body sentence (not at the very start or end of "
-                "the document)."
+                "Try a different anchor — pick 5-15 unique words from the "
+                "middle of a body sentence (not in a header, footer, or "
+                "table)."
             ),
         }
     )
@@ -423,11 +456,11 @@ def add_comment(
     _stamp_authorship(ext.ctx, annotation)
 
     text_obj = target_range.getText()
-    # ``True`` for the second arg replaces the range with the annotation
-    # (anchoring it as a "comment range"). On Writer ≥ 7.x this gives
-    # the highlighted-anchor behaviour Word users expect.
+    # Point-anchor at the start of the match (see _anchor_comment for why
+    # NOT range-absorb — the range form is broken on LO 24.x/26.x and
+    # leaves orphans that the model duplicates; Investigation #38).
     try:
-        text_obj.insertTextContent(target_range, annotation, True)
+        _anchor_comment(text_obj, target_range, annotation)
     except Exception as exc:
         handled = _structured_error_for_known_lo_bug(exc, anchor)
         if handled is not None:
