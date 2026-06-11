@@ -72,10 +72,11 @@ jobs:
         run: make typecheck
 
       - name: Unit tests + coverage (ratchet enforced)
-        # Coverage runs the unit + synthetic suite with branch + line
-        # coverage AND --cov-fail-under=59 so a regression below the
-        # current floor fails the job. Raise the floor when adding
-        # tests; never lower without a documented reason. See task #29.
+        # Runs the unit + synthetic suite with branch + line coverage and a
+        # --cov-fail-under floor so a regression below the current floor
+        # fails the job. The floor lives in the Makefile `coverage` target
+        # (single source of truth) — see it for the current value and the
+        # ratchet policy.
         run: make coverage
 
       - name: Upload coverage report
