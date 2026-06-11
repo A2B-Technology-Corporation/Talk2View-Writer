@@ -301,6 +301,24 @@ def _extract_all_top_level(wheel: Path, dest: Path) -> list[str]:
     Skips ``*.dist-info/`` metadata directories — the loader doesn't
     need them and keeping them out keeps the OXT smaller.
 
+    Also skips build/test/debug artifacts the runtime never imports:
+
+    - ``PyObjCTest/`` — pyobjc's own unit-test suite (~1540 entries per
+      macOS tag), and
+    - ``*.dSYM/`` bundles — macOS debug-symbol directories sitting next
+      to each ``.so`` (the ``.so`` loads fine without them).
+
+    These carry the longest internal paths in the OXT — the pyobjc
+    ``PyObjCTest/…​.dSYM/…`` members reach 194 chars. On Windows that is
+    fatal: unopkg extracts the OXT under the deep per-user
+    ``AppData/Roaming/LibreOffice/4/user/uno_packages/cache/…/Talk2ViewWriter.oxt/``
+    tree (~127 chars), so 127 + 194 blows past ``MAX_PATH`` (260) and
+    ``unopkg add`` fails with an opaque "Error while adding" — the
+    Windows-only integration failure in investigations #64. Dropping
+    them returns the longest path to 113 chars (well under 260) and
+    shrinks the OXT ~90% (≈13.8k → ≈1.3k entries). None are needed at
+    runtime on any platform.
+
     Returns the sorted list of top-level directory names extracted,
     useful for the script's per-target summary log.
     """
@@ -310,6 +328,11 @@ def _extract_all_top_level(wheel: Path, dest: Path) -> list[str]:
         for member in zf.namelist():
             top = member.split("/", 1)[0]
             if not top or top.endswith(".dist-info"):
+                continue
+            # Drop the pyobjc test suite and all macOS debug-symbol
+            # bundles — useless at runtime and the source of the
+            # MAX_PATH-busting long paths on Windows (investigations #64).
+            if top == "PyObjCTest" or ".dSYM/" in member:
                 continue
             zf.extract(member, dest)
             extracted.add(top)
