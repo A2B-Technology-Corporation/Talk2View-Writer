@@ -850,6 +850,14 @@ _NUMBER_STYLE_ALIASES = (
     "ListNumber",
 )
 
+# The complete set of LIST paragraph-style names this tool ever applies in
+# the add path. ``remove`` only resets the paragraph style when the current
+# style is one of these — so a numbered Heading / Quote (whose style we never
+# touched) is not flattened to the body default.
+_LIST_PARA_STYLE_NAMES = frozenset(_BULLET_STYLE_ALIASES) | frozenset(
+    _NUMBER_STYLE_ALIASES
+)
+
 
 class _ListStyleUnavailableError(Exception):
     """Raised when none of the known list-style aliases exists in the doc.
@@ -1139,10 +1147,18 @@ def manage_list(
                     )
                     continue
                 p.NumberingIsNumber = False
-                try:
-                    p.ParaStyleName = "Default Paragraph Style"
-                except Exception:
-                    logger.debug("Default Paragraph Style not settable")
+                # Only reset the paragraph style when it is one of the LIST
+                # paragraph styles this tool's add path applies. Unconditionally
+                # forcing the pool default flattened a numbered Heading 2 /
+                # Quote — whose style manage_list never set — destroying the
+                # heading (and its TOC/navigation). manage_list removes list
+                # FORMATTING, not the paragraph's style.
+                current_style = getattr(p, "ParaStyleName", "") or ""
+                if current_style in _LIST_PARA_STYLE_NAMES:
+                    try:
+                        p.ParaStyleName = "Default Paragraph Style"
+                    except Exception:
+                        logger.debug("Default Paragraph Style not settable")
                 per_paragraph.append({"paragraph_index": idx, "success": True})
         if left_indent is not None:
             p.ParaLeftMargin = points_to_hmm(left_indent)

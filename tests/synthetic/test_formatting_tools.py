@@ -576,6 +576,26 @@ class TestManageList:
         assert para.getPropertyValue("NumberingRules") is None
         assert para.getPropertyValue("NumberingIsNumber") is False
 
+    def test_remove_preserves_a_non_list_paragraph_style(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        """Removing numbering from a heading must NOT flatten its style.
+
+        A numbered Heading 2 (its style was never set by manage_list) must
+        keep Heading 2 after remove — the tool removes list formatting, not
+        the paragraph's style. Previously remove unconditionally forced the
+        pool default, destroying the heading.
+        """
+        from talk2view_writer.tools.formatting import manage_list
+
+        synthetic_doc._text._paragraphs.append(
+            FakeParagraph("Chapter One", style="Heading 2")
+        )
+        manage_list(action="remove", paragraph_indices=[1])
+        para = synthetic_doc._text._paragraphs[1]
+        assert para.getPropertyValue("ParaStyleName") == "Heading 2"
+        assert para.getPropertyValue("NumberingIsNumber") is False
+
     def test_remove_reports_failure_when_clear_raises(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
     ) -> None:
