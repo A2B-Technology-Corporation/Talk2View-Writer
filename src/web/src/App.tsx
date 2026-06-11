@@ -60,15 +60,23 @@ function LogBridge() {
       // (that would be racy under streaming /resume — Investigation
       // #42); it reads window.__t2vLastAssistantFinal, set below only
       // when the turn settles.
-      const preview = (m.content ?? '').slice(0, 1000);
-      logToHost('info', `[chat:${m.role}] ${preview}`, {
+      // Do NOT log message content (or m.plan) at INFO: assistant and
+      // tool-call text echoes document content that may be PHI in a
+      // medical-document workflow, and the persistent log is attached to
+      // bug reports. Mirror the Python bridge's INFO/DEBUG split
+      // (bridge_server.py): metadata at INFO, full content only under the
+      // T2V_WRITER_DEBUG opt-in.
+      logToHost('info', `[chat:${m.role}]`, {
         id: m.id,
         role: m.role,
         timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : String(m.timestamp),
         isStreaming: m.isStreaming ?? false,
         content_length: m.content?.length ?? 0,
-        plan: m.plan ?? null,
         steps_count: m.steps?.length ?? 0,
+      });
+      logToHost('debug', `[chat:${m.role}] ${(m.content ?? '').slice(0, 1000)}`, {
+        id: m.id,
+        plan: m.plan ?? null,
       });
       seenIndex.current += 1;
       lastStreamingText.current = '';
@@ -112,7 +120,10 @@ function LogBridge() {
   // Log SDK errors verbatim.
   useEffect(() => {
     if (chat.error) {
-      logToHost('error', `[chat:error] ${chat.error}`);
+      // The error string can echo document content (PHI). Log its length
+      // at error level for triage; the verbatim text only under DEBUG.
+      logToHost('error', `[chat:error] (${String(chat.error).length} chars)`);
+      logToHost('debug', `[chat:error] ${chat.error}`);
     }
   }, [chat.error]);
 
@@ -135,7 +146,9 @@ function LogBridge() {
   useEffect(() => {
     logToHost('info', '[auth] state', {
       isAuthenticated: t2v.isAuthenticated,
-      email: t2v.user?.email ?? null,
+      // Presence, not the address — email is PII and lands in the
+      // bug-report log unredacted.
+      has_email: !!t2v.user?.email,
     });
     if (t2v.isAuthenticated && t2v.user?.email) {
       rememberEmail(t2v.user.email);
@@ -151,8 +164,12 @@ function LogBridge() {
   // Log tool-call approval requests (the engine wants user OK).
   useEffect(() => {
     if (chat.pendingApproval) {
+      // The approval payload carries tool args (document content / PHI).
+      // Log only that an approval is pending at INFO; the full payload
+      // under DEBUG.
+      logToHost('info', '[chat:approval] pending');
       logToHost(
-        'info',
+        'debug',
         `[chat:approval] ${JSON.stringify(chat.pendingApproval)}`,
         chat.pendingApproval as unknown as Record<string, unknown>,
       );
