@@ -44,6 +44,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from talk2view_writer.perf import log_timing, monotonic_ms
@@ -99,6 +100,13 @@ _MVP_TOOL_NAMES: tuple[str, ...] = (
 # file blobs into this envelope and _proxy_fetch rebuilds a real
 # multipart request from it. See docs/investigations.md #59.
 _MULTIPART_SENTINEL = "__t2v_multipart__"
+
+# Each request is dispatched on its own pool worker so a slow call (a 25 s
+# proxy_fetch on a bad connection, or a proxy_stream_next that blocks up to
+# 60 s on the engine) never blocks the next request's dispatch. 16 is ample
+# headroom: in practice at most one streaming read plus a handful of
+# concurrent fetches / tool calls are ever in flight at once.
+_MAX_DISPATCH_WORKERS = 16
 
 
 def _decode_multipart_envelope(
@@ -159,6 +167,12 @@ class BridgeServer:
         self._accept_thread: threading.Thread | None = None
         self._conn_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Each request is dispatched on a pool worker (see _handle_connection)
+        # so a slow request can't block the connection's read loop or other
+        # requests. ``_send_lock`` serialises response writes back onto the
+        # single socket so two workers' frames never interleave.
+        self._dispatch_pool: ThreadPoolExecutor | None = None
+        self._send_lock = threading.Lock()
         self._tools_by_name: dict[str, Callable[..., Any]] | None = None
         # Active streams keyed by stream_id. Each entry is a Queue
         # that the worker thread feeds events into, drained by
@@ -186,6 +200,10 @@ class BridgeServer:
         self._sock.listen(1)
         self._sock.settimeout(1.0)  # so the accept loop can check _stop
 
+        self._dispatch_pool = ThreadPoolExecutor(
+            max_workers=_MAX_DISPATCH_WORKERS, thread_name_prefix="bridge-dispatch"
+        )
+
         logger.info("BridgeServer.start: listening on %s", self.socket_path)
 
         self._accept_thread = threading.Thread(
@@ -200,6 +218,11 @@ class BridgeServer:
         """Shut down the server, remove the socket file and its tempdir."""
         logger.info("BridgeServer.stop: shutting down")
         self._stop.set()
+        if self._dispatch_pool is not None:
+            # Don't wait — in-flight workers may be blocked on a 60 s
+            # proxy_stream_next; they're daemon-pool threads and die with the
+            # process. cancel_futures drops queued-but-unstarted requests.
+            self._dispatch_pool.shutdown(wait=False, cancel_futures=True)
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -248,7 +271,17 @@ class BridgeServer:
             self._conn_thread.start()
 
     def _handle_connection(self, conn: socket.socket) -> None:
-        """Read newline-delimited JSON requests; reply on the same connection."""
+        """Read newline-delimited JSON requests; dispatch each concurrently.
+
+        The read loop ONLY parses + hands each request to the dispatch pool,
+        so it returns to ``recv`` immediately. A slow request (a 25 s
+        proxy_fetch, or a proxy_stream_next that blocks up to 60 s on the
+        engine) runs on its own worker and never blocks the next request —
+        which is what let a chat send queue ~40 s behind the startup calls
+        before (investigation #63). Responses are written back under
+        ``_send_lock`` so concurrent workers' frames never interleave, and
+        the client matches them to requests by id.
+        """
         try:
             buf = b""
             while not self._stop.is_set():
@@ -261,17 +294,52 @@ class BridgeServer:
                     raw, buf = buf.split(b"\n", 1)
                     if not raw.strip():
                         continue
-                    response = self._dispatch_line(raw.decode("utf-8"))
-                    # ``None`` means the request was a notification (no
-                    # id) — e.g. a fire-and-forget log. Stay silent so
-                    # the client's reply framing isn't desynced.
-                    if response is not None:
-                        conn.sendall(response.encode("utf-8") + b"\n")
+                    self._submit_request(conn, raw.decode("utf-8"))
         except Exception:
             logger.exception("BridgeServer connection handler failed")
         finally:
             with contextlib.suppress(OSError):
                 conn.close()
+
+    def _submit_request(self, conn: socket.socket, line: str) -> None:
+        """Hand one request line to the dispatch pool (inline if no pool)."""
+        pool = self._dispatch_pool
+        if pool is None:
+            # No pool (e.g. a unit test driving _handle_connection without
+            # start()). Dispatch inline so behaviour is unchanged there.
+            self._process_request(conn, line)
+            return
+        try:
+            # Submit the WHOLE dispatch+respond as the task — do NOT evaluate
+            # the dispatch here, or the slow work would run inline in the
+            # read loop and re-serialise everything.
+            pool.submit(self._process_request, conn, line)
+        except RuntimeError:
+            # Pool already shut down (stop() raced the read loop). Ignore.
+            logger.debug("BridgeServer: dispatch pool closed; dropping request")
+
+    def _process_request(self, conn: socket.socket, line: str) -> None:
+        """Dispatch one request and send its response (runs on a pool worker)."""
+        try:
+            response = self._dispatch_line(line)
+        except Exception:
+            logger.exception("BridgeServer: dispatch worker crashed")
+            return
+        self._respond(conn, response)
+
+    def _respond(self, conn: socket.socket, response: str | None) -> None:
+        """Write one response frame back, serialised against other workers.
+
+        ``None`` means the request was a notification (no id) — stay silent
+        so the client's reply framing isn't desynced.
+        """
+        if response is None:
+            return
+        try:
+            with self._send_lock:
+                conn.sendall(response.encode("utf-8") + b"\n")
+        except OSError:
+            logger.exception("BridgeServer: failed to send response")
 
     def _dispatch_line(self, line: str) -> str | None:
         """Parse one JSON-RPC request, dispatch, return one JSON response.

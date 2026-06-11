@@ -389,6 +389,164 @@ class TestSocketLifecycle:
 
 
 @pytest.mark.unit
+class TestConcurrentDispatch:
+    """A slow request must not block other requests (investigation #63)."""
+
+    def test_slow_request_does_not_block_a_fast_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fast request answers while a slow one is still mid-flight.
+
+        Before the concurrency fix the connection read loop dispatched
+        requests serially, so a 25s proxy_fetch (or a 60s
+        proxy_stream_next) blocked every following request — which made a
+        chat send queue behind the startup calls. Now each request runs on
+        its own pool worker, so the fast one returns immediately.
+        """
+        import threading
+
+        release = threading.Event()
+        slow_entered = threading.Event()
+
+        def _slow(**_kw: Any) -> str:
+            slow_entered.set()
+            release.wait(5.0)
+            return "<slow done>"
+
+        _slow.__name__ = "get_document"
+
+        def _fast(**_kw: Any) -> str:
+            return "<fast done>"
+
+        _fast.__name__ = "get_selection"
+
+        monkeypatch.setattr(
+            "talk2view_writer.tools.all_tools", lambda: [_slow, _fast]
+        )
+
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        try:
+            path = srv.start()
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(5.0)
+            client.connect(path)
+            try:
+                buf = b""
+
+                def read_one() -> dict[str, Any]:
+                    nonlocal buf
+                    deadline = time.time() + 5.0
+                    while b"\n" not in buf and time.time() < deadline:
+                        chunk = client.recv(8192)
+                        if not chunk:
+                            break
+                        buf += chunk
+                    assert b"\n" in buf, f"no response in time (buf={buf!r})"
+                    line, buf = buf.split(b"\n", 1)
+                    parsed: dict[str, Any] = json.loads(line.decode())
+                    return parsed
+
+                # Send the SLOW request (id=1) FIRST, then the FAST one (id=2).
+                for rid, name in ((1, "get_document"), (2, "get_selection")):
+                    client.sendall(
+                        (
+                            json.dumps(
+                                {
+                                    "id": rid,
+                                    "method": "invoke_tool",
+                                    "params": {"name": name, "args": {}},
+                                }
+                            )
+                            + "\n"
+                        ).encode()
+                    )
+                # Wait until the slow handler is actually running + blocked.
+                assert slow_entered.wait(5.0)
+                # The FAST response (id=2) must come back while id=1 is blocked.
+                first = read_one()
+                assert first["id"] == 2, (
+                    f"fast request should answer first while the slow one "
+                    f"blocks, got {first}"
+                )
+                assert first["result"] == "<fast done>"
+                # Release the slow one; its response now arrives too.
+                release.set()
+                second = read_one()
+                assert second["id"] == 1
+                assert second["result"] == "<slow done>"
+            finally:
+                client.close()
+        finally:
+            release.set()
+            srv.stop()
+            if srv._accept_thread is not None:
+                srv._accept_thread.join(timeout=2.0)
+
+    def test_client_and_server_multiplex_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full path: a fast _BridgeClient call answers while a slow one blocks.
+
+        Exercises client multiplexing (reader thread + pending-by-id) and
+        server concurrency (per-request worker) together over a real
+        socket — the complete #63 fix.
+        """
+        import threading
+
+        from talk2view_writer.web_runner import _BridgeClient
+
+        release = threading.Event()
+        slow_entered = threading.Event()
+
+        def _slow(**_kw: Any) -> str:
+            slow_entered.set()
+            release.wait(5.0)
+            return "<slow>"
+
+        _slow.__name__ = "get_document"
+
+        def _fast(**_kw: Any) -> str:
+            return "<fast>"
+
+        _fast.__name__ = "get_selection"
+
+        monkeypatch.setattr(
+            "talk2view_writer.tools.all_tools", lambda: [_slow, _fast]
+        )
+
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        client: _BridgeClient | None = None
+        try:
+            path = srv.start()
+            client = _BridgeClient(path)
+            client.connect()
+
+            results: dict[str, Any] = {}
+
+            def call_slow() -> None:
+                results["slow"] = client.invoke_tool("get_document", {})
+
+            threading.Thread(target=call_slow, daemon=True).start()
+            assert slow_entered.wait(5.0)
+
+            # While the slow call is still blocked server-side, a fast call
+            # from this thread completes and routes back by id.
+            assert client.invoke_tool("get_selection", {}) == "<fast>"
+            assert "slow" not in results  # the slow call is still in flight
+
+            release.set()
+            deadline = time.time() + 5.0
+            while "slow" not in results and time.time() < deadline:
+                time.sleep(0.01)
+            assert results.get("slow") == "<slow>"
+        finally:
+            release.set()
+            srv.stop()
+            if srv._accept_thread is not None:
+                srv._accept_thread.join(timeout=2.0)
+
+
+@pytest.mark.unit
 class TestProxyStream:
     """Streaming proxy: open + drain chunk-by-chunk.
 
