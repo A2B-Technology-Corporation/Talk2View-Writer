@@ -930,10 +930,24 @@ def insert_image(
 
         image = doc.createInstance("com.sun.star.text.TextGraphicObject")
         image.Graphic = graphic
-        if width is not None:
-            image.Width = points_to_hmm(width)
-        if height is not None:
-            image.Height = points_to_hmm(height)
+        # API-inserted graphics do NOT auto-size to the image's native
+        # dimensions the way UI insertion does — with no explicit Width/Height
+        # they render at the default frame size (a near-invisible box). Read
+        # the graphic's native size and fill in any omitted dimension,
+        # preserving aspect ratio when only one is given.
+        native = getattr(graphic, "Size100thMM", None)
+        native_w = int(getattr(native, "Width", 0) or 0)
+        native_h = int(getattr(native, "Height", 0) or 0)
+        width_hmm, height_hmm = _resolve_image_size(
+            native_w,
+            native_h,
+            points_to_hmm(width) if width is not None else None,
+            points_to_hmm(height) if height is not None else None,
+        )
+        if width_hmm is not None:
+            image.Width = width_hmm
+        if height_hmm is not None:
+            image.Height = height_hmm
         text_obj.insertTextContent(cursor, image, False)
     finally:
         if os.path.exists(tmp_path):
@@ -947,6 +961,37 @@ def insert_image(
             "height": height if height is not None else "original",
         }
     )
+
+
+def _resolve_image_size(
+    native_w: int,
+    native_h: int,
+    explicit_w: int | None,
+    explicit_h: int | None,
+) -> tuple[int | None, int | None]:
+    """Resolve the ``(width, height)`` (1/100 mm) to set on an inserted image.
+
+    API-inserted ``TextGraphicObject``s do not auto-size, so an omitted
+    dimension must be filled from the image's native size (``Size100thMM``):
+
+    - both omitted -> the native size (renders at original dimensions);
+    - one omitted -> derived from the other, preserving the native aspect
+      ratio;
+    - both given -> used verbatim.
+
+    When the native size is unknown (``<= 0``), omitted dimensions stay
+    ``None`` so the caller leaves them unset (degrades to prior behaviour).
+    """
+    w, h = explicit_w, explicit_h
+    if (explicit_w is None or explicit_h is None) and native_w > 0 and native_h > 0:
+        if explicit_w is None and explicit_h is None:
+            w, h = native_w, native_h
+        elif explicit_w is None:
+            assert explicit_h is not None
+            w = round(native_w * explicit_h / native_h)
+        else:
+            h = round(native_h * explicit_w / native_w)
+    return w, h
 
 
 def _systempath_to_url(path: str) -> str:

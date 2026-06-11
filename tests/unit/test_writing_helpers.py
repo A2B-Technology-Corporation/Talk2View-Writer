@@ -17,8 +17,33 @@ from talk2view_writer.tools.writing import (
     _cursor_at_empty_paragraph,
     _insert_paragraph_at_cursor,
     _is_uniform_table,
+    _resolve_image_size,
     _systempath_to_url,
 )
+
+
+@pytest.mark.unit
+class TestResolveImageSize:
+    """Omitted image dimensions are filled from the native size."""
+
+    def test_both_omitted_uses_native_size(self) -> None:
+        assert _resolve_image_size(4000, 3000, None, None) == (4000, 3000)
+
+    def test_both_given_used_verbatim(self) -> None:
+        assert _resolve_image_size(4000, 3000, 1000, 800) == (1000, 800)
+
+    def test_width_given_height_derived_from_aspect(self) -> None:
+        # native 4000x3000 (4:3); width 2000 -> height 1500.
+        assert _resolve_image_size(4000, 3000, 2000, None) == (2000, 1500)
+
+    def test_height_given_width_derived_from_aspect(self) -> None:
+        # native 4000x3000; height 1500 -> width 2000.
+        assert _resolve_image_size(4000, 3000, None, 1500) == (2000, 1500)
+
+    def test_unknown_native_size_leaves_omitted_dims_none(self) -> None:
+        # No usable native size -> omitted dims stay None (prior behaviour).
+        assert _resolve_image_size(0, 0, None, None) == (None, None)
+        assert _resolve_image_size(0, 0, 1000, None) == (1000, None)
 
 
 @pytest.mark.unit
