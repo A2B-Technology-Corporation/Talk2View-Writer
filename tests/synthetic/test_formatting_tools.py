@@ -159,6 +159,51 @@ class TestFormatText:
         assert isinstance(result, dict)
 
 
+class TestInlineEscapement:
+    """Superscript/subscript are independent toggles — neither cancels the other.
+
+    Direct helper-level regression: applying the flags sequentially used
+    to let {superscript: true, subscript: false} set superscript and then
+    immediately wipe it via the subscript=false baseline reset.
+    """
+
+    def _cursor(self) -> object:
+        import types
+
+        return types.SimpleNamespace()
+
+    def test_superscript_true_subscript_false_stays_superscript(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"superscript": True, "subscript": False})
+        assert cur.CharEscapement == 33  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 58  # type: ignore[attr-defined]
+
+    def test_subscript_true_superscript_false_stays_subscript(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"subscript": True, "superscript": False})
+        assert cur.CharEscapement == -33  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 58  # type: ignore[attr-defined]
+
+    def test_both_false_resets_to_baseline(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"superscript": False, "subscript": False})
+        assert cur.CharEscapement == 0  # type: ignore[attr-defined]
+        assert cur.CharEscapementHeight == 100  # type: ignore[attr-defined]
+
+    def test_no_escapement_keys_leaves_escapement_untouched(self) -> None:
+        from talk2view_writer.tools.formatting import _apply_inline_formatting
+
+        cur = self._cursor()
+        _apply_inline_formatting(cur, {"bold": True})
+        assert not hasattr(cur, "CharEscapement")
+
+
 class TestFormatParagraph:
     def test_invalid_alignment_returns_error(
         self, patched_extension: object, synthetic_doc: FakeTextDocument

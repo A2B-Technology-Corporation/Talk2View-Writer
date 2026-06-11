@@ -130,17 +130,23 @@ def _apply_inline_formatting(cursor: Any, item: dict[str, Any]) -> None:
     if isinstance(item.get("strikethrough"), bool):
         # com.sun.star.awt.FontStrikeout: NONE=0, SINGLE=1.
         cursor.CharStrikeout = 1 if item["strikethrough"] else 0
-    if isinstance(item.get("superscript"), bool):
-        # CharEscapement: positive int for super, negative for sub.
-        # CharEscapementHeight: percent of normal height (Word default ~58).
-        if item["superscript"]:
+    sup = item.get("superscript")
+    sub = item.get("subscript")
+    if isinstance(sup, bool) or isinstance(sub, bool):
+        # CharEscapement: positive int for super, negative for sub, 0 for
+        # baseline. CharEscapementHeight: percent of normal height (~58).
+        #
+        # Compute the final state from BOTH flags in one pass. Applying them
+        # sequentially (superscript then subscript) meant the very natural
+        # payload {superscript: true, subscript: false} set superscript and
+        # then immediately wiped it via the subscript=false reset. Word
+        # treats the two as independent toggles; validation already rejects
+        # both-true, so a single true wins and we only reset to baseline
+        # when neither is requested true.
+        if sup is True:
             cursor.CharEscapement = 33
             cursor.CharEscapementHeight = 58
-        else:
-            cursor.CharEscapement = 0
-            cursor.CharEscapementHeight = 100
-    if isinstance(item.get("subscript"), bool):
-        if item["subscript"]:
+        elif sub is True:
             cursor.CharEscapement = -33
             cursor.CharEscapementHeight = 58
         else:
