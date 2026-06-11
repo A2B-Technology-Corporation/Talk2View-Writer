@@ -146,27 +146,50 @@ class TestWheelIntegrity:
         with pytest.raises(vw.WheelIntegrityError):
             vw.load_pydantic_core_hashes(empty)
 
+    def test_uv_lock_covers_only_requires_python_tags_not_cp310(self) -> None:
+        """uv.lock (requires-python >= 3.11) covers cp311-313, NOT cp310.
+
+        The MATRIX downloads cp310 too (for LibreOffice on Python 3.10), so
+        those wheels can't be authenticated against uv.lock — they must be
+        skipped, not hard-failed (the bug that broke the v1.0.5 release).
+        """
+        vw = _load_vendor_wheels()
+        covered = vw.covered_python_tags(vw.load_pydantic_core_hashes())
+        assert "cp310" not in covered
+        assert {"cp311", "cp312", "cp313"}.issubset(covered)
+
     def test_verify_wheel_accepts_matching_digest(self, tmp_path: Path) -> None:
         vw = _load_vendor_wheels()
         wheel = tmp_path / "pydantic_core-2.46.4-cp313-cp313-x.whl"
         wheel.write_bytes(b"native-rust-binary")
-        expected = {wheel.name: vw._sha256(wheel)}
-        vw._verify_wheel(wheel, expected)  # must not raise
+        digest = vw._sha256(wheel)
+        assert vw.verify_wheel(wheel, {digest}, {"cp313"}) is True
 
-    def test_verify_wheel_rejects_tampered_content(self, tmp_path: Path) -> None:
+    def test_verify_wheel_rejects_tampered_covered_wheel(self, tmp_path: Path) -> None:
+        # cp313 IS covered by uv.lock but the digest isn't pinned -> tamper.
         vw = _load_vendor_wheels()
         wheel = tmp_path / "pydantic_core-2.46.4-cp313-cp313-x.whl"
         wheel.write_bytes(b"tampered")
-        expected = {wheel.name: "00" * 32}
-        with pytest.raises(vw.WheelIntegrityError, match="SHA-256 mismatch"):
-            vw._verify_wheel(wheel, expected)
+        with pytest.raises(vw.WheelIntegrityError, match="does not match"):
+            vw.verify_wheel(wheel, {"00" * 32}, {"cp313"})
 
-    def test_verify_wheel_rejects_unpinned_filename(self, tmp_path: Path) -> None:
+    def test_verify_wheel_skips_uncovered_python_tag(self, tmp_path: Path) -> None:
+        # cp310 NOT covered by uv.lock -> can't authenticate -> skip (False),
+        # not a hard failure. This is the v1.0.5 release-break regression.
         vw = _load_vendor_wheels()
-        wheel = tmp_path / "pydantic_core-9.9.9-cp99-cp99-x.whl"
-        wheel.write_bytes(b"unknown")
-        with pytest.raises(vw.WheelIntegrityError, match="not pinned"):
-            vw._verify_wheel(wheel, {"some-other.whl": "ab" * 32})
+        wheel = tmp_path / "pydantic_core-2.46.4-cp310-cp310-x.whl"
+        wheel.write_bytes(b"unverifiable")
+        assert vw.verify_wheel(wheel, {"ab" * 32}, {"cp311", "cp312", "cp313"}) is False
+
+    def test_python_tag_extraction(self) -> None:
+        vw = _load_vendor_wheels()
+        assert (
+            vw._python_tag_of(
+                "pydantic_core-2.46.4-cp311-cp311-manylinux_2_17_x86_64."
+                "manylinux2014_x86_64.whl"
+            )
+            == "cp311"
+        )
 
 
 @pytest.mark.unit

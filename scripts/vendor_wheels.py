@@ -173,29 +173,62 @@ def load_pydantic_core_hashes(lock_path: Path = UV_LOCK) -> dict[str, str]:
     )
 
 
-def _verify_wheel(wheel: Path, expected: dict[str, str]) -> None:
-    """Fail closed if ``wheel``'s digest is unknown or mismatched.
+def _python_tag_of(wheel_name: str) -> str:
+    """Extract the CPython tag (``cp311``) from a wheel filename, or ``""``.
+
+    ``pydantic_core-2.46.4-cp311-cp311-manylinux...whl`` -> ``cp311``.
+    """
+    parts = wheel_name.split("-")
+    # name-version-pytag-abitag-plat...whl
+    return parts[2] if len(parts) >= 5 and parts[2].startswith("cp") else ""
+
+
+def covered_python_tags(expected: dict[str, str]) -> set[str]:
+    """Python tags (``cp311``...) that ``uv.lock`` actually pins wheels for.
+
+    The vendor MATRIX is deliberately broader than ``uv.lock``: it targets
+    every Python a supported LibreOffice ships (e.g. cp310), while
+    ``uv.lock`` only pins wheels in the dev project's ``requires-python``
+    range. A wheel whose Python tag is NOT covered here cannot be
+    authenticated against ``uv.lock`` at all.
+    """
+    return {tag for name in expected if (tag := _python_tag_of(name))}
+
+
+def verify_wheel(
+    wheel: Path,
+    pinned_hashes: set[str],
+    covered_tags: set[str],
+) -> bool:
+    """Authenticate one downloaded wheel against ``uv.lock``'s digests.
+
+    Matches by CONTENT (SHA-256 set membership) rather than filename, so a
+    difference in platform-tag normalisation between ``pip`` and ``uv``
+    never causes a false mismatch.
+
+    Returns:
+        ``True`` if the wheel's digest is one ``uv.lock`` pins (authentic).
+        ``False`` if its Python tag is one ``uv.lock`` does not cover (e.g.
+        cp310 when ``requires-python >= 3.11``) — it cannot be verified and
+        is reported as such by the caller (trust-on-download, like pyobjc).
 
     Raises:
-        WheelIntegrityError: The wheel filename is absent from the pinned
-            set, or its SHA-256 does not match. Either case means the
-            artifact is not the one ``uv.lock`` authenticates — a possible
-            compromised mirror, account takeover, or MITM — so the build
-            must stop rather than ship unverified native code.
+        WheelIntegrityError: The wheel's Python tag IS covered by
+            ``uv.lock`` but its digest is not pinned — a genuine integrity
+            failure (compromised mirror, account takeover, MITM, or a stale
+            lock), so the build must stop.
     """
-    want = expected.get(wheel.name)
-    if want is None:
+    digest = _sha256(wheel)
+    if digest in pinned_hashes:
+        return True
+    py_tag = _python_tag_of(wheel.name)
+    if py_tag and py_tag in covered_tags:
         raise WheelIntegrityError(
-            f"{wheel.name} is not pinned in uv.lock — refusing to vendor an "
-            "unauthenticated wheel. Run `uv lock` if pydantic-core changed."
+            f"SHA-256 of {wheel.name} ({digest}) is not among the pydantic-core "
+            f"digests uv.lock pins for {py_tag}. The downloaded wheel does not "
+            "match uv.lock — aborting. Run `uv lock` if pydantic-core changed."
         )
-    got = _sha256(wheel)
-    if got != want:
-        raise WheelIntegrityError(
-            f"SHA-256 mismatch for {wheel.name}:\n"
-            f"  expected {want}\n  got      {got}\n"
-            "The downloaded wheel does not match uv.lock. Aborting."
-        )
+    return False
 
 
 def _short_python_tag(py_tag: str) -> str:
@@ -379,15 +412,25 @@ def main() -> int:
         shutil.rmtree(EXTRACTED_DIR)
 
     # Authenticate every pydantic-core wheel against the SHA-256 digests
-    # uv.lock already pins, BEFORE extracting any native code. A mismatch
-    # (compromised mirror, account takeover, MITM) aborts the whole build.
+    # uv.lock pins, BEFORE extracting any native code. A wheel whose Python
+    # tag uv.lock covers but whose digest is not pinned aborts the build
+    # (compromised mirror, account takeover, MITM, or stale lock). The
+    # MATRIX is broader than uv.lock — it targets every Python a supported
+    # LibreOffice ships (e.g. cp310), while uv.lock only pins the dev
+    # requires-python range — so wheels for an uncovered Python tag cannot
+    # be authenticated and are reported as unverified (trust-on-download,
+    # like the pyobjc wheels).
     expected_hashes = load_pydantic_core_hashes()
+    pinned_hashes = set(expected_hashes.values())
+    covered_tags = covered_python_tags(expected_hashes)
     print(
         f"Vendoring pydantic-core {PYDANTIC_CORE_VERSION} for {len(MATRIX)} "
-        f"targets (verifying against {len(expected_hashes)} pinned hashes)"
+        f"targets (verifying against {len(pinned_hashes)} pinned hashes; "
+        f"uv.lock covers {', '.join(sorted(covered_tags))})"
     )
     successes: list[str] = []
     misses: list[str] = []
+    unverified: list[str] = []
     for py_tag, abi_tag, plat_tag, our_plat_tag in MATRIX:
         target = f"{py_tag}-{our_plat_tag}"
         print(f"\n[{target}]")
@@ -395,8 +438,14 @@ def main() -> int:
         if wheel is None:
             misses.append(target)
             continue
-        _verify_wheel(wheel, expected_hashes)
-        print(f"    verified sha256 ({wheel.name})")
+        if verify_wheel(wheel, pinned_hashes, covered_tags):
+            print(f"    verified sha256 ({wheel.name})")
+        else:
+            unverified.append(target)
+            print(
+                f"    WARNING: {wheel.name} not pinned in uv.lock "
+                f"({py_tag} is outside requires-python) — extracted UNVERIFIED"
+            )
         dest = EXTRACTED_DIR / target
         if dest.exists():
             shutil.rmtree(dest)
@@ -410,6 +459,11 @@ def main() -> int:
     print(f"Vendored pydantic_core: {len(successes)} of {len(MATRIX)} targets.")
     macos_rows = sum(1 for _, _, _, plat in MATRIX if plat.startswith("macosx_"))
     print(f"Vendored pyobjc:        {len(pyobjc_successes)} of {macos_rows} macOS rows.")
+    if unverified:
+        print(
+            f"  UNVERIFIED (not in uv.lock — outside requires-python): "
+            f"{', '.join(unverified)}"
+        )
     if misses:
         print(f"  Missed: {', '.join(misses)}")
         print("  Investigate via `pip index versions <package>` for each tag.")
