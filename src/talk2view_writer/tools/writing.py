@@ -1313,26 +1313,57 @@ def _deletion_outcome(doc: Any, count_before: int) -> dict[str, Any]:
             "tracked_change": False,
             "warning": "Paragraph indices have shifted. Call get_document for updated indices.",
         }
+    # Count is unchanged. That happens in TWO different situations and we
+    # must not conflate them: (a) redlining is on, so the deletion landed as
+    # a tracked change and the struck-through paragraph still enumerates; or
+    # (b) redlining is off but the paragraph could only be EMPTIED, not
+    # removed, because its trailing break can't be swallowed (it is the last
+    # paragraph, or a table immediately follows it). Read the document's
+    # actual RecordChanges state to tell them apart rather than inferring a
+    # tracked change purely from the unchanged count.
+    record_changes = False
+    try:
+        record_changes = bool(doc.getPropertyValue("RecordChanges"))
+    except Exception:
+        logger.exception("Could not read RecordChanges; reporting no redline")
+    if record_changes:
+        return {
+            "tracked_change": True,
+            "hint": (
+                "Deletion recorded as a tracked change (track changes is on); the "
+                "struck-through paragraph(s) still enumerate at the same indices "
+                "until the user accepts the change. Indices have NOT shifted."
+            ),
+        }
     return {
-        "tracked_change": True,
-        "hint": (
-            "Deletion recorded as a tracked change (track changes is on); the "
-            "struck-through paragraph(s) still enumerate at the same indices "
-            "until the user accepts the change. Indices have NOT shifted."
+        "tracked_change": False,
+        "warning": (
+            "The paragraph text was removed but an empty paragraph node "
+            "remains (it is the last paragraph, or a table immediately "
+            "follows it, so its trailing break could not be deleted). Call "
+            "get_document to verify and remove the stray empty paragraph if "
+            "needed."
         ),
     }
 
 
 def _delete_paragraph(text_obj: Any, para: Any) -> None:
-    """Remove a single paragraph and its trailing paragraph break."""
+    """Remove a single paragraph and its trailing paragraph break.
+
+    Extends the selection right by one to swallow the trailing paragraph
+    break so the whole node is removed, not just emptied. For the LAST
+    paragraph — or one immediately followed by a table, which a text
+    cursor cannot cross — ``goRight`` returns ``False`` and the break
+    stays, so ``setString("")`` empties the paragraph but leaves the node.
+    :func:`_deletion_outcome` reports that case accurately.
+    """
     cursor = text_obj.createTextCursorByRange(para.getStart())
     cursor.gotoEndOfParagraph(True)
-    # Extend selection by one character to swallow the paragraph break,
-    # unless we're at the very end of the document.
-    try:
-        cursor.goRight(1, True)
-    except Exception:
-        logger.debug("goRight at end of doc; deleting paragraph in place")
+    # goRight returns a bool — it does NOT raise at the document end — so the
+    # previous try/except was dead code (and a broad catch the policy
+    # forbids). A False return just means the trailing break can't be
+    # swallowed here; setString below still empties the paragraph.
+    cursor.goRight(1, True)
     cursor.setString("")
 
 

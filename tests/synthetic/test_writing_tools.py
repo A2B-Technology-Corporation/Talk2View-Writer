@@ -206,6 +206,9 @@ class TestDeleteContent:
         synthetic_doc._text._paragraphs.extend(
             [FakeParagraph("a"), FakeParagraph("b"), FakeParagraph("c")]
         )
+        # Redlining is ON — this is what makes an unchanged count a genuine
+        # tracked deletion rather than a stray empty paragraph.
+        synthetic_doc.setPropertyValue("RecordChanges", True)
 
         # Model a tracked deletion: LibreOffice records a redline but the
         # paragraph keeps enumerating until accepted, so the deletion call
@@ -225,6 +228,52 @@ class TestDeleteContent:
         # Count is genuinely unchanged — the paragraph still enumerates.
         assert len(synthetic_doc._text._paragraphs) == 3
 
+    def test_emptied_node_with_redlining_off_is_not_a_tracked_change(
+        self,
+        patched_extension: object,
+        synthetic_doc: FakeTextDocument,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: object,
+    ) -> None:
+        """Count unchanged + redlining OFF == emptied last paragraph, not a redline.
+
+        Previously delete_content inferred a tracked change purely from the
+        unchanged count, so deleting the last paragraph (whose trailing
+        break can't be swallowed) falsely reported a pending tracked change
+        even with track changes off.
+        """
+        import talk2view_writer.preferences as prefs_mod
+        from talk2view_writer.preferences import (
+            PREF_AI_TRACK_CHANGES,
+            Preferences,
+            get_preferences,
+        )
+        from talk2view_writer.tools import writing
+
+        # Disable the AI track-changes envelope so it does not force
+        # RecordChanges=True for the call — model a user with redlining off.
+        monkeypatch.setattr(
+            prefs_mod, "_INSTANCE", Preferences(tmp_path / "preferences.json")  # type: ignore[operator]
+        )
+        get_preferences().set(PREF_AI_TRACK_CHANGES, False)
+
+        synthetic_doc._text._paragraphs.clear()
+        synthetic_doc._text._paragraphs.extend(
+            [FakeParagraph("a"), FakeParagraph("b")]
+        )
+        synthetic_doc.setPropertyValue("RecordChanges", False)
+
+        # Model the last-paragraph case: text emptied, node remains.
+        def _empty_in_place(text_obj: object, para: object) -> None:
+            return None
+
+        monkeypatch.setattr(writing, "_delete_paragraph", _empty_in_place)
+
+        result = json.loads(writing.delete_content(paragraph_index=1))
+        assert result["tracked_change"] is False
+        assert "hint" not in result
+        assert "empty paragraph node remains" in result["warning"].lower()
+
     def test_range_tracked_deletion_reports_pending_acceptance(
         self,
         patched_extension: object,
@@ -238,6 +287,8 @@ class TestDeleteContent:
         synthetic_doc._text._paragraphs.extend(
             FakeParagraph(f"para {i}") for i in range(5)
         )
+
+        synthetic_doc.setPropertyValue("RecordChanges", True)
 
         def _tracked_delete(text_obj: object, para: object) -> None:
             return None
