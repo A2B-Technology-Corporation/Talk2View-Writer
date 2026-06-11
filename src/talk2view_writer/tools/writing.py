@@ -56,6 +56,20 @@ _ALIGNMENT_MAP = {
     "justified": 2,
 }
 
+# Accepted ``location`` values for insert_content. The JSON-schema enum was
+# dropped (Writer #5), so the handler validates these itself; an unknown
+# value must be rejected up front, not silently treated as "append at end".
+_VALID_LOCATIONS = frozenset(
+    {
+        "start",
+        "end",
+        "before_paragraph",
+        "after_paragraph",
+        "after_selection",
+        "replace_selection",
+    }
+)
+
 
 def _enumerate_paragraphs(doc: Any) -> list[Any]:
     """Return the top-level paragraphs in document order."""
@@ -292,8 +306,11 @@ def insert_content(
         ValueError: For schema violations (empty inputs, mutually
             exclusive args set together, etc.).
     """
-    # Case-insensitive enum arg (schema enum dropped — see Writer #5).
+    # Case-insensitive enum args (schema enum dropped — see Writer #5).
+    # lower_enum so a Title-cased value the model emits ("Center", "Start")
+    # validates and resolves; the schema no longer constrains these.
     location = lower_enum(location)
+    alignment = lower_enum(alignment)
 
     # Fold a LibreOffice display name the model may have echoed back from
     # get_document (e.g. "Text body", "Heading 2") to its canonical Word name
@@ -327,6 +344,39 @@ def insert_content(
                 ),
             }
         )
+    # Validate the location enum up front (the JSON-schema enum was dropped,
+    # Writer #5). Without this an unrecognised value silently falls through
+    # to "append at end" in _resolve_insertion_cursor and the success result
+    # echoes the bogus location back as if honoured.
+    if location is not None and location not in _VALID_LOCATIONS:
+        return json.dumps(
+            {
+                "error": f"Unknown location '{location}'.",
+                "recovery": f"Use one of: {', '.join(sorted(_VALID_LOCATIONS))}.",
+            }
+        )
+    # Validate alignment BEFORE any mutation — _apply_paragraph_format does a
+    # direct _ALIGNMENT_MAP[alignment] lookup, so an unvalidated bad value
+    # would KeyError only AFTER the paragraphs were inserted, surfacing as a
+    # raw exception and prompting a retry that duplicates the content.
+    if alignment is not None and alignment not in _ALIGNMENT_MAP:
+        return json.dumps(
+            {
+                "error": f"Invalid alignment '{alignment}'.",
+                "recovery": "Use one of: left, center, right, justified.",
+            }
+        )
+    # Validate the top-level style whenever provided — not only in the
+    # single-text branch below. In blocks mode it is the fallback style for
+    # blocks that don't set their own (items = ... b.get("style") or style),
+    # and an unvalidated bad name flows straight to the ParaStyleName write.
+    if style and style not in VALID_STYLES:
+        return json.dumps(
+            {
+                "error": f'Unknown style "{style}".',
+                "recovery": f"Use one of: {', '.join(VALID_STYLES)}.",
+            }
+        )
     if target_query is not None:
         if not target_query.strip():
             return json.dumps(
@@ -356,21 +406,13 @@ def insert_content(
                 ),
             }
         )
-    if text is not None:
-        if not text.strip():
-            return json.dumps(
-                {
-                    "error": "text parameter is empty.",
-                    "recovery": "Provide the text content you want to insert.",
-                }
-            )
-        if style and style not in VALID_STYLES:
-            return json.dumps(
-                {
-                    "error": f'Unknown style "{style}".',
-                    "recovery": f"Use one of: {', '.join(VALID_STYLES)}.",
-                }
-            )
+    if text is not None and not text.strip():
+        return json.dumps(
+            {
+                "error": "text parameter is empty.",
+                "recovery": "Provide the text content you want to insert.",
+            }
+        )
     if blocks is not None:
         if not blocks:
             return json.dumps(
@@ -592,7 +634,11 @@ def _resolve_insertion_cursor(
 
     if location in ("before_paragraph", "after_paragraph"):
         paragraphs = _enumerate_paragraphs(doc)
-        if paragraph_index is None or paragraph_index >= len(paragraphs):
+        if (
+            paragraph_index is None
+            or paragraph_index < 0
+            or paragraph_index >= len(paragraphs)
+        ):
             return None, json.dumps(
                 {
                     "error": (

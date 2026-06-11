@@ -226,6 +226,80 @@ class TestDeleteContent:
 # ---------------------------------------------------------------------------
 
 
+class TestInsertContentValidation:
+    """insert_content must reject bad args BEFORE mutating the document.
+
+    Each of these used to either raise a raw exception after the content
+    was already inserted (alignment), silently place content at the wrong
+    spot (unknown location, negative index), or skip validation of the
+    blocks-mode fallback style.
+    """
+
+    def _para_count(self, doc: FakeTextDocument) -> int:
+        return len(doc._text._paragraphs)
+
+    def test_bad_alignment_returns_error_without_mutating(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(
+            insert_content(text="Body", location="end", alignment="middle")
+        )
+        assert "error" in result
+        assert "alignment" in result["error"].lower()
+        # No paragraph was inserted — validation ran before mutation.
+        assert self._para_count(synthetic_doc) == before
+
+    def test_titlecased_alignment_is_accepted(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(text="Centered", location="end", alignment="Center")
+        )
+        assert result.get("success") is True
+
+    def test_unknown_location_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(insert_content(text="Disclaimer", location="top"))
+        assert "error" in result
+        assert "location" in result["error"].lower()
+        assert self._para_count(synthetic_doc) == before
+
+    def test_negative_paragraph_index_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        result = json.loads(
+            insert_content(
+                text="Appendix", location="before_paragraph", paragraph_index=-1
+            )
+        )
+        assert "error" in result
+        assert "paragraph_index" in result["error"]
+
+    def test_blocks_mode_bad_fallback_style_returns_error(
+        self, patched_extension: object, synthetic_doc: FakeTextDocument
+    ) -> None:
+        from talk2view_writer.tools.writing import insert_content
+
+        before = self._para_count(synthetic_doc)
+        result = json.loads(
+            insert_content(blocks=["Methods"], style="BogusStyle", location="end")
+        )
+        assert "error" in result
+        assert "style" in result["error"].lower()
+        assert self._para_count(synthetic_doc) == before
+
+
 class TestInsertContent:
     def test_insert_with_text_does_not_raise(
         self, patched_extension: object, synthetic_doc: FakeTextDocument
