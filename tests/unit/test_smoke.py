@@ -10,7 +10,7 @@ def test_package_imports() -> None:
     """The top-level package and version constant are reachable."""
     import talk2view_writer
 
-    assert talk2view_writer.__version__ == "1.0.4"
+    assert talk2view_writer.__version__ == "1.0.5"
 
 
 @pytest.mark.unit

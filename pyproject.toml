@@ -1,6 +1,6 @@
 [project]
 name = "talk2view-writer"
-version = "1.0.4"
+version = "1.0.5"
 description = "Talk2View AI document assistant for LibreOffice Writer"
 authors = [
     { name = "A2B Technology Corporation Pty Ltd", email = "support@talk2view.com" }
