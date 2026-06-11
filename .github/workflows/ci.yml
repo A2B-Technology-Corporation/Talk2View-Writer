@@ -836,36 +836,55 @@ jobs:
               >soffice.stdout.log 2>soffice.stderr.log &
           uv run python scripts/wait_for_soffice.py --timeout 60
 
-      - name: Run live Playwright specs
+      # The live specs split into two classes with very different
+      # reliability, so they run as two steps (investigations #65):
+      #
+      #   - DETERMINISTIC (this step): live-bridge-smoke + live-pywebview-shim
+      #     drive the real soffice + bridge + extension chain with NO real-
+      #     engine dependency. Reproducible — a failure is a genuine
+      #     regression, so this step is blocking.
+      #   - NON-DETERMINISTIC (next step): live-scenarios drives YAML
+      #     scenarios through the REAL cloud engine, whose LLM output varies
+      #     run-to-run. Advisory only — see below.
+      #
+      # --workers=1: the Python BridgeServer accepts a single connection at a
+      # time (bridge_server.py self._sock.listen(1)); parallel tests fight
+      # over the socket and hang. Serial execution removes that flake class.
+      - name: Run live bridge/shim smoke specs (blocking)
         env:
           DISPLAY: ':99'
           T2V_E2E_LIVE_SOFFICE_PORT: '2002'
           T2V_E2E_PYTHON: /usr/bin/python3
-          # Real engine credentials. live-penguin-story.spec.ts skips
-          # cleanly when either is missing (e.g. PRs from forks that
-          # can't read repo secrets). Required for the scenario test;
-          # the bridge-smoke spec doesn't need them.
+        run: npx playwright test tests/e2e/specs/live-bridge-smoke tests/e2e/specs/live-pywebview-shim --workers=1
+
+      # ADVISORY — engine non-determinism (investigations #65). These
+      # scenarios assert document/tool-call behaviour against the real cloud
+      # engine, whose LLM picks different (but often equally valid) paragraph
+      # counts and tool-call sequences for the same prompt. Gating on exact
+      # behaviour against a non-deterministic dependency made the whole Live
+      # E2E job perpetually, randomly red, which buried the signal of the
+      # deterministic smoke step above. continue-on-error keeps engine drift
+      # OFF the merge signal while STILL running the scenarios and uploading
+      # their artifacts + scenario-failure annotations, so drift (and any
+      # genuine Platform regression) stays visible for review. Writer-side
+      # regressions still surface in the blocking smoke step + the
+      # Integration matrix.
+      #
+      # --max-failures=3: a BROKEN engine (e.g. zero tool calls, Platform
+      # #73) makes every scenario burn its ~120s-per-step soft-waits,
+      # ballooning the run to ~45min-1.7h. Bailing after 3 caps that at
+      # ~10-13min instead of grinding through all 11 scenarios.
+      - name: Run live engine scenarios (advisory — engine non-determinism, #65)
+        continue-on-error: true
+        env:
+          DISPLAY: ':99'
+          T2V_E2E_LIVE_SOFFICE_PORT: '2002'
+          T2V_E2E_PYTHON: /usr/bin/python3
+          # Real engine credentials. live-scenarios skips cleanly when
+          # either is missing (e.g. PRs from forks that can't read secrets).
           T2V_TEST_USER_EMAIL: ${{ secrets.T2V_TEST_USER_EMAIL }}
           T2V_TEST_USER_PASSWORD: ${{ secrets.T2V_TEST_USER_PASSWORD }}
-        # Restrict to the live-* specs. The mock-engine specs are
-        # already covered in the e2e job; running them again here
-        # would just duplicate work.
-        #
-        # --workers=1: the Python BridgeServer accepts a single
-        # connection at a time (bridge_server.py line ~105:
-        # self._sock.listen(1)). Two parallel tests fight over the
-        # socket and one of them hangs. Serial execution makes the
-        # whole suite ~3-4 minutes instead of ~2 but eliminates the
-        # bridge-contention class of flake entirely.
-        #
-        # --max-failures=3: fail-fast. A healthy suite passes (or has a
-        # stray flake) in ~3-4 min. A BROKEN engine — e.g. one returning
-        # zero tool calls (Platform #73) — makes every scenario burn its
-        # ~120s-per-step soft-waits, ballooning the run to ~45min-1.7h.
-        # Bailing after 3 failures caps a broken engine at ~10-13min
-        # instead of grinding through all 11 scenarios. Live E2E is a
-        # non-required job, so stopping early loses no merge signal.
-        run: npx playwright test tests/e2e/specs/live- --workers=1 --max-failures=3
+        run: npx playwright test tests/e2e/specs/live-scenarios --workers=1 --max-failures=3
 
       # Always grab diagnostic logs so a CI failure has the soffice
       # state, the bridge log, and the per-step Xvfb screenshots

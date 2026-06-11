@@ -53,7 +53,10 @@ steps:
         - frosty
         - title
       doc:
-        exact_paragraphs: 4
+        # min, not exact: the engine may write a longer story (extra body
+        # paragraphs) — valid LLM variance. The style/text assertions below
+        # still catch real regressions (investigations #65).
+        min_paragraphs: 4
         any_text_contains:
           - penguin
         paragraph_style_at:
@@ -88,7 +91,9 @@ steps:
         - format
         - center
       doc:
-        exact_paragraphs: 4
+        # min, not exact — step_01 may have produced more body paragraphs,
+        # and re-formatting the title doesn't change the count (#65).
+        min_paragraphs: 4
         paragraph_style_at:
           # Title is now Heading1 (the canonical LO style name).
           - { index: 0, style_in: ["Heading1", "Heading 1"] }
@@ -108,12 +113,16 @@ steps:
         - paragraph
         - end
       doc:
-        exact_paragraphs: 5
+        # min, not exact: the model legitimately writes a multi-paragraph
+        # conclusion (observed 3 paras -> 7 total) — valid variance (#65).
+        min_paragraphs: 5
         paragraph_style_at:
           - { index: 4, style_in: ["Normal", "Standard", "Text body"] }
       tool_calls:
         must_invoke:
           - insert_content
-        # Observed-stable: 1 call (insert_content with location=end).
-        max_count: 2
+        # A benign extra read-only get_document pushes this past 1; cap at
+        # 4 for headroom (the duplicate guard still catches Platform #62
+        # loops) (investigations #65).
+        max_count: 4
         no_duplicate_with: insert_content
