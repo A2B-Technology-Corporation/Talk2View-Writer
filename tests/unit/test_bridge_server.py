@@ -678,7 +678,10 @@ class TestProxyStream:
             )
         )
         assert first["result"]["type"] == "error"
-        assert "connection refused" in first["result"]["message"]
+        # A ConnectError maps to the friendly, user-facing message rather than
+        # the raw "connection refused" httpx text (see _friendly_network_error).
+        assert "internet connection" in first["result"]["message"].lower()
+        assert "connection refused" not in first["result"]["message"]
         # A consumer that keeps polling after the error gets 'unknown
         # stream', confirming the registry was cleaned up on 'error'.
         second = json.loads(

@@ -2337,3 +2337,39 @@ now yields `[('My Story', 'Title'), ('Once upon a time', 'Standard')]`.
 faithful (split at the cursor) so this class of regression is catchable
 in-process, and add real-soffice integration tests for insert_content anchors
 (tests/integration/test_writing.py, still unwritten).
+
+## #63 — Cryptic chat errors + ~60s wait on a bad/offline connection (PARTIALLY FIXED 2026-06-11)
+
+**What:** On a flaky/offline connection a chat send showed a generic
+"Request failed" after a long delay. Two issues:
+
+1. **Unfriendly message (FIXED):** the bridge's proxy returned an empty body
+   with status 0 on an httpx network error; the SDK's fetchWithAuth reads
+   `body.error.message` and, finding nothing, fell back to "Request failed".
+   Fixed by mapping httpx network exceptions to plain language
+   (`_friendly_network_error`) and returning an engine-shaped error envelope
+   (`{"error": {"message": ..., "type": "network"}}`, status 503) the SDK
+   surfaces verbatim — for both the non-streaming proxy_fetch and the
+   streaming proxy path (bridge.ts `_proxyStream` returns the envelope rather
+   than throwing).
+
+2. **Long delay (NOT fixed):** each failed request took 20–25s, and the
+   user's message waited another ~40s behind the single-bridge-lock
+   serialization of the startup calls (tools/register, config, GitHub update
+   check). Total ~60s before the error surfaced.
+
+**Where:** `bridge_server.py::_proxy_fetch` / `_proxy_stream_open`;
+`web_runner._BridgeClient` (single `_call_lock`); `bridge.ts::_proxyStream`.
+
+**Why the delay is hard:** the 20–25s is `getaddrinfo` (DNS) retrying on a
+bad connection — httpx's `connect=10s` timeout does not bound DNS resolution
+on the sync transport. The serialization then compounds it: a real chat send
+queues behind the slow startup requests on the single bridge connection.
+
+**Next step:** (a) bound DNS — resolve on a thread with a hard deadline, or
+move proxy_fetch to an async/threaded httpx so the connect timeout actually
+caps total time; (b) reduce head-of-line blocking — let the user's message
+request not wait behind non-critical startup calls (separate lane, or make
+tools/register + config + update-check fire-and-forget with their own short
+timeout); (c) optional `navigator.onLine` fast-fail in bridge.ts (unreliable
+in WebKitGTK, so only as a hint).

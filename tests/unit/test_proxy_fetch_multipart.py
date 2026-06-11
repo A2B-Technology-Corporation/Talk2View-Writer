@@ -153,3 +153,75 @@ class TestProxyFetchMultipart:
         assert "files" not in captured
         # Ordinary requests keep their content-type.
         assert captured["headers"].get("Content-Type") == "application/json"
+
+
+class _RaisingClient:
+    """httpx.Client whose request() raises a given exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def __enter__(self) -> _RaisingClient:
+        return self
+
+    def __exit__(self, *_a: Any) -> None:
+        return None
+
+    def request(self, **_kwargs: Any) -> Any:
+        raise self._exc
+
+
+@pytest.mark.unit
+class TestFriendlyNetworkErrors:
+    """Network failures surface a clear, actionable message to the user.
+
+    On a bad connection the SDK otherwise shows a generic "Request failed".
+    The bridge returns an engine-shaped error envelope carrying plain
+    language so the SDK surfaces it verbatim.
+    """
+
+    def test_friendly_message_maps_connect_error_to_internet_hint(self) -> None:
+        import httpx
+
+        from talk2view_writer.bridge_server import _friendly_network_error
+
+        msg = _friendly_network_error(
+            httpx.ConnectError("[Errno -2] Name or service not known")
+        )
+        assert "internet connection" in msg.lower()
+        # The raw errno text never reaches the user.
+        assert "errno" not in msg.lower()
+
+    def test_friendly_message_maps_read_timeout_to_slow_hint(self) -> None:
+        import httpx
+
+        from talk2view_writer.bridge_server import _friendly_network_error
+
+        msg = _friendly_network_error(httpx.ReadTimeout("timed out"))
+        assert "too long" in msg.lower()
+
+    def test_proxy_fetch_returns_error_envelope_on_connect_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import httpx
+
+        monkeypatch.setattr(
+            httpx,
+            "Client",
+            lambda *_a, **_k: _RaisingClient(
+                httpx.ConnectError("[Errno -2] Name or service not known")
+            ),
+        )
+        srv = BridgeServer(ctx=MagicMock(name="ctx"))
+        result = srv._proxy_fetch(
+            "https://engine.talk2view.com/v1/config", "GET", {}, None
+        )
+        # Non-ok status with a JSON error envelope the SDK reads
+        # (body.error.message), not an empty body that yields "Request failed".
+        assert result["status"] >= 400
+        assert result["headers"].get("content-type") == "application/json"
+        body = json.loads(result["body"])
+        assert "internet connection" in body["error"]["message"].lower()
+        assert body["error"]["type"] == "network"
+        # The raw httpx text is not exposed in the body.
+        assert "errno" not in result["body"].lower()

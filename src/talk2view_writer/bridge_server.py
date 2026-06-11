@@ -642,15 +642,22 @@ class BridgeServer:
                 )
         except httpx.RequestError as exc:
             logger.exception(
-                "proxy_fetch: %s %s raised — synthesising 0 status",
+                "proxy_fetch: %s %s failed — returning a friendly network error",
                 method,
                 url,
             )
+            friendly = _friendly_network_error(exc)
+            # Return an engine-shaped error envelope (``{"error": {...}}``) so
+            # the SDK surfaces our clear, actionable message to the user
+            # instead of its generic "Request failed" fallback (which is what
+            # an empty body produced). 503 = "service unavailable".
             return {
-                "status": 0,
-                "statusText": f"{type(exc).__name__}: {exc}",
-                "headers": {},
-                "body": "",
+                "status": 503,
+                "statusText": friendly,
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps(
+                    {"error": {"message": friendly, "type": "network"}}
+                ),
             }
 
         logger.info(
@@ -779,7 +786,17 @@ class BridgeServer:
                 logger.exception(
                     "proxy_stream_open worker raised for %s %s", method, url
                 )
-                q.put({"type": "error", "message": f"{type(exc).__name__}: {exc}"})
+                # Friendly message for network failures (bad connection /
+                # offline / engine timeout); fall back to the raw error for
+                # anything unexpected so it stays diagnosable. ``httpx`` is the
+                # enclosing function's import — do NOT re-import here or it
+                # becomes a function-local and shadows the worker's use above.
+                message = (
+                    _friendly_network_error(exc)
+                    if isinstance(exc, httpx.HTTPError)
+                    else f"{type(exc).__name__}: {exc}"
+                )
+                q.put({"type": "error", "message": message})
             finally:
                 log_timing(
                     logger,
@@ -913,6 +930,38 @@ class BridgeServer:
         if tool is None:
             raise KeyError(f"tool {name!r} not registered")
         return tool
+
+
+def _friendly_network_error(exc: Exception) -> str:
+    """Map an httpx network exception to a clear, actionable user message.
+
+    The raw httpx errors ("ConnectError: [Errno -2] Name or service not
+    known", "ReadTimeout") are meaningless to a clinician on a flaky
+    connection. Translate the common cases into plain language that tells
+    them what happened and what to do.
+    """
+    import httpx
+
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)):
+        return (
+            "Talk2View took too long to respond. Your connection may be slow — "
+            "please try again."
+        )
+    if isinstance(exc, httpx.ConnectTimeout):
+        return (
+            "Couldn't reach Talk2View — the connection timed out. Please check "
+            "your internet connection and try again."
+        )
+    if isinstance(exc, httpx.ConnectError):
+        return (
+            "Couldn't reach Talk2View. Please check your internet connection "
+            "and try again."
+        )
+    # Any other transport-level failure (proxy, protocol, etc.).
+    return (
+        "Couldn't reach Talk2View because of a network problem. Please check "
+        "your internet connection and try again."
+    )
 
 
 def _truncate(value: Any, limit: int = 240) -> str:

@@ -74,7 +74,7 @@ test.describe('streaming error does not hang', () => {
         'https://engine.talk2view.com/v1/sessions/x/messages',
         { method: 'POST', headers: { Accept: 'text/event-stream' }, body: '{}' },
       )
-        .then(() => 'resolved')
+        .then(async (resp) => `resolved:${resp.status}:${await resp.text()}`)
         .catch((e: unknown) => `rejected:${(e as Error).message}`);
       const timeout = new Promise<string>((r) =>
         setTimeout(() => r('TIMEOUT'), 4000),
@@ -84,7 +84,9 @@ test.describe('streaming error does not hang', () => {
 
     // Under the old drain loop this would never settle -> TIMEOUT.
     expect(outcome).not.toBe('TIMEOUT');
-    expect(outcome).toContain('rejected');
+    // The stream error now resolves to an engine-shaped error envelope (503)
+    // the SDK surfaces verbatim — not a thrown "Bridge stream error".
+    expect(outcome).toContain('resolved:503');
     expect(outcome).toContain('engine boom');
   });
 });

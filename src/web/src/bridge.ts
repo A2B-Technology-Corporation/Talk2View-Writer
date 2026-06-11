@@ -407,8 +407,21 @@ export function installHostLogging(): void {
       // (bridge_server.py). So once we've received 'error', every further
       // poll hits the unknown-stream branch and returns another 'error',
       // never 'done' — a former drain loop spun forever, one socket
-      // round-trip per iteration, and the chat hung. Just surface it.
-      throw new Error(`Bridge stream error: ${first.message}`);
+      // round-trip per iteration, and the chat hung.
+      //
+      // Surface the error as an engine-shaped envelope so the SDK's
+      // fetchWithAuth reads body.error.message and shows our friendly
+      // message (e.g. "Couldn't reach Talk2View...") rather than a generic
+      // "Request failed". The bridge already maps network failures to plain
+      // language (_friendly_network_error).
+      return new Response(
+        JSON.stringify({ error: { message: first.message, type: 'network' } }),
+        {
+          status: 503,
+          statusText: 'Bridge stream error',
+          headers: { 'content-type': 'application/json' },
+        },
+      );
     }
     if (first.type === 'done') {
       logToHost(
