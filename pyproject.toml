@@ -123,7 +123,19 @@ strict_optional = true
 [[tool.mypy.overrides]]
 # gi.* = PyGObject (used only inside the pywebview subprocess for GTK
 # window identity / transient-for, ADR-0039); it ships no type stubs.
-module = ["uno.*", "unohelper.*", "com.sun.star.*", "talk2view.*", "gi.*"]
+# objc.* / AppKit.* = pyobjc (bundled for macOS, ADR-0038/0042); no
+# py.typed marker, and on macOS dev machines pywebview installs it into
+# the venv so the error code flips from import-not-found to
+# import-untyped — the override silences both.
+module = [
+    "uno.*",
+    "unohelper.*",
+    "com.sun.star.*",
+    "talk2view.*",
+    "gi.*",
+    "objc.*",
+    "AppKit.*",
+]
 ignore_missing_imports = true
 
 [tool.bandit]

@@ -557,6 +557,7 @@ def main() -> None:
     # so exactly one applies per OS and the others are no-ops (ADR-0041).
     _patch_webkitgtk_media_permission()  # Linux / WebKitGTK
     _patch_cocoa_media_permission()  # macOS / WKWebView
+    _patch_cocoa_window_level()  # macOS: keep IME candidates above the panel
     _patch_edgechromium_media_permission()  # Windows / WebView2
     # Companion-window integration (ADR-0039): brand the GTK process as
     # "Talk2View" and (X11 only) make the window transient-for LO. Both
@@ -713,6 +714,9 @@ def _window_geometry(
         edge-snap work everywhere; a frameless panel + client-side drag
         strip is the v2 follow-up.
       * on_top: ``True`` so it floats over the document like a docked deck.
+        On macOS the resulting NSStatusWindowLevel is re-lowered to
+        NSFloatingWindowLevel so IME candidate windows stay visible
+        (ADR-0042, ``_patch_cocoa_window_level``).
     """
     geom = host.get("geometry") or None
     width = _coerce_int(persisted.get("width")) or _DEFAULT_WIDTH
@@ -1110,6 +1114,59 @@ def _patch_cocoa_media_permission() -> None:
             "(also requires LibreOffice's own NSMicrophoneUsageDescription "
             "+ TCC consent)"
         )
+
+
+def _patch_cocoa_window_level() -> None:
+    """Lower the on_top Cocoa window from status to floating level (ADR-0042).
+
+    pywebview's Cocoa backend maps ``on_top=True`` to
+    ``NSStatusWindowLevel`` (25). macOS draws the input-method candidate
+    window at a level below that, so typing Chinese/Japanese in the chat
+    box left the candidate bar hidden behind the panel.
+    ``NSFloatingWindowLevel`` (3) keeps the docked-deck behaviour — still
+    above LibreOffice's normal-level (0) document windows — while letting
+    the IME UI stack on top. The level must be re-set *after* pywebview's
+    ``BrowserView.__init__`` (which applies the status level), so we wrap
+    it; nothing else touches the level afterwards unless ``Window.on_top``
+    is reassigned, which we never do. No-op off macOS (cocoa backend not
+    importable).
+    """
+    try:
+        from webview.platforms import cocoa as cocoa_backend
+    except ImportError:
+        logger.info(
+            "Cocoa level patch: pywebview.platforms.cocoa not importable — "
+            "assuming non-macOS backend; skipping"
+        )
+        return
+
+    if getattr(cocoa_backend.BrowserView, "_t2v_level_patched", False):
+        return
+
+    original_init = cocoa_backend.BrowserView.__init__
+
+    def patched_init(self: Any, window: Any) -> None:
+        original_init(self, window)
+        if not window.on_top:
+            return
+        try:
+            import AppKit  # type: ignore[import-not-found]
+
+            self.window.setLevel_(AppKit.NSFloatingWindowLevel)
+            logger.info(
+                "Cocoa level patch: window lowered to NSFloatingWindowLevel "
+                "(IME candidate bar stacks above the panel again)"
+            )
+        except Exception:
+            logger.exception(
+                "Cocoa level patch: setLevel_ raised — the window still "
+                "opens but stays at NSStatusWindowLevel, which hides the "
+                "input-method candidate bar behind the panel"
+            )
+
+    cocoa_backend.BrowserView.__init__ = patched_init  # type: ignore[method-assign]
+    cocoa_backend.BrowserView._t2v_level_patched = True  # type: ignore[attr-defined]
+    logger.info("Cocoa level patch: BrowserView.__init__ wrapped")
 
 
 def _patch_edgechromium_media_permission() -> None:
