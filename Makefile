@@ -212,8 +212,12 @@ install-oxt: package
 		exit 1; \
 	fi
 	@echo "Installing extension into user's LibreOffice profile..."
-	@unopkg add --force --suppress-license $(OXT)
-	@echo "Installed. Start LibreOffice Writer and open Talk2View -> Open Talk2View Chat."
+	@# scripts/install_oxt.sh resolves the per-platform unopkg path
+	@# (bare `unopkg` is only on PATH on Linux; macOS keeps it inside
+	@# LibreOffice.app, Windows under Program Files) — same entry point
+	@# the CI integration matrix uses.
+	@bash scripts/install_oxt.sh $(OXT)
+	@echo "Start LibreOffice Writer and open Talk2View -> Open Talk2View Chat."
 
 clean:
 	rm -rf $(BUILD_DIR)/ $(DIST_DIR)/ .pytest_cache/ .ruff_cache/ .mypy_cache/ htmlcov/ .coverage

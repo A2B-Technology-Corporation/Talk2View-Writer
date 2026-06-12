@@ -25,8 +25,10 @@ if [[ ! -f "$OXT" ]]; then
     exit 1
 fi
 
+is_macos=0
 case "${OSTYPE:-$(uname -s)}" in
     darwin*|Darwin*)
+        is_macos=1
         UNOPKG="/Applications/LibreOffice.app/Contents/MacOS/unopkg"
         ;;
     msys*|cygwin*|MINGW*)
@@ -84,6 +86,24 @@ if [[ "$rc" -ne 0 ]]; then
         echo "--- end unopkg log ---" >&2
     else
         echo "(no unopkg log written at $LOGFILE)" >&2
+    fi
+    # macOS: LibreOffice 26.x signs its `uno` helper with a parent
+    # launch constraint that macOS 26 enforces — unopkg's spawned
+    # registration helper is SIGKILLed (Code Signature Invalid /
+    # Launch Constraint Violation) before it can serve the URP pipe,
+    # so enabling fails with NoConnectException. Nothing this script
+    # can fix; the in-process GUI path works (investigations #68).
+    if [[ "$is_macos" == 1 ]] \
+        && [[ -f "$LOGFILE" ]] \
+        && grep -q "NoConnectException" "$LOGFILE"; then
+        echo "" >&2
+        echo "HINT: on macOS this NoConnectException usually means the" >&2
+        echo "      LibreOffice 'uno' helper was killed by a code-signing" >&2
+        echo "      launch constraint (LibreOffice 26.x + macOS 26; see" >&2
+        echo "      docs/investigations.md #68). Install via the GUI" >&2
+        echo "      instead: open the .oxt with LibreOffice (Tools >" >&2
+        echo "      Extension Manager > Add), e.g.:" >&2
+        echo "        open '$OXT'" >&2
     fi
     exit "$rc"
 fi
