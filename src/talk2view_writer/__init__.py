@@ -22,6 +22,6 @@ from talk2view_writer._logging import log_file_path, setup_logging
 # call setup_logging() itself.
 setup_logging()
 
-__version__ = "1.0.10"
+__version__ = "1.0.11"
 
 __all__ = ["__version__", "log_file_path", "setup_logging"]
