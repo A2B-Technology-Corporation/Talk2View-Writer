@@ -30,6 +30,14 @@ case "${OSTYPE:-$(uname -s)}" in
     darwin*|Darwin*)
         is_macos=1
         UNOPKG="/Applications/LibreOffice.app/Contents/MacOS/unopkg"
+        # Fail with a clear message (like the Windows branch) instead of
+        # letting `"$UNOPKG" add` die with a cryptic "No such file" /
+        # exit 127 when LibreOffice isn't at the standard location.
+        if [[ ! -x "$UNOPKG" ]]; then
+            echo "ERROR: cannot find unopkg at $UNOPKG." >&2
+            echo "       Install LibreOffice to /Applications, or adjust this path." >&2
+            exit 1
+        fi
         ;;
     msys*|cygwin*|MINGW*)
         # Common Windows install paths. Prefer 64-bit then 32-bit.
