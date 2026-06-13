@@ -211,6 +211,12 @@ class TestBundledModuleLoads:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(_wheel_loader, "_VENDORED_ROOT", str(tmp_path))
         monkeypatch.delitem(sys.modules, "objc", raising=False)
+        # On macOS dev machines pywebview pulls pyobjc into the venv, so a
+        # real ``objc`` resolves from site-packages and the loader would
+        # (correctly, per its order of preference) early-return before
+        # touching the bundle. Drop any sys.path entry that can resolve
+        # objc; the isolate_import_state fixture restores sys.path after.
+        sys.path[:] = [p for p in sys.path if not (Path(p) / "objc").exists()]
 
         # The loader computes the dir from runtime_tag(); build the stub
         # there so the lookup matches whatever this interpreter resolves.
