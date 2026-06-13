@@ -2647,3 +2647,57 @@ back as an empty object, not `None` (assert `NumberingIsNumber is False`);
 A4 paper width round-trips 21000→21001 (assert ±1); a fresh paragraph can
 report `CharPosture` non-NONE even when not visually italic. None are tool
 bugs — they are PyUNO/LO representation details the live tests must match.
+
+## #68 — macOS 26: `unopkg add` dead — LO 26.x `uno` helper SIGKILLed by parent launch constraint (2026-06-12)
+
+**What:** `unopkg add` (CLI, soffice fully closed) fails to enable the
+extension's Python component with
+`com.sun.star.connection.NoConnectException "Connector : couldn't connect
+to pipe "<hash>": 10"`. The extension is left half-deployed: copied into
+the registry but `unopkg list` shows `is registered: no`. Root cause: to
+register the component, unopkg spawns the bundled
+`LibreOffice.app/Contents/MacOS/uno` helper to serve a URP pipe, and
+macOS kills it ~4 ms after exec — crash reports in
+`~/Library/Logs/DiagnosticReports/uno-*.ips` show `EXC_CRASH SIGKILL
+(Code Signature Invalid)`, termination namespace `CODESIGNING`, code 4,
+"Launch Constraint Violation", `parentProc: unopkg`. The Document
+Foundation signs `uno` (and other helper binaries — but NOT `soffice`
+itself) with **parent launch constraints** (`codesign -d -vvvv` →
+"Launch Constraints: Has Parent Launch Constraints", signing timestamp
+2026-06-02); under macOS 26.5's enforcement, unopkg launched from a
+terminal does not satisfy the constraint, so the helper never comes up
+and the connector exhausts its 10 retries. Reproduced deterministically
+(sandboxed and unsandboxed shells); manual `soffice
+--accept=pipe,name=…` works fine (the pipe appears in `/private/tmp`),
+confirming the pipe machinery itself is healthy — only the
+unopkg→`uno` spawn path is broken.
+
+**Where:** LibreOffice 26.x macOS arm64 (`uno` signed 2026-06-02, team
+7P5S3ZLCN7) on macOS 26.5.1 (25F80). Local dev machine.
+
+**Confirmed it is the macOS version, not the LO version:** the CI
+`Integration (macos-14)` job installs the *same* LibreOffice 26.2.4.2 via
+the same `/Applications/LibreOffice.app/Contents/MacOS/unopkg` and prints
+`unopkg done.` — green. The only difference is the runner's macOS 14.8.7
+(Sonoma, Darwin 23.6.0) vs the local 26.5.1 (Tahoe): macOS 14 does not
+enforce the `uno` helper's parent launch constraint, macOS 26 does.
+GitHub offers no macOS 26 runner image (current max is `macos-15`), so CI
+cannot reproduce this — it is a macOS-26-only OS-level regression, invisible
+to CI until a developer runs the install on macOS 26.
+
+**Why it matters:** `make install-oxt` (and `scripts/install_oxt.sh`,
+the CI entry point) cannot install the extension on a current macOS +
+LO 26.x developer machine at all. If GitHub's macOS runners move to
+macOS 26 images, the CI Integration (macos) row will break the same
+way. Half-deployed registry state after each failed attempt is an extra
+hazard.
+
+**Next step:** GUI install works (Extension Manager runs in-process in
+soffice — no helper spawn): `open dist/Talk2ViewWriter.oxt`, then
+confirm the replace prompt. `scripts/install_oxt.sh` now prints this
+hint when it sees NoConnectException on darwin. Watch for a TDF fix
+(helper binaries presumably need a constraint that admits unopkg as
+parent, or no constraint at all); if CI macOS images bump to 26 before
+TDF fixes it, the install step must switch to driving
+`XExtensionManager.addExtension` through a live headless soffice
+instead of unopkg.
