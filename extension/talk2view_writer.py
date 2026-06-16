@@ -178,12 +178,19 @@ class Talk2ViewProtocolHandler(unohelper.Base, XDispatchProvider, XDispatch):
                 from talk2view_writer.about import show_license
 
                 show_license(self.ctx)
-            elif command in {"login", "logout", "settings"}:
-                # Legacy URLs from pre-ADR-0030 user profiles. The
-                # menu no longer exposes them (Addons.xcu, 2026-05-22)
-                # but a user with a customised toolbar might still
-                # invoke them. Funnel into the chat window — that's
-                # where auth lives now.
+            elif command in {"options", "settings"}:
+                # "options" is the live menu item (Addons.xcu); "settings"
+                # is the pre-ADR-0030 legacy URL a customised toolbar may
+                # still carry. Both open the native Options dialog now that
+                # one exists (ADR-0043) — preference toggles live there.
+                from talk2view_writer.options import show_options
+
+                show_options(self.ctx)
+            elif command in {"login", "logout"}:
+                # Legacy auth URLs from pre-ADR-0030 user profiles. The
+                # menu no longer exposes them, but a user with a customised
+                # toolbar might still invoke them. Funnel into the chat
+                # window — that's where auth lives now.
                 logger.info(
                     "dispatch: legacy command %r → opening chat window", command
                 )

@@ -5,14 +5,17 @@
                     oor:package="org.openoffice.Office">
 
     <!--
-        Only ONE menu entry now: "Open Talk2View Chat". Login,
-        logout, and settings used to be separate UNO menu items
-        backed by Python dialogs (login_dialog.py, settings_dialog.py).
-        Those are dead since ADR-0030 — the chat window is a
-        pywebview React app that handles its own auth, logout, and
-        settings UX. The dispatch handler still rejects the old
-        URLs cleanly in case an old user profile retains them in
-        a custom toolbar.
+        Menu items (each dispatches a vnd.com.talk2view.writer:<cmd> URL
+        handled by Talk2ViewProtocolHandler.dispatch):
+          - showPanel  -> the pywebview chat window (auth + chat live there,
+                          per ADR-0030).
+          - options    -> native UNO Options dialog for preference toggles
+                          (ADR-0043). Writes through the cached Preferences
+                          singleton so a toggle applies to the next AI edit.
+          - about / license -> native UNO info dialogs (about.py).
+        The legacy login / logout / settings URLs (pre-ADR-0030 profiles)
+        are still handled by dispatch for customised toolbars: login/logout
+        funnel into the chat window, settings opens the Options dialog.
     -->
 
     <node oor:name="AddonUI">
@@ -41,10 +44,24 @@
                     </node>
                     <node oor:name="m2" oor:op="replace">
                         <prop oor:name="URL" oor:type="xs:string">
-                            <value>private:separator</value>
+                            <value>vnd.com.talk2view.writer:options</value>
+                        </prop>
+                        <prop oor:name="Title" oor:type="xs:string">
+                            <value xml:lang="en">Options...</value>
+                        </prop>
+                        <prop oor:name="Target" oor:type="xs:string">
+                            <value>_self</value>
+                        </prop>
+                        <prop oor:name="Context" oor:type="xs:string">
+                            <value>com.sun.star.text.TextDocument</value>
                         </prop>
                     </node>
                     <node oor:name="m3" oor:op="replace">
+                        <prop oor:name="URL" oor:type="xs:string">
+                            <value>private:separator</value>
+                        </prop>
+                    </node>
+                    <node oor:name="m4" oor:op="replace">
                         <prop oor:name="URL" oor:type="xs:string">
                             <value>vnd.com.talk2view.writer:about</value>
                         </prop>
@@ -55,7 +72,7 @@
                             <value>_self</value>
                         </prop>
                     </node>
-                    <node oor:name="m4" oor:op="replace">
+                    <node oor:name="m5" oor:op="replace">
                         <prop oor:name="URL" oor:type="xs:string">
                             <value>vnd.com.talk2view.writer:license</value>
                         </prop>
