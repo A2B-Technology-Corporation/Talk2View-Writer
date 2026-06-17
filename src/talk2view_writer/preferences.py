@@ -31,7 +31,7 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +45,35 @@ DEFAULTS: dict[str, Any] = {
     # review / accept / reject. Toggle off via the manage_preferences
     # tool: "turn off AI track changes".
     PREF_AI_TRACK_CHANGES: True,
+}
+
+
+class PreferenceSpec(NamedTuple):
+    """Human-readable metadata for one preference, for settings UIs.
+
+    The chat surface (``manage_preferences``) needs only the key +
+    default, but the native Options dialog (:mod:`talk2view_writer.options`)
+    renders a labelled control per preference. Keep one spec per key in
+    :data:`DEFAULTS`; a key with no spec is a bug the Options tests catch.
+    """
+
+    label: str
+    description: str
+
+
+# Display metadata keyed identically to :data:`DEFAULTS`. Ordered the same
+# way DEFAULTS is so the Options dialog renders in a stable, intentional
+# order. Every boolean preference here becomes a checkbox.
+PREFERENCE_SPECS: dict[str, PreferenceSpec] = {
+    PREF_AI_TRACK_CHANGES: PreferenceSpec(
+        label="Record AI edits as tracked changes",
+        description=(
+            "When on, every edit the AI makes is recorded as a tracked "
+            "change you can review, accept, or reject (Edit > Track "
+            "Changes). When off, the AI edits the document directly. "
+            "Your own Track Changes setting is restored after each edit."
+        ),
+    ),
 }
 
 

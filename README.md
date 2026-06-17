@@ -127,6 +127,12 @@ After `make install-oxt`, restart LibreOffice Writer and pick
 companion window backed by pywebview opens with the bundled React UI,
 docked beside LibreOffice where the platform allows (ADR-0039).
 
+The **Talk2View → Options…** menu item opens a native dialog for the
+extension's behaviour toggles (e.g. recording AI edits as tracked
+changes). Changes apply to the next AI edit immediately — no restart
+(ADR-0043). The same toggles are reachable from chat via the
+`manage_preferences` tool (ADR-0035).
+
 ### Tests
 
 Several test layers. The unit + synthetic suites and the mock-engine e2e
@@ -183,7 +189,7 @@ Talk2View-Writer/
 ├── extension/                       # OXT packaging files
 │   ├── talk2view_writer.py          # UNO entry (XJobExecutor + protocol handler)
 │   ├── description.xml
-│   ├── Addons.xcu                   # "Open Talk2View Chat" menu entry
+│   ├── Addons.xcu                   # Talk2View menu (Chat, Options, About, License)
 │   └── META-INF/manifest.xml
 ├── src/talk2view_writer/
 │   ├── extension.py                 # singleton (UI thread + chat window handle)

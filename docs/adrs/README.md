@@ -69,6 +69,7 @@ applied.
 | [0040](0040-guided-tour-demo-skill.md) | Guided demo as a partner skill (provisioned via dashboard), not a client-side prompt injection | G | Accepted |
 | [0041](0041-grant-microphone-across-webview-backends.md) | Grant microphone (getUserMedia) across all three webview backends (WebKitGTK / WKWebView / WebView2) | G | Accepted |
 | [0042](0042-floating-window-level-for-ime.md) | Floating (not status) window level on macOS so IME candidates stay visible | G | Accepted |
+| [0043](0043-native-uno-options-dialog.md) | Native UNO Options dialog for preference toggles (menu-driven, writes through the cached Preferences singleton) | G | Accepted |
 
 ## Writing a new ADR
 
